@@ -8,16 +8,16 @@
 
 ## 阶段规划
 ### 阶段 0：现状确认与环境准备
-- [ ] 核对 `galileo.toml`（或默认配置）是否满足当前部署需求，补充缺失项。
-- [ ] 运行 `cargo check`/`cargo test` 与冒烟调用，确认基础功能可用。
+- [x] 核对 `galileo.toml`（或默认配置）是否满足当前部署需求，补充缺失项。
+- [x] 运行 `cargo check`/`cargo test` 与冒烟调用，确认基础功能可用。
 - [ ] 明确部署环境：运行目录、Jupiter 二进制安装路径、日志存储策略。
-- [ ] 提炼 `third_party/config.yaml.example` 中 Jupiter 相关配置，形成默认模板或文档条目，方便后续按需启用。
+- [x] 提炼 `third_party/config.yaml.example` 中 Jupiter 相关配置，形成默认模板或文档条目，方便后续按需启用。
 
 ### 阶段 1：二进制生命周期强化（需求 1）
-- [ ] 完善 `JupiterBinaryManager` 状态机：补齐异常退出检测、自动重启策略与状态上报。
+- [x] 完善 `JupiterBinaryManager` 状态机：补齐异常退出检测、自动重启策略与状态上报。
 - [ ] 实现二进制版本锁定/回滚策略（例如通过版本缓存与校验摘要）。
 - [ ] 设计 CLI/HTTP 控制接口，支持远程触发 `start/stop/update/status`。
-- [ ] 根据 `third_party/run-jup.sh` 整理出的常用启动参数，扩展 `JupiterConfig` 或预置参数生成逻辑（端口、host、线程数、DEX 过滤、Yellowstone 认证等），减少手动拼接 `args` 的负担。
+- [x] 根据 `third_party/run-jup.sh` 整理出的常用启动参数，扩展 `JupiterConfig` 或预置参数生成逻辑（端口、host、线程数、DEX 过滤、Yellowstone 认证等），减少手动拼接 `args` 的负担。
 - 交付物：增强后的生命周期管理模块、操作说明文档。
 
 ### 阶段 2：高性能路径优化（需求 2）
@@ -35,7 +35,7 @@
 - 交付物：完善的监控/日志实现与可观测性使用手册。
 
 ### 阶段 4：套利业务工作流打磨
-- [ ] 结合 `docs/demo.md` 与 `third_party/mints-query.sh` 的实践，实现策略引擎框架：周期性抓取 quote、计算收益、生成 swap 请求，并支持代币白名单/排除机制。
+- [ ] 结合 `docs/demo.md` 与 `third_party/mints-query.sh` 的实践，实现策略引擎框架：周期性抓取 quote、计算收益、生成 swap 请求，并支持代币白名单/排除机制。（初版循环已落地，待接入代币白名单与发送路径）
 - [ ] 引入风险控制（滑点阈值、资金管理、失败重试/暂停机制）。
 - [ ] 集成发送路径（Jito/自建 relayer），记录交易成功率与收益统计。
 - 交付物：策略执行模块、配置化参数、收益/风险报表。

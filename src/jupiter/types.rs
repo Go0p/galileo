@@ -61,6 +61,8 @@ pub struct ManagerState {
     pub install: Option<BinaryInstall>,
     pub process: Option<ProcessHandle>,
     pub status: BinaryStatus,
+    pub monitor_spawned: bool,
+    pub restart_attempts: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

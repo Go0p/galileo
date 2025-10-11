@@ -1,0 +1,94 @@
+[logging]
+level = "info"
+json = true
+
+[jupiter.binary]
+repo_owner = "jup-ag"
+repo_name = "jupiter-swap-api"
+binary_name = "jupiter-swap-api"
+install_dir = "bin"
+
+[jupiter.launch]
+rpc_url = "https://rpc.your-provider.example"
+host = "0.0.0.0"
+port = 18080
+metrics_port = 18081
+market_cache = "https://cache.jup.ag/markets?v=4"
+market_mode = "remote"
+disable_local_binary = false
+allow_circular_arbitrage = true
+enable_new_dexes = true
+expose_quote_and_simulate = true
+enable_markets = true
+enable_tokens = true
+skip_user_accounts_rpc = true
+
+[jupiter.launch.yellowstone]
+endpoint = "https://yellowstone.example.com:443"
+x_token = "replace-with-your-token"
+
+[jupiter.performance]
+total_thread_count = 64
+webserver_thread_count = 24
+update_thread_count = 5
+
+[jupiter.tokens]
+filter_markets_with_mints = [
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "So11111111111111111111111111111111111111112",
+]
+exclude_dex_program_ids = [
+  "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+  "MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG",
+]
+
+[jupiter.process]
+auto_restart_minutes = 60
+max_restart_attempts = 3
+graceful_shutdown_timeout_ms = 5000
+
+[jupiter.environment]
+RUST_LOG = "info"
+
+[jupiter.health_check]
+url = "http://127.0.0.1:18080/health"
+timeout_ms = 10000
+expected_status = 200
+
+[http]
+base_url = "http://127.0.0.1:8080"
+request_timeout_ms = 2000
+
+[strategy]
+enabled = false
+base_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" # USDC
+quote_mints = ["So11111111111111111111111111111111111111112"]
+trade_range = [1_000_000, 5_000_000, 10_000_000]
+min_profit_threshold_lamports = 3000
+max_tip_lamports = 1_000_000
+slippage_bps = 30
+only_direct_routes = false
+restrict_intermediate_tokens = true
+quote_max_accounts = 20
+
+[strategy.bot]
+enable_reverse_trade = true
+enable_random_base_mint = false
+enable_sandwich_mitigation = true
+over_trade_process_delay_ms = 200
+
+[strategy.bot.static_tip_config]
+enable_random = true
+static_tip_percentage = 0.75
+random_percentage = [0.5, 0.7, 0.8]
+
+[strategy.identity]
+user_pubkey = "replace-with-your-pubkey"
+wrap_and_unwrap_sol = false
+use_shared_accounts = false
+compute_unit_price_micro_lamports = 1
+tip_account = "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY"
+
+[strategy.jito]
+engine_urls = ["https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles"]
+random_engine = true

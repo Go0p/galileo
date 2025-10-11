@@ -124,6 +124,11 @@ pub struct SwapRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub compute_unit_price_micro_lamports: Option<u64>,
+    #[serde(
+        rename = "skipUserAccountsRpcCalls",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub skip_user_accounts_rpc_calls: Option<bool>,
 }
 
 impl SwapRequest {
@@ -135,6 +140,7 @@ impl SwapRequest {
             use_shared_accounts: None,
             fee_account: None,
             compute_unit_price_micro_lamports: None,
+            skip_user_accounts_rpc_calls: None,
         }
     }
 }

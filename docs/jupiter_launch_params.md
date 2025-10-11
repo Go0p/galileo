@@ -41,7 +41,8 @@
 ## 在 `galileo` 中的落地建议
 1. 在 `JupiterConfig` 中新增（或自动填充）常见字段：`host`、`port`、`metrics_port`、线程数字段、`allow_circular_arbitrage` 等，避免手动拼接 `args`。
 2. 结合 `mints-query.sh` 思路，为 `galileo` 设计代币白名单生成器或导入接口，确保 `--filter-markets-with-mints` 能自动维护。
-3. 在生命周期管理阶段实现“崩溃检测 + 自动重启”，并保留 `.log` 输出以便追溯。
-4. 针对 `metrics_port` 与健康检查路由，规划监控系统对接方式（Prometheus/OpenTelemetry）。
+3. 在生命周期管理阶段实现“崩溃检测 + 自动重启”，并保留 `.log` 输出以便追溯（可通过 `auto_restart_minutes`、`max_restart_attempts` 调控）。
+4. 本地调试时可将 `[jupiter.launch].disable_local_binary = true`，直接对接线上 Jupiter API，避免机器资源被占满。
+5. 针对 `metrics_port` 与健康检查路由，规划监控系统对接方式（Prometheus/OpenTelemetry）。
 
-后续阶段落地时可直接引用本列表生成默认配置或 CLI 选项提示。*** End Patch
+更多字段与第三方脚本的映射请查阅 `docs/galileo_config_reference.md`。后续阶段落地时可直接引用本列表生成默认配置或 CLI 选项提示。

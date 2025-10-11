@@ -116,11 +116,11 @@ pub async fn download_and_install(
     asset: &ReleaseAsset,
     version: &str,
 ) -> Result<BinaryInstall, JupiterError> {
-    fs::create_dir_all(&config.install_dir).await?;
+    fs::create_dir_all(&config.binary.install_dir).await?;
 
     let temp_dir = tempfile::Builder::new()
         .prefix("jupiter-download")
-        .tempdir_in(&config.install_dir)?;
+        .tempdir_in(&config.binary.install_dir)?;
     let temp_path = temp_dir.path().join(&asset.name);
 
     let download_metadata = LatencyMetadata::new(
@@ -181,8 +181,8 @@ pub async fn download_and_install(
 }
 
 async fn install_asset(temp_path: &Path, config: &JupiterConfig) -> Result<PathBuf, JupiterError> {
-    let install_dir = config.install_dir.clone();
-    let binary_name = config.binary_name.clone();
+    let install_dir = config.binary.install_dir.clone();
+    let binary_name = config.binary.binary_name.clone();
 
     if is_tarball(temp_path) {
         extract_tarball(temp_path, &install_dir, &binary_name).await

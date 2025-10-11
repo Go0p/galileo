@@ -13,12 +13,18 @@ pub async fn spawn_process(
     config: &JupiterConfig,
     install: &BinaryInstall,
 ) -> Result<ProcessHandle, JupiterError> {
+    let effective_args = config.effective_args();
+
     let mut command = Command::new(&install.path);
     command
-        .current_dir(&config.install_dir)
-        .args(&config.args)
+        .current_dir(&config.binary.install_dir)
+        .args(&effective_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    if !config.environment.contains_key("RUST_LOG") {
+        command.env("RUST_LOG", "info");
+    }
 
     for (key, value) in &config.environment {
         command.env(key, value);

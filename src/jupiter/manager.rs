@@ -1,11 +1,12 @@
 use std::path::Path;
+use std::process::ExitStatus;
 use std::time::Duration;
 
 use tracing::{info, warn};
 
 use super::error::JupiterError;
 use super::process::{shutdown_process, spawn_process};
-use super::types::{BinaryInstall, BinaryStatus, JupiterBinaryManager};
+use super::types::{BinaryInstall, BinaryStatus, JupiterBinaryManager, ProcessHandle};
 use super::updater::{
     USER_AGENT, download_and_install, fetch_latest_release, select_asset_for_host,
 };
@@ -68,8 +69,8 @@ impl JupiterBinaryManager {
 
         let release = fetch_latest_release(
             &self.client,
-            &self.config.repo_owner,
-            &self.config.repo_name,
+            &self.config.binary.repo_owner,
+            &self.config.binary.repo_name,
         )
         .await?;
         info!(target: "jupiter", version = %release.tag_name, asset_count = release.assets.len(), "fetched latest release metadata");
@@ -96,6 +97,17 @@ impl JupiterBinaryManager {
     }
 
     pub async fn start(&self, force_update: bool) -> Result<(), JupiterError> {
+        self.ensure_monitor_task().await;
+
+        if self.config.launch.disable_local_binary {
+            info!(
+                target: "jupiter",
+                "local jupiter binary disabled; skipping binary start"
+            );
+            self.transition(BinaryStatus::Running).await;
+            return Ok(());
+        }
+
         if force_update {
             self.update().await?;
         }
@@ -118,6 +130,7 @@ impl JupiterBinaryManager {
             state.process = Some(process);
             state.install = Some(install.clone());
             state.status = BinaryStatus::Running;
+            state.restart_attempts = 0;
         }
 
         info!(
@@ -139,11 +152,23 @@ impl JupiterBinaryManager {
     }
 
     pub async fn stop(&self) -> Result<(), JupiterError> {
+        if self.config.launch.disable_local_binary {
+            self.transition(BinaryStatus::Stopped).await;
+            return Ok(());
+        }
+
         let process = {
             let mut state = self.state.lock().await;
             match state.process.take() {
                 Some(process) => {
                     state.status = BinaryStatus::Stopping;
+                    if self.config.process.graceful_shutdown_timeout_ms > 0 {
+                        info!(
+                            target: "jupiter",
+                            timeout_ms = self.config.process.graceful_shutdown_timeout_ms,
+                            "initiating graceful shutdown"
+                        );
+                    }
                     process
                 }
                 None => return Err(JupiterError::NotRunning),
@@ -206,6 +231,152 @@ impl JupiterBinaryManager {
     async fn transition(&self, status: BinaryStatus) {
         let mut state = self.state.lock().await;
         state.status = status;
+    }
+
+    async fn ensure_monitor_task(&self) {
+        let should_spawn = {
+            let mut state = self.state.lock().await;
+            if state.monitor_spawned {
+                false
+            } else {
+                state.monitor_spawned = true;
+                true
+            }
+        };
+
+        if should_spawn {
+            self.spawn_monitor_task();
+        }
+    }
+
+    fn spawn_monitor_task(&self) {
+        let manager = self.clone();
+        tokio::spawn(async move {
+            manager.monitor_loop().await;
+        });
+    }
+
+    async fn monitor_loop(self) {
+        struct ExitEvent {
+            handle: ProcessHandle,
+            status: ExitStatus,
+            was_user_stop: bool,
+            restart_attempts: u32,
+            max_restart_attempts: u32,
+        }
+
+        loop {
+            let exit_event = {
+                let mut state = self.state.lock().await;
+                match state.process.as_mut() {
+                    Some(handle) => match handle.child.try_wait() {
+                        Ok(Some(status)) => {
+                            let was_user_stop = matches!(state.status, BinaryStatus::Stopping);
+                            let handle = state.process.take();
+                            if was_user_stop {
+                                state.status = BinaryStatus::Stopped;
+                                state.restart_attempts = 0;
+                            } else {
+                                state.status = BinaryStatus::Failed;
+                                state.restart_attempts = state.restart_attempts.saturating_add(1);
+                            }
+                            handle.map(|handle| ExitEvent {
+                                handle,
+                                status,
+                                was_user_stop,
+                                restart_attempts: state.restart_attempts,
+                                max_restart_attempts: self.config.process.max_restart_attempts,
+                            })
+                        }
+                        Ok(None) => None,
+                        Err(err) => {
+                            warn!(
+                                target: "jupiter",
+                                error = %err,
+                                "failed to poll Jupiter process status"
+                            );
+                            None
+                        }
+                    },
+                    None => None,
+                }
+            };
+
+            if let Some(mut event) = exit_event {
+                if let Some(task) = event.handle.stdout_task.take() {
+                    task.abort();
+                }
+                if let Some(task) = event.handle.stderr_task.take() {
+                    task.abort();
+                }
+
+                if event.was_user_stop {
+                    info!(
+                        target: "jupiter",
+                        exit_code = event.status.code(),
+                        success = event.status.success(),
+                        "jupiter process stopped"
+                    );
+                } else {
+                    warn!(
+                        target: "jupiter",
+                        exit_code = event.status.code(),
+                        success = event.status.success(),
+                        version = ?event.handle.version,
+                        "jupiter process exited unexpectedly"
+                    );
+                    let auto_restart = self.config.process.auto_restart_minutes;
+                    let attempts_limit = event.max_restart_attempts;
+                    if auto_restart > 0
+                        && (attempts_limit == 0 || event.restart_attempts <= attempts_limit)
+                    {
+                        let delay_secs = auto_restart.saturating_mul(60);
+                        let delay = Duration::from_secs(delay_secs);
+                        info!(
+                            target: "jupiter",
+                            delay_secs = delay.as_secs(),
+                            "scheduling automatic restart"
+                        );
+                        tokio::time::sleep(delay).await;
+                        let current_status = self.status().await;
+                        if matches!(current_status, BinaryStatus::Failed) {
+                            match self.start(false).await {
+                                Ok(_) => {
+                                    let mut state = self.state.lock().await;
+                                    state.restart_attempts = 0;
+                                    info!(
+                                        target: "jupiter",
+                                        "automatic restart succeeded"
+                                    );
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        target: "jupiter",
+                                        error = %err,
+                                        "automatic restart failed"
+                                    );
+                                }
+                            }
+                        } else {
+                            info!(
+                                target: "jupiter",
+                                ?current_status,
+                                "skipping automatic restart because status changed"
+                            );
+                        }
+                    } else if auto_restart > 0 && attempts_limit > 0 {
+                        warn!(
+                            target: "jupiter",
+                            attempts = event.restart_attempts,
+                            max_attempts = attempts_limit,
+                            "automatic restart attempts exhausted"
+                        );
+                    }
+                }
+            } else {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
     }
 }
 

@@ -1,19 +1,21 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::{Args, Parser, Subcommand};
-use tracing::error;
+use tracing::{error, info, warn};
 use tracing_subscriber::{EnvFilter, fmt};
 
 mod config;
 mod jupiter;
 mod metrics;
+mod strategy;
 
 use config::{ConfigError, GalileoConfig, LoggingConfig, load_config};
 use jupiter::{
     BinaryStatus, JupiterBinaryManager, JupiterError,
     client::{JupiterApiClient, QuoteRequest, SwapRequest},
 };
+use strategy::engine::ArbitrageEngine;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -53,6 +55,8 @@ enum Command {
     Quote(QuoteCmd),
     /// Request a swap transaction from the Jupiter API
     Swap(SwapCmd),
+    /// Run the configured arbitrage strategy loop
+    Strategy,
 }
 
 #[derive(Args, Debug)]
@@ -155,6 +159,47 @@ async fn main() -> Result<()> {
 
             let swap = api_client.swap(&request).await?;
             println!("{}", serde_json::to_string_pretty(&swap.raw)?);
+        }
+        Command::Strategy => {
+            let strategy_config = match config.strategy.clone() {
+                Some(cfg) => cfg,
+                None => return Err(anyhow!("strategy configuration not provided")),
+            };
+
+            if !strategy_config.is_enabled() {
+                warn!(
+                    target: "strategy",
+                    "strategy disabled by configuration; exiting"
+                );
+                return Ok(());
+            }
+
+            if !config.jupiter.launch.disable_local_binary {
+                match manager.start(false).await {
+                    Ok(()) => {
+                        info!(target: "strategy", "local jupiter binary started");
+                    }
+                    Err(JupiterError::AlreadyRunning) => {
+                        info!(target: "strategy", "local jupiter binary already running");
+                    }
+                    Err(err) => return Err(err.into()),
+                }
+            } else {
+                info!(
+                    target: "strategy",
+                    "local jupiter binary disabled; using remote API"
+                );
+            }
+
+            let engine = ArbitrageEngine::new(strategy_config, api_client.clone())
+                .map_err(|err| anyhow!(err))?;
+
+            tokio::select! {
+                res = engine.run() => res.map_err(|err| anyhow!(err))?,
+                _ = tokio::signal::ctrl_c() => {
+                    info!(target: "strategy", "received shutdown signal");
+                }
+            }
         }
     }
 
