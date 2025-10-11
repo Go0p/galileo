@@ -72,9 +72,16 @@ impl JupiterBinaryManager {
             &self.config.repo_name,
         )
         .await?;
-        info!(target: "jupiter", version = %release.tag_name, "fetched latest release metadata");
+        info!(target: "jupiter", version = %release.tag_name, asset_count = release.assets.len(), "fetched latest release metadata");
         let asset = select_asset_for_host(&release, &self.config)?;
-        info!(target: "jupiter", asset = %asset.name, "selected release asset");
+        info!(
+            target: "jupiter",
+            asset = %asset.name,
+            asset_id = asset.id,
+            size_bytes = asset.size,
+            content_type = ?asset.content_type,
+            "selected release asset"
+        );
         let install =
             download_and_install(&self.client, &self.config, &asset, &release.tag_name).await?;
 
@@ -115,13 +122,17 @@ impl JupiterBinaryManager {
 
         info!(
             target: "jupiter",
-            version = install.version,
+            version = %install.version,
             path = %install.path.display(),
+            updated_at = ?install.updated_at,
             "jupiter binary started"
         );
 
         if let Some(health) = &self.config.health_check {
-            self.wait_for_health(health).await?;
+            if let Err(err) = self.wait_for_health(health).await {
+                self.transition(BinaryStatus::Failed).await;
+                return Err(err);
+            }
         }
 
         Ok(())
@@ -181,6 +192,7 @@ impl JupiterBinaryManager {
             }
 
             if start.elapsed() > timeout {
+                self.transition(BinaryStatus::Failed).await;
                 return Err(JupiterError::HealthCheck(format!(
                     "timed out after {:?} waiting for {}",
                     timeout, config.url

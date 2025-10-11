@@ -147,14 +147,11 @@ async fn main() -> Result<()> {
             ensure_running(&manager).await?;
             let quote_raw = tokio::fs::read_to_string(&args.quote_path).await?;
             let quote_value: serde_json::Value = serde_json::from_str(&quote_raw)?;
-            let request = SwapRequest {
-                quote_response: quote_value,
-                user_public_key: args.user,
-                wrap_and_unwrap_sol: Some(args.wrap_sol),
-                use_shared_accounts: Some(args.shared_accounts),
-                fee_account: args.fee_account,
-                compute_unit_price_micro_lamports: args.compute_unit_price,
-            };
+            let mut request = SwapRequest::new(quote_value, args.user);
+            request.wrap_and_unwrap_sol = Some(args.wrap_sol);
+            request.use_shared_accounts = Some(args.shared_accounts);
+            request.fee_account = args.fee_account;
+            request.compute_unit_price_micro_lamports = args.compute_unit_price;
 
             let swap = api_client.swap(&request).await?;
             println!("{}", serde_json::to_string_pretty(&swap.raw)?);

@@ -59,6 +59,7 @@ impl LatencyGuard {
         }
     }
 
+    #[allow(dead_code)]
     pub fn end_with_metadata(mut self, metadata: LatencyMetadata) -> Duration {
         self.metadata = metadata;
         self.finish()
@@ -72,6 +73,7 @@ impl LatencyGuard {
         elapsed
     }
 
+    #[allow(dead_code)]
     pub fn cancel(self) {
         // Intentionally does nothing; dropping without logging.
     }

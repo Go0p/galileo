@@ -5,10 +5,12 @@ use tracing::Level;
 
 use super::types::{LatencyGuard, LatencyMetadata};
 
+#[allow(dead_code)]
 pub fn guard(operation: impl Into<Cow<'static, str>>) -> LatencyGuard {
     LatencyGuard::new(operation, Level::INFO, LatencyMetadata::default())
 }
 
+#[allow(dead_code)]
 pub fn guard_with_metadata(
     operation: impl Into<Cow<'static, str>>,
     metadata: LatencyMetadata,
@@ -16,6 +18,7 @@ pub fn guard_with_metadata(
     LatencyGuard::new(operation, Level::INFO, metadata)
 }
 
+#[allow(dead_code)]
 pub fn guard_with_level(
     operation: impl Into<Cow<'static, str>>,
     level: Level,
@@ -24,6 +27,7 @@ pub fn guard_with_level(
     LatencyGuard::new(operation, level, metadata)
 }
 
+#[allow(dead_code)]
 pub async fn measure_future<Fut, T>(
     operation: impl Into<Cow<'static, str>>,
     metadata: LatencyMetadata,
@@ -38,6 +42,7 @@ where
     output
 }
 
+#[allow(dead_code)]
 pub async fn measure_result<Fut, T, E>(
     operation: impl Into<Cow<'static, str>>,
     metadata: LatencyMetadata,

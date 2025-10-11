@@ -66,12 +66,18 @@ impl JupiterApiClient {
                 "quote latency comparison"
             );
         } else {
-            info!(
-                target: "latency",
-                elapsed_ms,
-                "quote latency recorded"
-            );
+            info!(target: "latency", elapsed_ms, "quote latency recorded");
         }
+        info!(
+            target: "jupiter::quote",
+            input_mint = %quote.input_mint,
+            output_mint = %quote.output_mint,
+            in_amount = %quote.in_amount,
+            out_amount = %quote.out_amount,
+            other_amount_threshold = ?quote.other_amount_threshold,
+            elapsed_ms,
+            "quote completed"
+        );
 
         Ok(quote)
     }
@@ -111,10 +117,15 @@ impl JupiterApiClient {
         guard.finish();
         let elapsed_ms = start.elapsed().as_micros() as f64 / 1_000.0;
 
+        info!(target: "latency", elapsed_ms, "swap latency recorded");
+        let swap_tx_len = swap.swap_transaction.len();
         info!(
-            target: "latency",
+            target: "jupiter::swap",
             elapsed_ms,
-            "swap latency recorded"
+            tx_len = swap_tx_len,
+            last_valid_block_height = ?swap.last_valid_block_height,
+            priority_fee_micro_lamports = ?swap.priority_fee_micro_lamports,
+            "swap response received"
         );
 
         Ok(swap)

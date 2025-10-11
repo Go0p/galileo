@@ -162,17 +162,21 @@ pub async fn download_and_install(
     drop(download_guard);
 
     let binary_path = install_asset(&temp_path, config).await?;
+    let updated_at = SystemTime::now();
     info!(
         target: "jupiter",
         version,
         path = %binary_path.display(),
+        size_bytes = asset.size,
+        content_type = ?asset.content_type,
+        updated_at = ?updated_at,
         "installed Jupiter binary"
     );
 
     Ok(BinaryInstall {
         version: version.to_string(),
         path: binary_path,
-        updated_at: SystemTime::now(),
+        updated_at,
     })
 }
 
