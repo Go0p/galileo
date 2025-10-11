@@ -1,15 +1,15 @@
 use rand::prelude::IndexedRandom;
 
-use super::config::StaticTipConfig;
+use super::config::TipConfig;
 
 #[derive(Debug, Clone)]
 pub struct TipCalculator {
-    config: StaticTipConfig,
+    config: TipConfig,
     max_tip: u64,
 }
 
 impl TipCalculator {
-    pub fn new(config: &StaticTipConfig, max_tip: u64) -> Self {
+    pub fn new(config: &TipConfig, max_tip: u64) -> Self {
         Self {
             config: config.clone(),
             max_tip,

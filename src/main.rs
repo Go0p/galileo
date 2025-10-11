@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
     init_tracing(&config.logging)?;
 
     let manager = JupiterBinaryManager::new(config.jupiter.clone())?;
-    let api_client = JupiterApiClient::new(manager.client.clone(), &config.http);
+    let api_client = JupiterApiClient::new(manager.client.clone(), &config.bot);
 
     match cli.command {
         Command::Start { force_update } => {
@@ -191,8 +191,9 @@ async fn main() -> Result<()> {
                 );
             }
 
-            let engine = ArbitrageEngine::new(strategy_config, api_client.clone())
-                .map_err(|err| anyhow!(err))?;
+            let engine =
+                ArbitrageEngine::new(strategy_config, config.bot.clone(), api_client.clone())
+                    .map_err(|err| anyhow!(err))?;
 
             tokio::select! {
                 res = engine.run() => res.map_err(|err| anyhow!(err))?,

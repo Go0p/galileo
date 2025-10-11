@@ -13,7 +13,7 @@ pub struct GalileoConfig {
     pub logging: LoggingConfig,
     pub jupiter: JupiterConfig,
     #[serde(default)]
-    pub http: HttpConfig,
+    pub bot: BotConfig,
     #[serde(default)]
     pub strategy: Option<StrategyConfig>,
 }
@@ -23,7 +23,7 @@ impl Default for GalileoConfig {
         Self {
             logging: LoggingConfig::default(),
             jupiter: JupiterConfig::default(),
-            http: HttpConfig::default(),
+            bot: BotConfig::default(),
             strategy: None,
         }
     }
@@ -49,6 +49,81 @@ impl Default for LoggingConfig {
 impl LoggingConfig {
     fn default_level() -> String {
         "info".to_string()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BotConfig {
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub rpc_url: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub yellowstone_grpc_url: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub yellowstone_grpc_token: Option<String>,
+    #[serde(default = "BotConfig::default_jupiter_api_url")]
+    pub jupiter_api_url: String,
+    #[serde(default = "BotConfig::default_request_timeout_ms")]
+    pub request_timeout_ms: u64,
+    #[serde(default)]
+    pub identity: BotIdentityConfig,
+}
+
+impl Default for BotConfig {
+    fn default() -> Self {
+        Self {
+            rpc_url: None,
+            yellowstone_grpc_url: None,
+            yellowstone_grpc_token: None,
+            jupiter_api_url: Self::default_jupiter_api_url(),
+            request_timeout_ms: Self::default_request_timeout_ms(),
+            identity: BotIdentityConfig::default(),
+        }
+    }
+}
+
+impl BotConfig {
+    fn default_jupiter_api_url() -> String {
+        "http://127.0.0.1:8080".to_string()
+    }
+
+    fn default_request_timeout_ms() -> u64 {
+        2_000
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BotIdentityConfig {
+    #[serde(default)]
+    pub user_pubkey: Option<String>,
+    #[serde(default)]
+    pub fee_account: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub tip_account: Option<String>,
+    #[serde(default)]
+    pub wrap_and_unwrap_sol: bool,
+    #[serde(default)]
+    pub use_shared_accounts: bool,
+    #[serde(default)]
+    pub compute_unit_price_micro_lamports: Option<u64>,
+    #[serde(default)]
+    pub skip_user_accounts_rpc_calls: Option<bool>,
+}
+
+impl Default for BotIdentityConfig {
+    fn default() -> Self {
+        Self {
+            user_pubkey: None,
+            fee_account: None,
+            tip_account: None,
+            wrap_and_unwrap_sol: false,
+            use_shared_accounts: false,
+            compute_unit_price_micro_lamports: Some(1),
+            skip_user_accounts_rpc_calls: Some(true),
+        }
     }
 }
 
@@ -422,31 +497,4 @@ pub struct HealthCheckConfig {
     pub timeout_ms: Option<u64>,
     #[serde(default)]
     pub expected_status: Option<u16>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct HttpConfig {
-    #[serde(default = "HttpConfig::default_base_url")]
-    pub base_url: String,
-    #[serde(default = "HttpConfig::default_request_timeout_ms")]
-    pub request_timeout_ms: u64,
-}
-
-impl Default for HttpConfig {
-    fn default() -> Self {
-        Self {
-            base_url: "http://127.0.0.1:8080".to_string(),
-            request_timeout_ms: Self::default_request_timeout_ms(),
-        }
-    }
-}
-
-impl HttpConfig {
-    fn default_base_url() -> String {
-        "http://127.0.0.1:8080".to_string()
-    }
-
-    fn default_request_timeout_ms() -> u64 {
-        2_000
-    }
 }

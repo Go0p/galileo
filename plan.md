@@ -16,7 +16,6 @@
 ### 阶段 1：二进制生命周期强化（需求 1）
 - [x] 完善 `JupiterBinaryManager` 状态机：补齐异常退出检测、自动重启策略与状态上报。
 - [ ] 实现二进制版本锁定/回滚策略（例如通过版本缓存与校验摘要）。
-- [ ] 设计 CLI/HTTP 控制接口，支持远程触发 `start/stop/update/status`。
 - [x] 根据 `third_party/run-jup.sh` 整理出的常用启动参数，扩展 `JupiterConfig` 或预置参数生成逻辑（端口、host、线程数、DEX 过滤、Yellowstone 认证等），减少手动拼接 `args` 的负担。
 - 交付物：增强后的生命周期管理模块、操作说明文档。
 

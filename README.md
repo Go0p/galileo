@@ -40,6 +40,7 @@ https://github.com/ValidatorsDAO/solana-stream/blob/main/crate/solana-stream-sdk
 - 根目录提供的 `galileo.toml` 给出最小可运行示例，可直接复制后补全 RPC、Yellowstone 等敏感信息。
 - 更详细的字段说明与第三方脚本映射见 `docs/galileo_config_reference.md`。
 - 本地调试只想复用线上 Jupiter API 时，可将 `[jupiter.launch].disable_local_binary` 设为 `true`，跳过本地二进制启动。
+- 运行时 RPC / Jupiter API 端点配置集中在 `[bot]`，签名账户、共享账户等身份信息位于 `[bot.identity]`。
 - 启用 `[strategy]` 段并填写钱包、公链参数后，可执行 `galileo strategy` 启动套利循环（CTRL+C 可安全退出）。
 
 

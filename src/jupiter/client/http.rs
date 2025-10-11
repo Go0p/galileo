@@ -3,7 +3,7 @@ use std::time::Instant;
 use tracing::{debug, info};
 
 use super::types::{QuoteRequest, QuoteResponse, SwapRequest, SwapResponse};
-use crate::config::HttpConfig;
+use crate::config::BotConfig;
 use crate::jupiter::error::JupiterError;
 use crate::metrics::{LatencyMetadata, guard_with_metadata};
 
@@ -15,9 +15,9 @@ pub struct JupiterApiClient {
 }
 
 impl JupiterApiClient {
-    pub fn new(client: reqwest::Client, config: &HttpConfig) -> Self {
+    pub fn new(client: reqwest::Client, config: &BotConfig) -> Self {
         Self {
-            base_url: config.base_url.clone(),
+            base_url: config.jupiter_api_url.clone(),
             client,
             request_timeout: std::time::Duration::from_millis(config.request_timeout_ms),
         }

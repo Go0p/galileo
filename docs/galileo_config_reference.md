@@ -3,12 +3,12 @@
 本页整理了 `third_party/config.yaml.example` 中常用的 Jupiter 参数，并映射到 `galileo` 的结构化配置，以便快速完成自托管环境的迁移。示例配置可直接参考根目录下的 `galileo.toml`。
 
 ## 网络与监听
-- `rpc_url` → `[jupiter.launch].rpc_url`
+- `rpc_url` → `[bot].rpc_url`（策略运行时访问主链 RPC）
+- `yellowstone_grpc_url`/`yellowstone_grpc_token` → `[bot].yellowstone_grpc_url` / `[bot].yellowstone_grpc_token`
+- `jupiter_api_url` → `[bot].jupiter_api_url`（禁用本地 Jupiter 时指向在线 API）
 - `jupiter_local_port` → `[jupiter.launch].port`
 - `jup_bind_local_host` → `[jupiter.launch].host`
 - `jupiter_disable_local` → `[jupiter.launch].disable_local_binary`
-- `yellowstone_grpc_url`/`yellowstone_grpc_token` → `[jupiter.launch.yellowstone]`
-- `jupiter_api_url` → `[http].base_url`（用于客户端引用）
 - `auto_restart` → `[jupiter.process].auto_restart_minutes`
 - `max_retries`（如有）→ `[jupiter.process].max_restart_attempts`
 
@@ -55,11 +55,11 @@
 - `trade_range` / `trade_range_strategy` → `[strategy].trade_range` / `[strategy].trade_range_strategy`
 - `min_profit_threshold` → `[strategy].min_profit_threshold_lamports`
 - `max_tip_lamports` → `[strategy].max_tip_lamports`
-- `bot_config` → `[strategy.bot]`（`enable_reverse_trade`、`over_trade_process_delay_ms`、`static_tip_config` 等）
+- `bot_config` → `[strategy.controls]`（`enable_reverse_trade`、`over_trade_process_delay_ms`、`static_tip_config` 等）
 - `blind_config` → `[strategy.blind]`
 - `spam_config` → `[strategy.spam]`
 - `jito_engine`/`random_engine` → `[strategy.jito].engine_urls`、`random_engine`
-- `private_key`/`jito tip account` → `[strategy.identity].user_pubkey`、`tip_account`
+- `private_key`/`jito tip account` → `[bot.identity].user_pubkey`、`tip_account`
 
 ## 后续建议
 1. 根据环境补全 RPC、Yellowstone、Jito 等敏感信息。

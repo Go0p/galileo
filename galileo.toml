@@ -55,9 +55,21 @@ url = "http://127.0.0.1:18080/health"
 timeout_ms = 10000
 expected_status = 200
 
-[http]
-base_url = "http://127.0.0.1:8080"
+[bot]
+jupiter_api_url = "http://127.0.0.1:8080"
 request_timeout_ms = 2000
+rpc_url = "http://xxxx"
+yellowstone_grpc_url = "http://xxxx"
+yellowstone_grpc_token = ""
+
+[bot.identity]
+user_pubkey = "replace-with-your-pubkey"
+fee_account = ""
+tip_account = "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY"
+wrap_and_unwrap_sol = false
+use_shared_accounts = false
+compute_unit_price_micro_lamports = 1
+skip_user_accounts_rpc_calls = true
 
 [strategy]
 enabled = false
@@ -71,23 +83,16 @@ only_direct_routes = false
 restrict_intermediate_tokens = true
 quote_max_accounts = 20
 
-[strategy.bot]
+[strategy.controls]
 enable_reverse_trade = true
 enable_random_base_mint = false
 enable_sandwich_mitigation = true
 over_trade_process_delay_ms = 200
 
-[strategy.bot.static_tip_config]
+[strategy.controls.static_tip_config]
 enable_random = true
 static_tip_percentage = 0.75
 random_percentage = [0.5, 0.7, 0.8]
-
-[strategy.identity]
-user_pubkey = "replace-with-your-pubkey"
-wrap_and_unwrap_sol = false
-use_shared_accounts = false
-compute_unit_price_micro_lamports = 1
-tip_account = "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY"
 
 [strategy.jito]
 engine_urls = ["https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles"]

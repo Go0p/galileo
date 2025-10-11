@@ -34,15 +34,13 @@ pub struct StrategyConfig {
     #[serde(default)]
     pub quote_max_accounts: Option<u32>,
     #[serde(default)]
-    pub bot: BotConfig,
+    pub controls: TradeControlConfig,
     #[serde(default)]
     #[allow(dead_code)]
     pub blind: BlindConfig,
     #[serde(default)]
     #[allow(dead_code)]
     pub spam: SpamConfig,
-    #[serde(default)]
-    pub identity: StrategyIdentityConfig,
     #[serde(default)]
     #[allow(dead_code)]
     pub jito: JitoConfig,
@@ -63,10 +61,9 @@ impl Default for StrategyConfig {
             only_direct_routes: false,
             restrict_intermediate_tokens: Self::default_true(),
             quote_max_accounts: None,
-            bot: BotConfig::default(),
+            controls: TradeControlConfig::default(),
             blind: BlindConfig::default(),
             spam: SpamConfig::default(),
-            identity: StrategyIdentityConfig::default(),
             jito: JitoConfig::default(),
         }
     }
@@ -144,7 +141,11 @@ impl StrategyConfig {
     }
 
     pub fn trade_delay(&self) -> Duration {
-        let delay = self.bot.over_trade_process_delay_ms.unwrap_or(200).max(1);
+        let delay = self
+            .controls
+            .over_trade_process_delay_ms
+            .unwrap_or(200)
+            .max(1);
         Duration::from_millis(delay as u64)
     }
 }
@@ -192,7 +193,7 @@ impl TradeRangeBucket {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct BotConfig {
+pub struct TradeControlConfig {
     #[serde(default)]
     pub only_quote_dexs: Vec<String>,
     #[serde(default)]
@@ -206,10 +207,10 @@ pub struct BotConfig {
     #[serde(default)]
     pub over_trade_process_delay_ms: Option<u64>,
     #[serde(default)]
-    pub static_tip_config: StaticTipConfig,
+    pub static_tip_config: TipConfig,
 }
 
-impl Default for BotConfig {
+impl Default for TradeControlConfig {
     fn default() -> Self {
         Self {
             only_quote_dexs: Vec::new(),
@@ -217,22 +218,22 @@ impl Default for BotConfig {
             enable_random_base_mint: false,
             enable_sandwich_mitigation: true,
             over_trade_process_delay_ms: Some(200),
-            static_tip_config: StaticTipConfig::default(),
+            static_tip_config: TipConfig::default(),
         }
     }
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct StaticTipConfig {
+pub struct TipConfig {
     #[serde(default)]
     pub enable_random: bool,
-    #[serde(default = "StaticTipConfig::default_static_tip_percentage")]
+    #[serde(default = "TipConfig::default_static_tip_percentage")]
     pub static_tip_percentage: f64,
     #[serde(default)]
     pub random_percentage: Vec<f64>,
 }
 
-impl Default for StaticTipConfig {
+impl Default for TipConfig {
     fn default() -> Self {
         Self {
             enable_random: false,
@@ -242,7 +243,7 @@ impl Default for StaticTipConfig {
     }
 }
 
-impl StaticTipConfig {
+impl TipConfig {
     fn default_static_tip_percentage() -> f64 {
         0.5
     }
@@ -354,40 +355,6 @@ pub struct SpamNonceConfig {
     pub enabled: bool,
     #[serde(default)]
     pub max_accounts: u8,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-pub struct StrategyIdentityConfig {
-    #[serde(default)]
-    pub user_pubkey: Option<String>,
-    #[serde(default)]
-    pub fee_account: Option<String>,
-    #[serde(default)]
-    pub wrap_and_unwrap_sol: bool,
-    #[serde(default)]
-    pub use_shared_accounts: bool,
-    #[serde(default)]
-    pub compute_unit_price_micro_lamports: Option<u64>,
-    #[serde(default)]
-    pub skip_user_accounts_rpc_calls: Option<bool>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub tip_account: Option<String>,
-}
-
-impl Default for StrategyIdentityConfig {
-    fn default() -> Self {
-        Self {
-            user_pubkey: None,
-            fee_account: None,
-            wrap_and_unwrap_sol: false,
-            use_shared_accounts: false,
-            compute_unit_price_micro_lamports: None,
-            skip_user_accounts_rpc_calls: Some(true),
-            tip_account: None,
-        }
-    }
 }
 
 #[allow(dead_code)]

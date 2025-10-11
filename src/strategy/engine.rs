@@ -3,25 +3,31 @@ use std::convert::TryFrom;
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
+use crate::config::{BotConfig, BotIdentityConfig};
 use crate::jupiter::client::http::JupiterApiClient;
 use crate::jupiter::client::types::{QuoteRequest, QuoteResponse, SwapRequest};
 
-use super::config::{StrategyConfig, StrategyIdentityConfig};
+use super::config::StrategyConfig;
 use super::error::{StrategyError, StrategyResult};
 use super::tip::TipCalculator;
 use super::types::{ArbitrageOpportunity, TradePair};
 
 pub struct ArbitrageEngine {
     config: StrategyConfig,
+    _bot: BotConfig,
     client: JupiterApiClient,
     tip_calculator: TipCalculator,
     pairs: Vec<TradePair>,
     trade_amounts: Vec<u64>,
-    identity: StrategyIdentityConfig,
+    identity: BotIdentityConfig,
 }
 
 impl ArbitrageEngine {
-    pub fn new(config: StrategyConfig, client: JupiterApiClient) -> StrategyResult<Self> {
+    pub fn new(
+        config: StrategyConfig,
+        bot: BotConfig,
+        client: JupiterApiClient,
+    ) -> StrategyResult<Self> {
         if !config.is_enabled() {
             return Err(StrategyError::Disabled);
         }
@@ -33,7 +39,7 @@ impl ArbitrageEngine {
             ));
         }
 
-        if config.bot.enable_reverse_trade {
+        if config.controls.enable_reverse_trade {
             let mut reversed: Vec<TradePair> = pairs.iter().map(|p| p.reversed()).collect();
             pairs.extend(reversed.drain(..));
         }
@@ -45,18 +51,19 @@ impl ArbitrageEngine {
             ));
         }
 
-        let identity = config.identity.clone();
+        let identity = bot.identity.clone();
         if identity.user_pubkey.is_none() {
             return Err(StrategyError::InvalidConfig(
-                "strategy.identity.user_pubkey".into(),
+                "bot.identity.user_pubkey".into(),
             ));
         }
 
         let tip_calculator =
-            TipCalculator::new(&config.bot.static_tip_config, config.max_tip_lamports);
+            TipCalculator::new(&config.controls.static_tip_config, config.max_tip_lamports);
 
         Ok(Self {
             config,
+            _bot: bot,
             client,
             tip_calculator,
             pairs,
@@ -176,10 +183,10 @@ impl ArbitrageEngine {
                 .extra
                 .insert("maxAccounts".to_string(), max_accounts.to_string());
         }
-        if !self.config.bot.only_quote_dexs.is_empty() {
+        if !self.config.controls.only_quote_dexs.is_empty() {
             request.extra.insert(
                 "onlyDexes".to_string(),
-                self.config.bot.only_quote_dexs.join(","),
+                self.config.controls.only_quote_dexs.join(","),
             );
         }
         request
