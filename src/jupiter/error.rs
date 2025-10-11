@@ -1,0 +1,43 @@
+use std::path::PathBuf;
+
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum JupiterError {
+    #[error("failed to call GitHub API: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("failed to parse response body: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("release asset matching host not found; host triple candidates: {0}")]
+    AssetNotFound(String),
+    #[error("binary is not installed at {0}")]
+    BinaryMissing(PathBuf),
+    #[error("process is already running")]
+    AlreadyRunning,
+    #[error("no process is running")]
+    NotRunning,
+    #[error("download failed for {url}: {source}")]
+    DownloadFailed {
+        url: String,
+        #[source]
+        source: reqwest::Error,
+    },
+    #[error("download returned status {status} for {url}")]
+    DownloadStatus {
+        url: String,
+        status: reqwest::StatusCode,
+    },
+    #[error("archive extraction failed: {0}")]
+    ExtractionFailed(String),
+    #[error("health check failed: {0}")]
+    HealthCheck(String),
+    #[error("API request to {endpoint} failed with status {status}")]
+    ApiStatus {
+        endpoint: String,
+        status: reqwest::StatusCode,
+    },
+    #[error("unexpected response schema: {0}")]
+    Schema(String),
+}

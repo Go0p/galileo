@@ -1,0 +1,202 @@
+use std::path::Path;
+use std::time::Duration;
+
+use tracing::{info, warn};
+
+use super::error::JupiterError;
+use super::process::{shutdown_process, spawn_process};
+use super::types::{BinaryInstall, BinaryStatus, JupiterBinaryManager};
+use super::updater::{
+    USER_AGENT, download_and_install, fetch_latest_release, select_asset_for_host,
+};
+use crate::config::{HealthCheckConfig, JupiterConfig};
+use crate::metrics::{LatencyMetadata, guard_with_metadata};
+
+impl JupiterBinaryManager {
+    pub fn new(config: JupiterConfig) -> Result<Self, JupiterError> {
+        let client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
+
+        Ok(Self {
+            config,
+            client,
+            state: Default::default(),
+        })
+    }
+
+    pub async fn status(&self) -> BinaryStatus {
+        let state = self.state.lock().await;
+        state.status
+    }
+
+    pub async fn ensure_install(&self) -> Result<BinaryInstall, JupiterError> {
+        {
+            let state = self.state.lock().await;
+            if let Some(install) = &state.install {
+                if binary_exists(&install.path).await {
+                    return Ok(install.clone());
+                }
+            }
+        }
+
+        if self.config.disable_update {
+            let path = self.config.binary_path();
+            if binary_exists(&path).await {
+                return Ok(BinaryInstall {
+                    version: "unknown".to_string(),
+                    path,
+                    updated_at: std::time::SystemTime::now(),
+                });
+            }
+            return Err(JupiterError::BinaryMissing(path));
+        }
+
+        self.update().await
+    }
+
+    pub async fn update(&self) -> Result<BinaryInstall, JupiterError> {
+        {
+            let mut state = self.state.lock().await;
+            state.status = BinaryStatus::Updating;
+        }
+
+        let metadata = LatencyMetadata::new(
+            [("stage".to_string(), "update".to_string())]
+                .into_iter()
+                .collect(),
+        );
+        let guard = guard_with_metadata("jupiter.update", metadata);
+
+        let release = fetch_latest_release(
+            &self.client,
+            &self.config.repo_owner,
+            &self.config.repo_name,
+        )
+        .await?;
+        info!(target: "jupiter", version = %release.tag_name, "fetched latest release metadata");
+        let asset = select_asset_for_host(&release, &self.config)?;
+        info!(target: "jupiter", asset = %asset.name, "selected release asset");
+        let install =
+            download_and_install(&self.client, &self.config, &asset, &release.tag_name).await?;
+
+        {
+            let mut state = self.state.lock().await;
+            state.install = Some(install.clone());
+            state.status = BinaryStatus::Stopped;
+        }
+
+        guard.finish();
+        Ok(install)
+    }
+
+    pub async fn start(&self, force_update: bool) -> Result<(), JupiterError> {
+        if force_update {
+            self.update().await?;
+        }
+
+        let install = self.ensure_install().await?;
+
+        {
+            let state = self.state.lock().await;
+            if state.process.is_some() {
+                return Err(JupiterError::AlreadyRunning);
+            }
+        }
+
+        self.transition(BinaryStatus::Starting).await;
+
+        let process = spawn_process(&self.config, &install).await?;
+
+        {
+            let mut state = self.state.lock().await;
+            state.process = Some(process);
+            state.install = Some(install.clone());
+            state.status = BinaryStatus::Running;
+        }
+
+        info!(
+            target: "jupiter",
+            version = install.version,
+            path = %install.path.display(),
+            "jupiter binary started"
+        );
+
+        if let Some(health) = &self.config.health_check {
+            self.wait_for_health(health).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn stop(&self) -> Result<(), JupiterError> {
+        let process = {
+            let mut state = self.state.lock().await;
+            match state.process.take() {
+                Some(process) => {
+                    state.status = BinaryStatus::Stopping;
+                    process
+                }
+                None => return Err(JupiterError::NotRunning),
+            }
+        };
+
+        shutdown_process(process).await?;
+
+        self.transition(BinaryStatus::Stopped).await;
+
+        Ok(())
+    }
+
+    pub async fn restart(&self) -> Result<(), JupiterError> {
+        let _ = self.stop().await;
+        self.start(false).await
+    }
+
+    pub async fn wait_for_health(&self, config: &HealthCheckConfig) -> Result<(), JupiterError> {
+        let timeout = Duration::from_millis(config.timeout_ms.unwrap_or(5_000));
+        let expected_status = config.expected_status.unwrap_or(200);
+        let start = std::time::Instant::now();
+        loop {
+            let response = self.client.get(&config.url).timeout(timeout).send().await;
+
+            match response {
+                Ok(resp) if resp.status().as_u16() == expected_status => {
+                    info!(
+                        target: "jupiter",
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        "health check succeeded"
+                    );
+                    return Ok(());
+                }
+                Ok(resp) => {
+                    warn!(
+                        target: "jupiter",
+                        status = resp.status().as_u16(),
+                        expected_status,
+                        "health check status mismatch"
+                    );
+                }
+                Err(err) => {
+                    warn!(target: "jupiter", error = %err, "health check request failed");
+                }
+            }
+
+            if start.elapsed() > timeout {
+                return Err(JupiterError::HealthCheck(format!(
+                    "timed out after {:?} waiting for {}",
+                    timeout, config.url
+                )));
+            }
+
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    async fn transition(&self, status: BinaryStatus) {
+        let mut state = self.state.lock().await;
+        state.status = status;
+    }
+}
+
+async fn binary_exists(path: &Path) -> bool {
+    tokio::fs::metadata(path).await.is_ok()
+}

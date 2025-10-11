@@ -1,0 +1,33 @@
+[package]
+name = "galileo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+solana-client = "3.0.6"
+solana-sdk = "3.0.0"
+solana-program = "3.0.0"
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+async-trait = "0.1"
+bytes = "1.6"
+dashmap = "6.1.0"
+flate2 = "1.0"
+futures = "0.3"
+once_cell = "1.19"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_with = "3.7"
+toml = "0.9.8"
+tempfile = "3.10"
+thiserror = "2.0.17"
+tokio = { version = "1.39", features = ["macros", "rt-multi-thread", "process", "signal", "fs", "io-util", "time"] }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
+which = "8.0.0"
+walkdir = "2.5"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+tar = "0.4"
