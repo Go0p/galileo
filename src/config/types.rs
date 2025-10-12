@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::Deserialize;
-use serde_with::{DisplayFromStr, serde_as};
+use serde::de::{self, Deserializer};
+use serde_with::serde_as;
 
 use crate::strategy::config::StrategyConfig;
 
@@ -304,6 +305,10 @@ pub struct JupiterCoreConfig {
     pub use_local_market_cache: bool,
     #[serde(default = "super::default_market_cache")]
     pub market_cache: String,
+    #[serde(default = "super::default_market_cache_download_url")]
+    pub market_cache_download_url: String,
+    #[serde(default)]
+    pub exclude_other_dex_program_ids: bool,
     #[serde(default = "super::default_market_mode")]
     pub market_mode: MarketMode,
 }
@@ -388,10 +393,6 @@ impl JupiterConfig {
             args.push(url.clone());
         }
 
-        if core.use_local_market_cache {
-            args.push("--use-local-market-cache".to_string());
-        }
-
         if !core.market_cache.trim().is_empty() {
             args.push("--market-cache".to_string());
             args.push(core.market_cache.clone());
@@ -467,15 +468,42 @@ impl JupiterConfig {
     }
 }
 
-#[serde_as]
 #[derive(Debug, Clone, Deserialize)]
 pub struct HealthCheckConfig {
     pub url: String,
-    #[serde(default)]
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    pub timeout_ms: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_option_u64")]
+    pub timeout: Option<u64>,
     #[serde(default)]
     pub expected_status: Option<u16>,
+}
+
+fn deserialize_option_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NumericOrString {
+        Int(u64),
+        Str(String),
+    }
+
+    let opt = Option::<NumericOrString>::deserialize(deserializer)?;
+    match opt {
+        Some(NumericOrString::Int(value)) => Ok(Some(value)),
+        Some(NumericOrString::Str(text)) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                trimmed
+                    .parse::<u64>()
+                    .map(Some)
+                    .map_err(|err| de::Error::custom(format!("无法解析数字 {trimmed}: {err}")))
+            }
+        }
+        None => Ok(None),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

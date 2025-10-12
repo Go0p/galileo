@@ -57,6 +57,10 @@ pub(crate) fn default_market_cache() -> String {
     "https://cache.jup.ag/markets?v=6".to_string()
 }
 
+pub(crate) fn default_market_cache_download_url() -> String {
+    default_market_cache()
+}
+
 pub(crate) fn default_market_mode() -> cfg::MarketMode {
     cfg::MarketMode::Remote
 }
@@ -273,6 +277,8 @@ impl Default for cfg::JupiterCoreConfig {
             metrics_port: default_metrics_port(),
             use_local_market_cache: false,
             market_cache: default_market_cache(),
+            market_cache_download_url: default_market_cache_download_url(),
+            exclude_other_dex_program_ids: false,
             market_mode: default_market_mode(),
         }
     }

@@ -61,7 +61,7 @@ impl JupiterApiClient {
 
         let value: Value = response.json().await?;
         let quote = QuoteResponse::try_from_value(value)
-            .map_err(|err| JupiterError::Schema(format!("invalid quote response: {err}")))?;
+            .map_err(|err| JupiterError::Schema(format!("解析报价响应失败: {err}")))?;
 
         guard.finish();
 
@@ -71,10 +71,10 @@ impl JupiterApiClient {
                 target: "latency",
                 elapsed_ms,
                 api_time = api_time * 1_000.0,
-                "quote latency comparison"
+                "对比 Jupiter 报价耗时"
             );
         } else {
-            info!(target: "latency", elapsed_ms, "quote latency recorded");
+            info!(target: "latency", elapsed_ms, "记录到报价耗时");
         }
         info!(
             target: "jupiter::quote",
@@ -84,7 +84,7 @@ impl JupiterApiClient {
             out_amount = %quote.out_amount,
             other_amount_threshold = ?quote.other_amount_threshold,
             elapsed_ms,
-            "quote completed"
+            "报价请求完成"
         );
 
         Ok(quote)
@@ -123,9 +123,8 @@ impl JupiterApiClient {
         }
 
         let value: Value = response.json().await?;
-        let instructions = SwapInstructionsResponse::try_from_value(value).map_err(|err| {
-            JupiterError::Schema(format!("invalid swap-instructions response: {err}"))
-        })?;
+        let instructions = SwapInstructionsResponse::try_from_value(value)
+            .map_err(|err| JupiterError::Schema(format!("解析 Swap 指令响应失败: {err}")))?;
 
         guard.finish();
         let elapsed_ms = start.elapsed().as_micros() as f64 / 1_000.0;
@@ -137,7 +136,7 @@ impl JupiterApiClient {
             prioritization_fee_lamports = ?instructions.prioritization_fee_lamports,
             setup_ix = instructions.setup_instructions.len(),
             other_ix = instructions.other_instructions.len(),
-            "swap-instructions response received"
+            "已获取 Swap 指令响应"
         );
 
         Ok(instructions)
@@ -220,22 +219,22 @@ impl QuoteResponse {
         let input_mint = raw
             .get("inputMint")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "inputMint missing".to_string())?
+            .ok_or_else(|| "缺少 inputMint 字段".to_string())?
             .to_string();
         let output_mint = raw
             .get("outputMint")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "outputMint missing".to_string())?
+            .ok_or_else(|| "缺少 outputMint 字段".to_string())?
             .to_string();
         let in_amount = raw
             .get("inAmount")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "inAmount missing".to_string())?
+            .ok_or_else(|| "缺少 inAmount 字段".to_string())?
             .to_string();
         let out_amount = raw
             .get("outAmount")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "outAmount missing".to_string())?
+            .ok_or_else(|| "缺少 outAmount 字段".to_string())?
             .to_string();
 
         let other_amount_threshold = raw
@@ -325,7 +324,7 @@ impl SwapInstructionsResponse {
             parse_instruction_array(raw.get("setupInstructions")).map_err(|err| err.to_string())?;
         let swap_instruction = parse_instruction(
             raw.get("swapInstruction")
-                .ok_or_else(|| "swapInstruction missing".to_string())?,
+                .ok_or_else(|| "缺少 swapInstruction 字段".to_string())?,
         )
         .map_err(|err| err.to_string())?;
         let cleanup_instruction =
@@ -335,7 +334,7 @@ impl SwapInstructionsResponse {
 
         let address_lookup_table_addresses = parse_pubkey_array(
             raw.get("addressLookupTableAddresses")
-                .ok_or_else(|| "addressLookupTableAddresses missing".to_string())?,
+                .ok_or_else(|| "缺少 addressLookupTableAddresses 字段".to_string())?,
         )
         .map_err(|err| err.to_string())?;
 
@@ -382,7 +381,7 @@ fn parse_instruction_array(node: Option<&Value>) -> Result<Vec<Instruction>, Jup
         return Ok(Vec::new());
     };
     let Some(items) = array.as_array() else {
-        return Err(JupiterError::Schema("expected instruction array".into()));
+        return Err(JupiterError::Schema("期望指令数组".into()));
     };
     items.iter().map(parse_instruction).collect()
 }
@@ -392,14 +391,14 @@ fn parse_instruction(value: &Value) -> Result<Instruction, JupiterError> {
     let program_id = parse_pubkey(
         value
             .get("programId")
-            .ok_or_else(|| JupiterError::Schema("instruction.programId missing".into()))?,
+            .ok_or_else(|| JupiterError::Schema("缺少 instruction.programId 字段".into()))?,
     )?;
     let accounts_value = value
         .get("accounts")
-        .ok_or_else(|| JupiterError::Schema("instruction.accounts missing".into()))?;
+        .ok_or_else(|| JupiterError::Schema("缺少 instruction.accounts 字段".into()))?;
     let accounts_array = accounts_value
         .as_array()
-        .ok_or_else(|| JupiterError::Schema("instruction.accounts should be array".into()))?;
+        .ok_or_else(|| JupiterError::Schema("instruction.accounts 应该是数组".into()))?;
     let mut accounts = Vec::with_capacity(accounts_array.len());
     for account in accounts_array {
         accounts.push(parse_account_meta(account)?);
@@ -407,10 +406,10 @@ fn parse_instruction(value: &Value) -> Result<Instruction, JupiterError> {
     let data_str = value
         .get("data")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| JupiterError::Schema("instruction.data missing".into()))?;
+        .ok_or_else(|| JupiterError::Schema("缺少 instruction.data 字段".into()))?;
     let data = STANDARD
         .decode(data_str)
-        .map_err(|err| JupiterError::Schema(format!("failed to decode instruction data: {err}")))?;
+        .map_err(|err| JupiterError::Schema(format!("解码指令数据失败: {err}")))?;
     Ok(Instruction {
         program_id,
         accounts,
@@ -423,16 +422,16 @@ fn parse_account_meta(value: &Value) -> Result<AccountMeta, JupiterError> {
     let pubkey = parse_pubkey(
         value
             .get("pubkey")
-            .ok_or_else(|| JupiterError::Schema("account.pubkey missing".into()))?,
+            .ok_or_else(|| JupiterError::Schema("缺少 account.pubkey 字段".into()))?,
     )?;
     let is_signer = value
         .get("isSigner")
         .and_then(|v| v.as_bool())
-        .ok_or_else(|| JupiterError::Schema("account.isSigner missing".into()))?;
+        .ok_or_else(|| JupiterError::Schema("缺少 account.isSigner 字段".into()))?;
     let is_writable = value
         .get("isWritable")
         .and_then(|v| v.as_bool())
-        .ok_or_else(|| JupiterError::Schema("account.isWritable missing".into()))?;
+        .ok_or_else(|| JupiterError::Schema("缺少 account.isWritable 字段".into()))?;
     Ok(AccountMeta {
         pubkey,
         is_signer,
@@ -444,7 +443,7 @@ fn parse_account_meta(value: &Value) -> Result<AccountMeta, JupiterError> {
 fn parse_pubkey_array(value: &Value) -> Result<Vec<Pubkey>, JupiterError> {
     let arr = value
         .as_array()
-        .ok_or_else(|| JupiterError::Schema("expected array of pubkeys".into()))?;
+        .ok_or_else(|| JupiterError::Schema("期望公钥数组".into()))?;
     let mut result = Vec::with_capacity(arr.len());
     for item in arr {
         result.push(parse_pubkey(item)?);
@@ -456,6 +455,6 @@ fn parse_pubkey_array(value: &Value) -> Result<Vec<Pubkey>, JupiterError> {
 fn parse_pubkey(value: &Value) -> Result<Pubkey, JupiterError> {
     let s = value
         .as_str()
-        .ok_or_else(|| JupiterError::Schema("expected string pubkey".into()))?;
-    Pubkey::from_str(s).map_err(|err| JupiterError::Schema(format!("invalid pubkey {s}: {err}")))
+        .ok_or_else(|| JupiterError::Schema("期望字符串公钥".into()))?;
+    Pubkey::from_str(s).map_err(|err| JupiterError::Schema(format!("公钥 {s} 无效: {err}")))
 }

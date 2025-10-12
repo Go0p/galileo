@@ -61,7 +61,7 @@ pub async fn fetch_recent_releases(
 
     if !response.status().is_success() {
         return Err(JupiterError::Schema(format!(
-            "GitHub returned non-success status {}",
+            "GitHub 返回非成功状态 {}",
             response.status()
         )));
     }
@@ -70,7 +70,7 @@ pub async fn fetch_recent_releases(
     let json: serde_json::Value = serde_json::from_str(&body)?;
     let releases = json
         .as_array()
-        .ok_or_else(|| JupiterError::Schema("releases payload is not an array".to_string()))?;
+        .ok_or_else(|| JupiterError::Schema("Release 响应不是数组".to_string()))?;
 
     let mut infos = Vec::new();
     for release in releases.iter().take(limit) {
@@ -117,7 +117,7 @@ async fn fetch_release_by_url(
 
     if !response.status().is_success() {
         return Err(JupiterError::Schema(format!(
-            "GitHub returned non-success status {}",
+            "GitHub 返回非成功状态 {}",
             response.status()
         )));
     }
@@ -125,9 +125,8 @@ async fn fetch_release_by_url(
     let body = response.text().await?;
 
     let json: serde_json::Value = serde_json::from_str(&body)?;
-    parse_release(&json)?.ok_or_else(|| {
-        JupiterError::Schema("release payload missing required tag_name field".to_string())
-    })
+    parse_release(&json)?
+        .ok_or_else(|| JupiterError::Schema("Release 响应缺少必需的 tag_name 字段".to_string()))
 }
 
 fn parse_release(value: &serde_json::Value) -> Result<Option<ReleaseInfo>, JupiterError> {
@@ -244,7 +243,7 @@ pub async fn download_and_install(
             target: "jupiter",
             asset = %asset.name,
             total_bytes = total_size,
-            "started downloading release asset"
+            "开始下载 Release 资源"
         );
     }
     let mut stream = response.bytes_stream();
@@ -277,14 +276,14 @@ pub async fn download_and_install(
                         downloaded_bytes = downloaded,
                         total_bytes = total_size,
                         progress_pct = format_args!("{percent:.1}"),
-                        "downloading release asset"
+                        "正在下载 Release 资源"
                     );
                 } else {
                     info!(
                         target: "jupiter",
                         asset = %asset.name,
                         downloaded_bytes = downloaded,
-                        "downloading release asset"
+                        "正在下载 Release 资源"
                     );
                 }
                 last_logged_bytes = downloaded;
@@ -298,7 +297,7 @@ pub async fn download_and_install(
             target: "jupiter",
             asset = %asset.name,
             downloaded_bytes = downloaded,
-            "download completed, preparing to install"
+            "下载完成，准备安装"
         );
     }
     if let Some(pb) = progress_bar.take() {
@@ -333,7 +332,7 @@ pub async fn download_and_install(
         size_bytes = asset.size,
         content_type = ?asset.content_type,
         updated_at = ?updated_at,
-        "installed Jupiter binary"
+        "Jupiter 二进制安装完成"
     );
 
     Ok(BinaryInstall {
@@ -356,7 +355,7 @@ async fn install_asset(temp_path: &Path, config: &JupiterConfig) -> Result<PathB
         fs::copy(temp_path, &target_path).await?;
         set_executable(&target_path).map_err(|err| {
             JupiterError::ExtractionFailed(format!(
-                "failed to set permissions on {}: {err}",
+                "设置 {} 权限失败: {err}",
                 target_path.display()
             ))
         })?;
@@ -381,10 +380,7 @@ async fn extract_tarball(
             .unpack(&install_dir)
             .map_err(|err| JupiterError::ExtractionFailed(err.to_string()))?;
         find_binary(&install_dir, &binary_name).ok_or_else(|| {
-            JupiterError::ExtractionFailed(format!(
-                "binary {} not found after extracting tarball",
-                binary_name
-            ))
+            JupiterError::ExtractionFailed(format!("解压 tar 包后未找到二进制 {}", binary_name))
         })
     })
     .await
@@ -434,10 +430,7 @@ async fn extract_zip(
         }
 
         find_binary(&install_dir, &binary_name).ok_or_else(|| {
-            JupiterError::ExtractionFailed(format!(
-                "binary {} not found after extracting zip",
-                binary_name
-            ))
+            JupiterError::ExtractionFailed(format!("解压 zip 后未找到二进制 {}", binary_name))
         })
     })
     .await
@@ -461,7 +454,7 @@ fn set_executable(path: &Path) -> Result<(), JupiterError> {
         // Windows executes based on extension; ensure .exe
         if path.extension() != Some(OsStr::new("exe")) {
             warn!(
-                "binary {} lacks .exe extension on Windows; ensure compatibility",
+                "二进制 {} 在 Windows 上缺少 .exe 扩展名，请确认兼容性",
                 path.display()
             );
         }
@@ -483,10 +476,7 @@ fn find_binary(root: &Path, binary_name: &str) -> Option<PathBuf> {
         {
             let path = entry.path().to_path_buf();
             if let Err(err) = set_executable(&path) {
-                warn!(
-                    "failed to set executable bit on {}: {err:?}",
-                    path.display()
-                );
+                warn!("为 {} 设置可执行权限失败: {err:?}", path.display());
             }
             return Some(path);
         }

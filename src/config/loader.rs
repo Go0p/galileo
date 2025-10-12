@@ -118,10 +118,26 @@ where
         source,
     })?;
 
-    let config: T = toml::from_str(&contents).map_err(|err| ConfigError::Parse {
+    let raw_value: toml::Value = toml::from_str(&contents).map_err(|err| ConfigError::Parse {
         path: path.to_path_buf(),
         message: err.to_string(),
     })?;
+
+    let config: T = if let Some(subtable) = raw_value.get("jupiter") {
+        let nested = toml::to_string(subtable).map_err(|err| ConfigError::Parse {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?;
+        toml::from_str(&nested).map_err(|err| ConfigError::Parse {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?
+    } else {
+        toml::from_str(&contents).map_err(|err| ConfigError::Parse {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?
+    };
 
     Ok(Some(config))
 }

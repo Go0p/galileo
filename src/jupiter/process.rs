@@ -7,19 +7,17 @@ use tracing::{error, info, warn};
 
 use super::error::JupiterError;
 use super::types::{BinaryInstall, ProcessHandle};
-use crate::config::{JupiterConfig, LaunchOverrides};
+use crate::config::JupiterConfig;
 
 pub async fn spawn_process(
     config: &JupiterConfig,
-    overrides: &LaunchOverrides,
     install: &BinaryInstall,
+    args: &[String],
 ) -> Result<ProcessHandle, JupiterError> {
-    let effective_args = config.effective_args(overrides);
-
     let mut command = Command::new(&install.path);
     command
         .current_dir(&config.binary.install_dir)
-        .args(&effective_args)
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.kill_on_drop(false);
@@ -63,13 +61,13 @@ pub async fn shutdown_process(mut handle: ProcessHandle) -> Result<(), JupiterEr
                 target: "jupiter",
                 code = status.code(),
                 success = status.success(),
-                "process already exited"
+                "Jupiter 进程已提前退出"
             );
             return Ok(());
         }
         Ok(None) => {
             if let Err(err) = handle.child.start_kill() {
-                warn!(target: "jupiter", error = %err, "failed to send kill signal");
+                warn!(target: "jupiter", error = %err, "发送终止信号失败");
             }
         }
         Err(err) => return Err(err.into()),
@@ -81,7 +79,7 @@ pub async fn shutdown_process(mut handle: ProcessHandle) -> Result<(), JupiterEr
                 target: "jupiter",
                 code = status.code(),
                 success = status.success(),
-                "process exited"
+                "Jupiter 进程已退出"
             );
             if let Some(task) = stdout_task {
                 task.abort();
@@ -108,7 +106,12 @@ where
                 }
                 Ok(None) => break,
                 Err(err) => {
-                    error!(target: "jupiter::process", stream, error = %err, "failed to read line");
+                    error!(
+                        target: "jupiter::process",
+                        stream,
+                        error = %err,
+                        "读取进程输出失败"
+                    );
                     break;
                 }
             }

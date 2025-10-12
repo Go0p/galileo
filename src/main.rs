@@ -320,7 +320,14 @@ fn resolve_jupiter_defaults(
         ));
     }
 
-    if jupiter.launch.yellowstone.is_none() {
+    let needs_yellowstone = jupiter
+        .launch
+        .yellowstone
+        .as_ref()
+        .map(|cfg| cfg.endpoint.trim().is_empty())
+        .unwrap_or(true);
+
+    if needs_yellowstone {
         if let Some(endpoint) = &global.yellowstone_grpc_url {
             let trimmed = endpoint.trim();
             if !trimmed.is_empty() {

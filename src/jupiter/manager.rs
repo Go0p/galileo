@@ -1,8 +1,10 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{Duration, SystemTime};
 
-use tokio::process::Command;
+use serde_json::Value;
+use tokio::{fs, process::Command};
 use tracing::{info, warn};
 
 use super::error::JupiterError;
@@ -59,6 +61,24 @@ impl JupiterBinaryManager {
             }
         }
 
+        let binary_path = self.config.binary_path();
+        if binary_exists(&binary_path).await {
+            let version = read_version_file(&self.config.binary.install_dir)
+                .await
+                .unwrap_or_else(|| "unknown".to_string());
+            let install = BinaryInstall {
+                version,
+                path: canonicalize_path(binary_path).await,
+                updated_at: SystemTime::now(),
+            };
+            {
+                let mut state = self.state.lock().await;
+                state.install = Some(install.clone());
+                state.status = BinaryStatus::Stopped;
+            }
+            return Ok(install);
+        }
+
         self.update(None).await
     }
 
@@ -82,7 +102,12 @@ impl JupiterBinaryManager {
             Some(tag) => fetch_release_by_tag(&self.client, owner, repo, tag).await?,
             None => fetch_latest_release(&self.client, owner, repo).await?,
         };
-        info!(target: "jupiter", version = %release.tag_name, asset_count = release.assets.len(), "fetched latest release metadata");
+        info!(
+            target: "jupiter",
+            version = %release.tag_name,
+            asset_count = release.assets.len(),
+            "已获取最新 Release 元数据"
+        );
         let asset = select_asset_for_host(&release, &self.config)?;
         info!(
             target: "jupiter",
@@ -90,7 +115,7 @@ impl JupiterBinaryManager {
             asset_id = asset.id,
             size_bytes = asset.size,
             content_type = ?asset.content_type,
-            "selected release asset"
+            "已选择匹配的 Release 资源"
         );
 
         let binary_path = self.config.binary_path();
@@ -107,7 +132,7 @@ impl JupiterBinaryManager {
                             target: "jupiter",
                             version = %install.version,
                             path = %install.path.display(),
-                            "local Jupiter binary already up-to-date; skipping download"
+                            "本地 Jupiter 二进制已是最新版本，跳过下载"
                         );
                         {
                             let mut state = self.state.lock().await;
@@ -123,7 +148,7 @@ impl JupiterBinaryManager {
                     info!(
                         target: "jupiter",
                         path = %abs_path.display(),
-                        "found existing Jupiter binary without version metadata; skipping automatic update"
+                        "发现已有 Jupiter 二进制但缺少版本信息，跳过自动更新"
                     );
                     if let Err(err) =
                         write_version_file(&self.config.binary.install_dir, &release.tag_name).await
@@ -131,7 +156,7 @@ impl JupiterBinaryManager {
                         warn!(
                             target: "jupiter",
                             error = %err,
-                            "failed to record Jupiter version metadata; future runs may re-check releases"
+                            "记录 Jupiter 版本信息失败，后续运行将重新检查 Release"
                         );
                     }
                     let install = BinaryInstall {
@@ -173,10 +198,7 @@ impl JupiterBinaryManager {
         self.ensure_monitor_task().await;
 
         if self.disable_local_binary {
-            info!(
-                target: "jupiter",
-                "local jupiter binary disabled; skipping binary start"
-            );
+            info!(target: "jupiter", "本地 Jupiter 二进制已禁用，跳过启动");
             self.transition(BinaryStatus::Running).await;
             return Ok(());
         }
@@ -196,7 +218,18 @@ impl JupiterBinaryManager {
 
         self.transition(BinaryStatus::Starting).await;
 
-        let process = spawn_process(&self.config, &self.launch_overrides, &install).await?;
+        self.prepare_local_market_cache().await?;
+
+        let effective_args = self.config.effective_args(&self.launch_overrides);
+        let command_line = format_command(&install.path, &effective_args);
+        info!(
+            target: "jupiter",
+            command = %command_line,
+            "准备启动 Jupiter 二进制进程"
+        );
+
+        let process = spawn_process(&self.config, &install, &effective_args).await?;
+        let pid = process.child.id();
 
         {
             let mut state = self.state.lock().await;
@@ -206,13 +239,25 @@ impl JupiterBinaryManager {
             state.restart_attempts = 0;
         }
 
-        info!(
-            target: "jupiter",
-            version = %install.version,
-            path = %install.path.display(),
-            updated_at = ?install.updated_at,
-            "jupiter binary started"
-        );
+        match pid {
+            Some(pid) => info!(
+                target: "jupiter",
+                version = %install.version,
+                path = %install.path.display(),
+                updated_at = ?install.updated_at,
+                pid,
+                command = %command_line,
+                "Jupiter 二进制已启动"
+            ),
+            None => info!(
+                target: "jupiter",
+                version = %install.version,
+                path = %install.path.display(),
+                updated_at = ?install.updated_at,
+                command = %command_line,
+                "Jupiter 二进制已启动（PID 未获取到）"
+            ),
+        };
 
         if let Some(health) = &self.config.health_check {
             if let Err(err) = self.wait_for_health(health).await {
@@ -239,7 +284,7 @@ impl JupiterBinaryManager {
                         info!(
                             target: "jupiter",
                             timeout_ms = self.config.process.graceful_shutdown_timeout_ms,
-                            "initiating graceful shutdown"
+                            "开始执行优雅关闭"
                         );
                     }
                     process
@@ -258,6 +303,130 @@ impl JupiterBinaryManager {
     pub async fn restart(&self) -> Result<(), JupiterError> {
         let _ = self.stop().await;
         self.start(false).await
+    }
+
+    async fn prepare_local_market_cache(&self) -> Result<(), JupiterError> {
+        if !self.config.core.use_local_market_cache {
+            return Ok(());
+        }
+
+        let Some(local_path) = market_cache_local_path(
+            &self.config.core.market_cache,
+            &self.config.binary.install_dir,
+        ) else {
+            return Err(JupiterError::Schema(
+                "启用 use_local_market_cache 时，market_cache 必须为本地文件路径".into(),
+            ));
+        };
+
+        let existed = fs::metadata(&local_path).await.is_ok();
+        if existed {
+            info!(
+                target: "jupiter",
+                path = %local_path.display(),
+                "检测到已存在的市场缓存文件，将刷新"
+            );
+        }
+
+        if let Some(parent) = local_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+
+        let download_url = self.config.core.market_cache_download_url.trim();
+        if download_url.is_empty() {
+            return Err(JupiterError::Schema(
+                "启用 use_local_market_cache 时，需提供 market_cache_download_url".into(),
+            ));
+        }
+        let url = download_url.to_string();
+        info!(
+            target: "jupiter",
+            download_url = %url,
+            path = %local_path.display(),
+            "正在下载市场缓存文件"
+        );
+
+        let response =
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|source| JupiterError::DownloadFailed {
+                    url: url.clone(),
+                    source,
+                })?;
+        let response =
+            response
+                .error_for_status()
+                .map_err(|source| JupiterError::DownloadFailed {
+                    url: url.clone(),
+                    source,
+                })?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|source| JupiterError::DownloadFailed {
+                url: url.clone(),
+                source,
+            })?;
+
+        let include_filter: HashSet<_> = if self.config.core.exclude_other_dex_program_ids {
+            self.launch_overrides
+                .include_dex_program_ids
+                .iter()
+                .map(|s| s.as_str())
+                .collect()
+        } else {
+            HashSet::new()
+        };
+
+        let filtered_bytes = if include_filter.is_empty() {
+            bytes.to_vec()
+        } else {
+            let markets: Vec<Value> = serde_json::from_slice(&bytes)
+                .map_err(|err| JupiterError::Schema(format!("解析市场缓存失败: {err}")))?;
+            let total = markets.len();
+            let filtered: Vec<Value> = markets
+                .into_iter()
+                .filter(|entry| {
+                    entry
+                        .get("owner")
+                        .and_then(|v| v.as_str())
+                        .map(|owner| include_filter.contains(owner))
+                        .unwrap_or(false)
+                })
+                .collect();
+            let filtered_len = filtered.len();
+            if filtered_len == 0 {
+                return Err(JupiterError::Schema(
+                    "根据 include_dex_program_ids 过滤后市场为空，请检查配置".into(),
+                ));
+            }
+            info!(
+                target: "jupiter",
+                total_markets = total,
+                filtered_markets = filtered_len,
+                included_dexes = ?self.launch_overrides.include_dex_program_ids,
+                "已按 include_dex_program_ids 过滤市场缓存"
+            );
+            serde_json::to_vec(&filtered)
+                .map_err(|err| JupiterError::Schema(format!("序列化过滤后的市场缓存失败: {err}")))?
+        };
+
+        let tmp_path = temporary_market_cache_path(&local_path);
+        fs::write(&tmp_path, &filtered_bytes).await?;
+        if existed {
+            let _ = fs::remove_file(&local_path).await;
+        }
+        fs::rename(&tmp_path, &local_path).await?;
+        info!(
+            target: "jupiter",
+            path = %local_path.display(),
+            size_bytes = filtered_bytes.len(),
+            "市场缓存文件下载完成"
+        );
+
+        Ok(())
     }
 
     pub async fn list_releases(&self, limit: usize) -> Result<Vec<ReleaseInfo>, JupiterError> {
@@ -295,10 +464,21 @@ impl JupiterBinaryManager {
     }
 
     pub async fn wait_for_health(&self, config: &HealthCheckConfig) -> Result<(), JupiterError> {
-        let timeout = Duration::from_millis(config.timeout_ms.unwrap_or(5_000));
+        let timeout = Duration::from_secs(config.timeout.unwrap_or(5));
         let expected_status = config.expected_status.unwrap_or(200);
         let start = std::time::Instant::now();
         loop {
+            {
+                let state = self.state.lock().await;
+                if state.process.is_none()
+                    && matches!(state.status, BinaryStatus::Failed | BinaryStatus::Stopped)
+                {
+                    return Err(JupiterError::HealthCheck(
+                        "Jupiter 进程在健康检查完成前已退出".into(),
+                    ));
+                }
+            }
+
             let response = self.client.get(&config.url).timeout(timeout).send().await;
 
             match response {
@@ -306,7 +486,7 @@ impl JupiterBinaryManager {
                     info!(
                         target: "jupiter",
                         elapsed_ms = start.elapsed().as_millis() as u64,
-                        "health check succeeded"
+                        "健康检查通过"
                     );
                     return Ok(());
                 }
@@ -315,19 +495,19 @@ impl JupiterBinaryManager {
                         target: "jupiter",
                         status = resp.status().as_u16(),
                         expected_status,
-                        "health check status mismatch"
+                        "健康检查状态码不匹配"
                     );
                 }
                 Err(err) => {
-                    warn!(target: "jupiter", error = %err, "health check request failed");
+                    warn!(target: "jupiter", error = %err, "健康检查请求失败");
                 }
             }
 
             if start.elapsed() > timeout {
                 self.transition(BinaryStatus::Failed).await;
                 return Err(JupiterError::HealthCheck(format!(
-                    "timed out after {:?} waiting for {}",
-                    timeout, config.url
+                    "等待 {} 时超时，耗时 {:?}",
+                    config.url, timeout
                 )));
             }
 
@@ -400,7 +580,7 @@ impl JupiterBinaryManager {
                             warn!(
                                 target: "jupiter",
                                 error = %err,
-                                "failed to poll Jupiter process status"
+                                "轮询 Jupiter 进程状态失败"
                             );
                             None
                         }
@@ -422,7 +602,7 @@ impl JupiterBinaryManager {
                         target: "jupiter",
                         exit_code = event.status.code(),
                         success = event.status.success(),
-                        "jupiter process stopped"
+                        "Jupiter 进程已停止"
                     );
                 } else {
                     warn!(
@@ -430,7 +610,7 @@ impl JupiterBinaryManager {
                         exit_code = event.status.code(),
                         success = event.status.success(),
                         version = ?event.handle.version,
-                        "jupiter process exited unexpectedly"
+                        "Jupiter 进程异常退出"
                     );
                     let auto_restart = self.config.process.auto_restart_minutes;
                     let attempts_limit = event.max_restart_attempts;
@@ -442,7 +622,7 @@ impl JupiterBinaryManager {
                         info!(
                             target: "jupiter",
                             delay_secs = delay.as_secs(),
-                            "scheduling automatic restart"
+                            "计划在稍后自动重启"
                         );
                         tokio::time::sleep(delay).await;
                         let current_status = self.status().await;
@@ -453,14 +633,14 @@ impl JupiterBinaryManager {
                                     state.restart_attempts = 0;
                                     info!(
                                         target: "jupiter",
-                                        "automatic restart succeeded"
+                                        "自动重启成功"
                                     );
                                 }
                                 Err(err) => {
                                     warn!(
                                         target: "jupiter",
                                         error = %err,
-                                        "automatic restart failed"
+                                        "自动重启失败"
                                     );
                                 }
                             }
@@ -468,7 +648,7 @@ impl JupiterBinaryManager {
                             info!(
                                 target: "jupiter",
                                 ?current_status,
-                                "skipping automatic restart because status changed"
+                                "检测到状态已变化，跳过自动重启"
                             );
                         }
                     } else if auto_restart > 0 && attempts_limit > 0 {
@@ -476,7 +656,7 @@ impl JupiterBinaryManager {
                             target: "jupiter",
                             attempts = event.restart_attempts,
                             max_attempts = attempts_limit,
-                            "automatic restart attempts exhausted"
+                            "自动重启次数已用尽"
                         );
                     }
                 }
@@ -485,6 +665,36 @@ impl JupiterBinaryManager {
             }
         }
     }
+}
+
+fn market_cache_local_path(path: &str, install_dir: &Path) -> Option<PathBuf> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return None;
+    }
+
+    let candidate = Path::new(trimmed);
+    if candidate.is_absolute() {
+        Some(candidate.to_path_buf())
+    } else {
+        Some(install_dir.join(candidate))
+    }
+}
+
+fn temporary_market_cache_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("markets.json");
+    let tmp_name = format!("{}.tmp", file_name);
+    path.with_file_name(tmp_name)
+}
+
+fn format_command(path: &Path, args: &[String]) -> String {
+    let mut parts = Vec::with_capacity(args.len() + 1);
+    parts.push(path.display().to_string());
+    parts.extend(args.iter().cloned());
+    parts.join(" ")
 }
 
 async fn binary_exists(path: &Path) -> bool {

@@ -9,7 +9,7 @@ repo_owner = "jup-ag"
 repo_name = "jupiter-swap-api"
 binary_name = "jupiter-swap-api"
 install_dir = "bin"
-proxy= "http://192.168.124.4:2080"
+proxy= "http://127.0.0.1:2080"
 
 # 当使用 JUPITER_URL=http://0.0.0.0:18080 或 JUPITER_URL=http://127.0.0.1:18080 运行机器人时，
 # 机器人将首先根据 intermedium 中获取的 mint。然后启动 JupV6 API，并将 FILTER_MARKETS_WITH_MINTS 设置为从 intermedium 提取的 mints。
@@ -30,10 +30,14 @@ port = 18080
 metrics_port = 18081
 # 当设置为 true 时，它​​将从本地文件 mainnet.json 加载市场缓存。当你运行 jup 时，
 # 如果启动速度很慢，甚至出现 error reading a body from connection 错误，
-# 这个选项会很有用。你可以使用 wget https://cache.jup.ag/markets?v=6 -O mainnet.json 更新本地文件。
-use_local_market_cache = false
-# 市场快照地址，可使用官方缓存或自建文件。
-market_cache = "https://cache.jup.ag/markets?v=6"
+# 这个选项会很有用。你可以使用 wget https://cache.jup.ag/markets?v=6 -O markets.json 更新本地文件。
+use_local_market_cache = true
+# 如果开启，则只保留 included_dexes 中的市场；否则保留所有市场。
+exclude_other_dex_program_ids = true
+# 市场快照地址，可使用官方缓存或自建文件（相对路径相对于 `bin/`）。
+market_cache = "markets.json"
+# 当启用本地缓存时，每次启动都会从该 URL 重新下载最新缓存。
+market_cache_download_url = "https://cache.jup.ag/markets?v=4"
 # 市场模式，可选值：`remote`（固定快照）、`file`（本地文件）、`europa`（实时推送）。
 market_mode = "remote"
 
@@ -61,11 +65,11 @@ x_token = ""
 [jupiter.performance]
 # 根据机器资源调整线程数。总线程数应大于等于 webserver/update。
 # Jupiter 进程可用线程总量，建议与 CPU 核心数量匹配或稍大。
-total_thread_count = 64
+total_thread_count = 12
 # HTTP/WebServer 线程数，承担 API 请求处理。
-webserver_thread_count = 24
+webserver_thread_count = 4
 # 市场/缓存更新线程数，影响行情刷新效率。
-update_thread_count = 5
+update_thread_count = 4
 
 [jupiter.process]
 # 定期自动重启 Jupiter 进程的间隔（分钟）；0 表示不自动重启。
@@ -83,7 +87,7 @@ RUST_LOG = "info"
 [jupiter.health_check]
 # Jupiter 启动后的健康检查 URL，Galileo 会轮询该地址以确认服务可用。
 url = "http://127.0.0.1:18080/health"
-# 健康检查超时（毫秒）。
-timeout_ms = 10000
+# 健康检查超时（秒）。
+timeout = 360
 # 预期返回的 HTTP 状态码。
 expected_status = 200
