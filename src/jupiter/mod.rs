@@ -5,8 +5,10 @@ pub mod process;
 pub mod types;
 pub mod updater;
 
+#[allow(unused_imports)]
+pub use api::{
+    JupiterApiClient, QuoteRequest, QuoteResponse, SwapInstructionsResponse, SwapRequest,
+};
 pub use error::JupiterError;
 #[allow(unused_imports)]
 pub use types::{BinaryInstall, BinaryStatus, JupiterBinaryManager, ReleaseAsset, ReleaseInfo};
-#[allow(unused_imports)]
-pub use api::{JupiterApiClient, QuoteRequest, QuoteResponse, SwapInstructionsResponse, SwapRequest};

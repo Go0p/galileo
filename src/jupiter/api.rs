@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Serialize;
 use serde_json::Value;
 use solana_sdk::{
@@ -23,9 +23,9 @@ pub struct JupiterApiClient {
 }
 
 impl JupiterApiClient {
-    pub fn new(client: reqwest::Client, config: &BotConfig) -> Self {
+    pub fn new(client: reqwest::Client, base_url: String, config: &BotConfig) -> Self {
         Self {
-            base_url: config.jupiter_api_url.clone(),
+            base_url,
             client,
             request_timeout: Duration::from_millis(config.request_timeout_ms),
         }
@@ -123,8 +123,9 @@ impl JupiterApiClient {
         }
 
         let value: Value = response.json().await?;
-        let instructions = SwapInstructionsResponse::try_from_value(value)
-            .map_err(|err| JupiterError::Schema(format!("invalid swap-instructions response: {err}")))?;
+        let instructions = SwapInstructionsResponse::try_from_value(value).map_err(|err| {
+            JupiterError::Schema(format!("invalid swap-instructions response: {err}"))
+        })?;
 
         guard.finish();
         let elapsed_ms = start.elapsed().as_micros() as f64 / 1_000.0;
@@ -315,10 +316,11 @@ pub struct SwapInstructionsResponse {
 impl SwapInstructionsResponse {
     pub fn try_from_value(value: Value) -> Result<Self, String> {
         let raw = value;
-        let token_ledger_instruction =
-            parse_instruction_opt(raw.get("tokenLedgerInstruction")).map_err(|err| err.to_string())?;
+        let token_ledger_instruction = parse_instruction_opt(raw.get("tokenLedgerInstruction"))
+            .map_err(|err| err.to_string())?;
         let compute_budget_instructions =
-            parse_instruction_array(raw.get("computeBudgetInstructions")).map_err(|err| err.to_string())?;
+            parse_instruction_array(raw.get("computeBudgetInstructions"))
+                .map_err(|err| err.to_string())?;
         let setup_instructions =
             parse_instruction_array(raw.get("setupInstructions")).map_err(|err| err.to_string())?;
         let swap_instruction = parse_instruction(
@@ -337,7 +339,9 @@ impl SwapInstructionsResponse {
         )
         .map_err(|err| err.to_string())?;
 
-        let prioritization_fee_lamports = raw.get("prioritizationFeeLamports").and_then(|v| v.as_u64());
+        let prioritization_fee_lamports = raw
+            .get("prioritizationFeeLamports")
+            .and_then(|v| v.as_u64());
         let compute_unit_limit = raw
             .get("computeUnitLimit")
             .and_then(|v| v.as_u64())

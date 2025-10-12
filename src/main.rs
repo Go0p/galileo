@@ -10,16 +10,17 @@ mod jupiter;
 mod metrics;
 mod strategy;
 
-use config::{AppConfig, ConfigError, IntermediumConfig, JupiterConfig, JupiterRequestParamsConfig, LoggingConfig, load_config};
-use jupiter::{BinaryStatus, JupiterApiClient, JupiterBinaryManager, JupiterError, QuoteRequest, SwapRequest};
+use config::{
+    AppConfig, BotConfig, ConfigError, GlobalConfig, IntermediumConfig, JupiterConfig,
+    LaunchOverrides, RequestParamsConfig, YellowstoneConfig, load_config,
+};
+use jupiter::{
+    BinaryStatus, JupiterApiClient, JupiterBinaryManager, JupiterError, QuoteRequest, SwapRequest,
+};
 use strategy::engine::ArbitrageEngine;
 
 #[derive(Parser, Debug)]
-#[command(
-    name = "galileo",
-    version,
-    about = "Jupiter 自托管调度机器人"
-)]
+#[command(name = "galileo", version, about = "Jupiter 自托管调度机器人")]
 struct Cli {
     #[arg(
         short,
@@ -57,18 +58,11 @@ struct QuoteCmd {
     output: String,
     #[arg(long, help = "交易数量（原始单位，lamports/atoms）")]
     amount: u64,
-    #[arg(
-        long,
-        default_value_t = 50,
-        help = "允许滑点（基点）"
-    )]
+    #[arg(long, default_value_t = 50, help = "允许滑点（基点）")]
     slippage_bps: u16,
     #[arg(long, help = "仅限一跳直连路线")]
     direct_only: bool,
-    #[arg(
-        long,
-        help = "允许中间代币（对应关闭 restrictIntermediateTokens）"
-    )]
+    #[arg(long, help = "允许中间代币（对应关闭 restrictIntermediateTokens）")]
     allow_intermediate: bool,
     #[arg(
         long = "extra",
@@ -91,20 +85,13 @@ struct SwapInstructionsCmd {
     shared_accounts: bool,
     #[arg(long, help = "可选的手续费账户")]
     fee_account: Option<String>,
-    #[arg(
-        long,
-        help = "优先费（微 lamports）"
-    )]
+    #[arg(long, help = "优先费（微 lamports）")]
     compute_unit_price: Option<u64>,
 }
 
 #[derive(Args, Debug)]
 struct InitCmd {
-    #[arg(
-        long,
-        value_name = "DIR",
-        help = "可选输出目录（默认当前目录）"
-    )]
+    #[arg(long, value_name = "DIR", help = "可选输出目录（默认当前目录）")]
     output: Option<PathBuf>,
     #[arg(long, help = "若文件存在则覆盖")]
     force: bool,
@@ -114,17 +101,19 @@ struct InitCmd {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = load_configuration(cli.config.clone())?;
-    init_tracing(&config.galileo.logging)?;
+    init_tracing(&config.galileo.global.logging)?;
 
-    let mut jupiter_cfg = config.jupiter.clone();
-    apply_request_overrides_to_jupiter(
-        &mut jupiter_cfg,
-        &config.galileo.request_params,
-        &config.galileo.intermedium,
-    );
+    let jupiter_cfg = resolve_jupiter_defaults(config.jupiter.clone(), &config.galileo.global)?;
+    let launch_overrides =
+        build_launch_overrides(&config.galileo.request_params, &config.galileo.intermedium);
+    let base_url = resolve_jupiter_base_url(&config.galileo.bot, &jupiter_cfg);
 
-    let manager = JupiterBinaryManager::new(jupiter_cfg)?;
-    let api_client = JupiterApiClient::new(manager.client.clone(), &config.galileo.bot);
+    let manager = JupiterBinaryManager::new(
+        jupiter_cfg,
+        launch_overrides,
+        config.galileo.bot.disable_local_binary,
+    )?;
+    let api_client = JupiterApiClient::new(manager.client.clone(), base_url, &config.galileo.bot);
 
     match cli.command {
         Command::Jupiter(cmd) => {
@@ -171,7 +160,7 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
-            if !manager.config.launch.disable_local_binary {
+            if !manager.disable_local_binary {
                 match manager.start(false).await {
                     Ok(()) => {
                         info!(target: "strategy", "已启动本地 Jupiter 二进制");
@@ -191,6 +180,7 @@ async fn main() -> Result<()> {
             let engine = ArbitrageEngine::new(
                 strategy_config,
                 config.galileo.bot.clone(),
+                config.galileo.global.wallet.clone(),
                 api_client.clone(),
                 config.galileo.request_params.clone(),
             )
@@ -211,7 +201,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn init_tracing(config: &LoggingConfig) -> Result<()> {
+fn init_tracing(config: &config::LoggingConfig) -> Result<()> {
     let filter = EnvFilter::try_new(&config.level).unwrap_or_else(|_| EnvFilter::new("info"));
 
     if config.json {
@@ -232,7 +222,7 @@ fn load_configuration(path: Option<PathBuf>) -> Result<AppConfig, ConfigError> {
 }
 
 async fn ensure_running(manager: &JupiterBinaryManager) -> Result<(), JupiterError> {
-    if manager.config.launch.disable_local_binary {
+    if manager.disable_local_binary {
         return Ok(());
     }
     match manager.status().await {
@@ -257,37 +247,20 @@ fn parse_key_val(s: &str) -> std::result::Result<(String, String), String> {
     Ok((s[..pos].to_string(), s[pos + 1..].to_string()))
 }
 
-fn apply_request_defaults_to_quote(
-    request: &mut QuoteRequest,
-    params: &JupiterRequestParamsConfig,
-) {
-    if request.extra.get("maxAccounts").is_none() {
-        if let Some(max_accounts) = params.max_accounts {
-            request
-                .extra
-                .insert("maxAccounts".to_string(), max_accounts.to_string());
-        }
+fn apply_request_defaults_to_quote(request: &mut QuoteRequest, params: &RequestParamsConfig) {
+    if request.extra.get("onlyDexes").is_none() && !params.included_dexes.is_empty() {
+        request
+            .extra
+            .insert("onlyDexes".to_string(), params.included_dexes.join(","));
     }
 
-    if request.extra.get("onlyDexes").is_none()
-        && !params.included_dex_program_ids.is_empty()
-    {
-        request.extra.insert(
-            "onlyDexes".to_string(),
-            params.included_dex_program_ids.join(","),
-        );
+    if request.extra.get("excludeDexes").is_none() && !params.excluded_dexes.is_empty() {
+        request
+            .extra
+            .insert("excludeDexes".to_string(), params.excluded_dexes.join(","));
     }
 
-    if request.extra.get("excludeDexes").is_none()
-        && !params.excluded_dex_program_ids.is_empty()
-    {
-        request.extra.insert(
-            "excludeDexes".to_string(),
-            params.excluded_dex_program_ids.join(","),
-        );
-    }
-
-    if !request.only_direct_routes && params.use_direct_route_only {
+    if !request.only_direct_routes && params.only_direct_routes {
         request.only_direct_routes = true;
     }
 
@@ -296,24 +269,78 @@ fn apply_request_defaults_to_quote(
     }
 }
 
-fn apply_request_overrides_to_jupiter(
-    jupiter: &mut JupiterConfig,
-    params: &JupiterRequestParamsConfig,
+fn resolve_jupiter_base_url(_bot: &BotConfig, jupiter: &JupiterConfig) -> String {
+    if let Ok(url) = std::env::var("JUPITER_URL") {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    format!("http://{}:{}", jupiter.core.host, jupiter.core.port)
+}
+
+fn build_launch_overrides(
+    params: &RequestParamsConfig,
     intermedium: &IntermediumConfig,
-) {
+) -> LaunchOverrides {
+    let mut overrides = LaunchOverrides::default();
+
     let mut mint_set: BTreeSet<String> = intermedium.mints.iter().cloned().collect();
     for mint in &intermedium.disable_mints {
         mint_set.remove(mint);
     }
 
     if !mint_set.is_empty() {
-        jupiter.tokens.filter_markets_with_mints = mint_set.into_iter().collect();
-    } else {
-        jupiter.tokens.filter_markets_with_mints.clear();
+        overrides.filter_markets_with_mints = mint_set.into_iter().collect();
     }
 
-    jupiter.tokens.exclude_dex_program_ids = params.excluded_dex_program_ids.clone();
-    jupiter.tokens.include_dex_program_ids = params.included_dex_program_ids.clone();
+    overrides.exclude_dex_program_ids = params.excluded_dexes.clone();
+    overrides.include_dex_program_ids = params.included_dexes.clone();
+
+    overrides
+}
+
+fn resolve_jupiter_defaults(
+    mut jupiter: JupiterConfig,
+    global: &GlobalConfig,
+) -> Result<JupiterConfig> {
+    if jupiter.core.rpc_url.trim().is_empty() {
+        if let Some(global_rpc) = &global.rpc_url {
+            let trimmed = global_rpc.trim();
+            if !trimmed.is_empty() {
+                jupiter.core.rpc_url = trimmed.to_string();
+            }
+        }
+    }
+
+    if jupiter.core.rpc_url.trim().is_empty() {
+        return Err(anyhow!(
+            "未配置 Jupiter RPC：请在 jupiter.toml 或 galileo.yaml 的 global.rpc_url 中设置 rpc_url"
+        ));
+    }
+
+    if jupiter.launch.yellowstone.is_none() {
+        if let Some(endpoint) = &global.yellowstone_grpc_url {
+            let trimmed = endpoint.trim();
+            if !trimmed.is_empty() {
+                let token = global.yellowstone_grpc_token.as_ref().and_then(|t| {
+                    let tt = t.trim();
+                    if tt.is_empty() {
+                        None
+                    } else {
+                        Some(tt.to_string())
+                    }
+                });
+                jupiter.launch.yellowstone = Some(YellowstoneConfig {
+                    endpoint: trimmed.to_string(),
+                    x_token: token,
+                });
+            }
+        }
+    }
+
+    Ok(jupiter)
 }
 
 fn status_indicator(status: BinaryStatus) -> (&'static str, &'static str) {
@@ -380,7 +407,12 @@ enum JupiterCmd {
     Restart,
     /// 下载并安装最新 Jupiter 二进制
     Update {
-        #[arg(short = 'v', long, value_name = "TAG", help = "指定版本 tag，缺省为最新版本")]
+        #[arg(
+            short = 'v',
+            long,
+            value_name = "TAG",
+            help = "指定版本 tag，缺省为最新版本"
+        )]
         version: Option<String>,
     },
     /// 查看当前二进制状态
@@ -396,6 +428,23 @@ async fn handle_jupiter_cmd(cmd: JupiterCmd, manager: &JupiterBinaryManager) -> 
     match cmd {
         JupiterCmd::Start { force_update } => {
             manager.start(force_update).await?;
+            if manager.disable_local_binary {
+                info!(
+                    target: "jupiter",
+                    "本地 Jupiter 二进制已禁用，start 命令仅用于远端模式，直接返回"
+                );
+                return Ok(());
+            }
+
+            info!(
+                target: "jupiter",
+                "Jupiter 二进制已启动，按 Ctrl+C 停止并退出前台日志"
+            );
+            tokio::signal::ctrl_c()
+                .await
+                .map_err(|err| anyhow!("捕获 Ctrl+C 失败: {err}"))?;
+            info!(target: "jupiter", "收到终止信号，正在停止 Jupiter 二进制…");
+            manager.stop().await?;
         }
         JupiterCmd::Stop => {
             manager.stop().await?;
@@ -407,7 +456,7 @@ async fn handle_jupiter_cmd(cmd: JupiterCmd, manager: &JupiterBinaryManager) -> 
             manager.update(version.as_deref()).await?;
         }
         JupiterCmd::Status => {
-            if manager.config.launch.disable_local_binary {
+            if manager.disable_local_binary {
                 println!("status: 🚫 已禁用本地 Jupiter（二进制不运行，使用远程 API）");
             } else {
                 let status = manager.status().await;

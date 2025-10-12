@@ -1,6 +1,6 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use tokio::process::Command;
 use tracing::{info, warn};
@@ -10,17 +10,35 @@ use super::process::{shutdown_process, spawn_process};
 use super::types::{BinaryInstall, BinaryStatus, JupiterBinaryManager, ProcessHandle, ReleaseInfo};
 use super::updater::{
     USER_AGENT, download_and_install, fetch_latest_release, fetch_recent_releases,
-    fetch_release_by_tag, select_asset_for_host,
+    fetch_release_by_tag, read_version_file, select_asset_for_host, write_version_file,
 };
-use crate::config::{HealthCheckConfig, JupiterConfig};
+use crate::config::{HealthCheckConfig, JupiterConfig, LaunchOverrides};
 use crate::metrics::{LatencyMetadata, guard_with_metadata};
 
 impl JupiterBinaryManager {
-    pub fn new(config: JupiterConfig) -> Result<Self, JupiterError> {
-        let client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
+    pub fn new(
+        config: JupiterConfig,
+        launch_overrides: LaunchOverrides,
+        disable_local_binary: bool,
+    ) -> Result<Self, JupiterError> {
+        let proxy = config.binary.proxy.clone();
+        let mut builder = reqwest::Client::builder().user_agent(USER_AGENT);
+        if let Some(proxy_url) = proxy.as_deref() {
+            builder = builder.proxy(reqwest::Proxy::all(proxy_url)?);
+        }
+        let client = builder.build()?;
+        if let Some(proxy_url) = proxy {
+            info!(
+                target: "jupiter",
+                %proxy_url,
+                "🛡️ 使用下载代理处理 Jupiter Release 请求"
+            );
+        }
 
         Ok(Self {
             config,
+            launch_overrides,
+            disable_local_binary,
             client,
             state: Default::default(),
         })
@@ -39,18 +57,6 @@ impl JupiterBinaryManager {
                     return Ok(install.clone());
                 }
             }
-        }
-
-        if self.config.disable_update {
-            let path = self.config.binary_path();
-            if binary_exists(&path).await {
-                return Ok(BinaryInstall {
-                    version: "unknown".to_string(),
-                    path,
-                    updated_at: std::time::SystemTime::now(),
-                });
-            }
-            return Err(JupiterError::BinaryMissing(path));
         }
 
         self.update(None).await
@@ -86,6 +92,70 @@ impl JupiterBinaryManager {
             content_type = ?asset.content_type,
             "selected release asset"
         );
+
+        let binary_path = self.config.binary_path();
+        if binary_exists(&binary_path).await {
+            match read_version_file(&self.config.binary.install_dir).await {
+                Some(existing_version) => {
+                    if existing_version == release.tag_name && !matches!(version, Some(_)) {
+                        let install = BinaryInstall {
+                            version: existing_version,
+                            path: canonicalize_path(binary_path).await,
+                            updated_at: SystemTime::now(),
+                        };
+                        info!(
+                            target: "jupiter",
+                            version = %install.version,
+                            path = %install.path.display(),
+                            "local Jupiter binary already up-to-date; skipping download"
+                        );
+                        {
+                            let mut state = self.state.lock().await;
+                            state.install = Some(install.clone());
+                            state.status = BinaryStatus::Stopped;
+                        }
+                        guard.finish();
+                        return Ok(install);
+                    }
+                }
+                None if !matches!(version, Some(_)) => {
+                    let abs_path = canonicalize_path(binary_path).await;
+                    info!(
+                        target: "jupiter",
+                        path = %abs_path.display(),
+                        "found existing Jupiter binary without version metadata; skipping automatic update"
+                    );
+                    if let Err(err) =
+                        write_version_file(&self.config.binary.install_dir, &release.tag_name).await
+                    {
+                        warn!(
+                            target: "jupiter",
+                            error = %err,
+                            "failed to record Jupiter version metadata; future runs may re-check releases"
+                        );
+                    }
+                    let install = BinaryInstall {
+                        version: release.tag_name.clone(),
+                        path: abs_path,
+                        updated_at: SystemTime::now(),
+                    };
+                    info!(
+                        target: "jupiter",
+                        version = %install.version,
+                        "提示: 如需强制同步 Release，请执行 `galileo jupiter update`"
+                    );
+                    {
+                        let mut state = self.state.lock().await;
+                        state.install = Some(install.clone());
+                        state.status = BinaryStatus::Stopped;
+                    }
+                    guard.finish();
+                    return Ok(install);
+                }
+                _ => {}
+            }
+        }
+
         let install =
             download_and_install(&self.client, &self.config, &asset, &release.tag_name).await?;
 
@@ -102,7 +172,7 @@ impl JupiterBinaryManager {
     pub async fn start(&self, force_update: bool) -> Result<(), JupiterError> {
         self.ensure_monitor_task().await;
 
-        if self.config.launch.disable_local_binary {
+        if self.disable_local_binary {
             info!(
                 target: "jupiter",
                 "local jupiter binary disabled; skipping binary start"
@@ -126,7 +196,7 @@ impl JupiterBinaryManager {
 
         self.transition(BinaryStatus::Starting).await;
 
-        let process = spawn_process(&self.config, &install).await?;
+        let process = spawn_process(&self.config, &self.launch_overrides, &install).await?;
 
         {
             let mut state = self.state.lock().await;
@@ -155,7 +225,7 @@ impl JupiterBinaryManager {
     }
 
     pub async fn stop(&self) -> Result<(), JupiterError> {
-        if self.config.launch.disable_local_binary {
+        if self.disable_local_binary {
             self.transition(BinaryStatus::Stopped).await;
             return Ok(());
         }
@@ -419,4 +489,11 @@ impl JupiterBinaryManager {
 
 async fn binary_exists(path: &Path) -> bool {
     tokio::fs::metadata(path).await.is_ok()
+}
+
+async fn canonicalize_path(path: PathBuf) -> PathBuf {
+    match tokio::fs::canonicalize(&path).await {
+        Ok(abs) => abs,
+        Err(_) => path,
+    }
 }

@@ -25,13 +25,14 @@ global:
   # 日志级别
   logging:
     level: "info"
-    json: true
+    json: false
 
 request_params:
   # 完整列表在 https://lite-api.jup.ag/swap/v1/program-id-to-label 。您可以在启动 jup api 时选择要包含哪个 Dex。
   # 请使用 Dex 的地址（而非名称），并以逗号分隔。
   included_dexes: [
     "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH"
   ]
 
   excluded_dexes: [

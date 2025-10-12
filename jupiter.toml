@@ -9,6 +9,7 @@ repo_owner = "jup-ag"
 repo_name = "jupiter-swap-api"
 binary_name = "jupiter-swap-api"
 install_dir = "bin"
+proxy= "http://192.168.124.4:2080"
 
 # 当使用 JUPITER_URL=http://0.0.0.0:18080 或 JUPITER_URL=http://127.0.0.1:18080 运行机器人时，
 # 机器人将首先根据 intermedium 中获取的 mint。然后启动 JupV6 API，并将 FILTER_MARKETS_WITH_MINTS 设置为从 intermedium 提取的 mints。

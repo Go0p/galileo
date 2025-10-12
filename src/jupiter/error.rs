@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -12,8 +10,6 @@ pub enum JupiterError {
     Io(#[from] std::io::Error),
     #[error("release asset matching host not found; host triple candidates: {0}")]
     AssetNotFound(String),
-    #[error("binary is not installed at {0}")]
-    BinaryMissing(PathBuf),
     #[error("process is already running")]
     AlreadyRunning,
     #[error("no process is running")]

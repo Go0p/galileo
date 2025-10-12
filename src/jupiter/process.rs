@@ -7,13 +7,14 @@ use tracing::{error, info, warn};
 
 use super::error::JupiterError;
 use super::types::{BinaryInstall, ProcessHandle};
-use crate::config::JupiterConfig;
+use crate::config::{JupiterConfig, LaunchOverrides};
 
 pub async fn spawn_process(
     config: &JupiterConfig,
+    overrides: &LaunchOverrides,
     install: &BinaryInstall,
 ) -> Result<ProcessHandle, JupiterError> {
-    let effective_args = config.effective_args();
+    let effective_args = config.effective_args(overrides);
 
     let mut command = Command::new(&install.path);
     command
@@ -21,6 +22,7 @@ pub async fn spawn_process(
         .args(&effective_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    command.kill_on_drop(false);
 
     if !config.environment.contains_key("RUST_LOG") {
         command.env("RUST_LOG", "info");

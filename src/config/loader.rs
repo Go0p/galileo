@@ -19,10 +19,7 @@ pub enum ConfigError {
         source: std::io::Error,
     },
     #[error("failed to parse config at {path}: {message}")]
-    Parse {
-        path: PathBuf,
-        message: String,
-    },
+    Parse { path: PathBuf, message: String },
 }
 
 pub fn load_config(path: Option<PathBuf>) -> Result<AppConfig, ConfigError> {
@@ -34,17 +31,13 @@ pub fn load_config(path: Option<PathBuf>) -> Result<AppConfig, ConfigError> {
             .collect::<Vec<PathBuf>>(),
     };
 
-    let (mut galileo, galileo_dir) = load_first_available_yaml::<GalileoConfig>(&candidate_paths)?;
+    let (galileo, galileo_dir) = load_first_available_yaml::<GalileoConfig>(&candidate_paths)?;
 
     let mut lander_candidates = Vec::new();
     if let Some(dir) = galileo_dir.as_ref() {
         lander_candidates.push(dir.join("lander.yaml"));
     }
-    lander_candidates.extend(
-        DEFAULT_LANDER_PATHS
-            .iter()
-            .map(PathBuf::from),
-    );
+    lander_candidates.extend(DEFAULT_LANDER_PATHS.iter().map(PathBuf::from));
 
     let (lander, _) = load_first_available_yaml::<LanderConfig>(&lander_candidates)?;
 
@@ -52,18 +45,9 @@ pub fn load_config(path: Option<PathBuf>) -> Result<AppConfig, ConfigError> {
     if let Some(dir) = galileo_dir.as_ref() {
         jupiter_candidates.push(dir.join("jupiter.toml"));
     }
-    jupiter_candidates.extend(
-        DEFAULT_JUPITER_PATHS
-            .iter()
-            .map(PathBuf::from),
-    );
+    jupiter_candidates.extend(DEFAULT_JUPITER_PATHS.iter().map(PathBuf::from));
 
     let (jupiter, _) = load_first_available_toml::<JupiterConfig>(&jupiter_candidates)?;
-
-    // If request params指定 API URL，覆盖 bot 配置，方便统一维护。
-    if let Some(api_url) = &galileo.request_params.api_url {
-        galileo.bot.jupiter_api_url = api_url.clone();
-    }
 
     Ok(AppConfig {
         galileo,
@@ -78,9 +62,7 @@ where
 {
     for candidate in paths {
         if let Some(config) = try_load_file_yaml::<T>(candidate)? {
-            let parent = candidate
-                .parent()
-                .map(|p| p.to_path_buf());
+            let parent = candidate.parent().map(|p| p.to_path_buf());
             return Ok((config, parent));
         }
     }
@@ -94,9 +76,7 @@ where
 {
     for candidate in paths {
         if let Some(config) = try_load_file_toml::<T>(candidate)? {
-            let parent = candidate
-                .parent()
-                .map(|p| p.to_path_buf());
+            let parent = candidate.parent().map(|p| p.to_path_buf());
             return Ok((config, parent));
         }
     }

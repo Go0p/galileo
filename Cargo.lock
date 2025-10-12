@@ -1263,6 +1263,7 @@ dependencies = [
  "dashmap 6.1.0",
  "flate2",
  "futures",
+ "indicatif",
  "once_cell",
  "rand 0.9.2",
  "reqwest",
@@ -1713,6 +1714,7 @@ checksum = "70a646d946d06bedbbc4cac4c218acf4bbf2d87757a784857025f4d447e4e1cd"
 dependencies = [
  "console",
  "portable-atomic",
+ "tokio",
  "unicode-width",
  "unit-prefix",
  "web-time",

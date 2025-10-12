@@ -1,16 +1,12 @@
 # https://taskfile.dev
 
-version: '3'
+version: "3"
 
 tasks:
-  default:
-    desc: "默认执行 cargo check"
-    cmds:
-      - task: check
-
   check:
     desc: "执行 cargo check 确认编译通过"
     cmds:
+      - cargo fmt
       - cargo check
 
   build:
@@ -21,7 +17,7 @@ tasks:
   galileo:run:
     desc: "运行 galileo CLI，自定义命令通过 CMD 变量传入"
     vars:
-      CMD: "{{default \"--help\" .CMD}}"
+      CMD: '{{default "--help" .CMD}}'
     cmds:
       - cargo run -- {{.CMD}}
 
@@ -37,22 +33,21 @@ tasks:
     cmds:
       - task: galileo:run
         vars:
-          CMD: "init {{.CLI_ARGS | default \"\"}}"
+          CMD: 'init {{.CLI_ARGS | default ""}}'
 
   galileo:quote:
     desc: "请求 Jupiter 报价（需传入必要参数）"
     cmds:
       - task: galileo:run
         vars:
-          CMD: "quote {{.CLI_ARGS | default \"--help\"}}"
+          CMD: 'quote {{.CLI_ARGS | default "--help"}}'
 
   galileo:strategy:
     desc: "运行套利策略循环"
     cmds:
       - task: galileo:run
         vars:
-          CMD: "strategy {{.CLI_ARGS | default \"\"}}"
-
+          CMD: 'strategy {{.CLI_ARGS | default ""}}'
 
   galileo:jupiter:help:
     desc: "查看 galileo jupiter 子命令帮助"
@@ -66,7 +61,7 @@ tasks:
     cmds:
       - task: galileo:run
         vars:
-          CMD: "jupiter start {{.CLI_ARGS | default \"\"}}"
+          CMD: 'jupiter start {{.CLI_ARGS | default ""}}'
 
   galileo:jupiter:stop:
     desc: "停止 Jupiter 二进制"
@@ -87,7 +82,7 @@ tasks:
     cmds:
       - task: galileo:run
         vars:
-          CMD: "jupiter update {{.CLI_ARGS | default \"\"}}"
+          CMD: 'jupiter update {{.CLI_ARGS | default ""}}'
 
   galileo:jupiter:status:
     desc: "查看 Jupiter 二进制当前状态"
@@ -101,4 +96,4 @@ tasks:
     cmds:
       - task: galileo:run
         vars:
-          CMD: "jupiter list {{.CLI_ARGS | default \"\"}}"
+          CMD: 'jupiter list {{.CLI_ARGS | default ""}}'

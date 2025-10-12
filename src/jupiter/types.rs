@@ -7,7 +7,7 @@ use tokio::process::Child;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::config::JupiterConfig;
+use crate::config::{JupiterConfig, LaunchOverrides};
 
 #[derive(Debug, Clone)]
 pub struct ReleaseInfo {
@@ -84,6 +84,8 @@ impl Default for BinaryStatus {
 #[derive(Clone)]
 pub struct JupiterBinaryManager {
     pub config: JupiterConfig,
+    pub launch_overrides: LaunchOverrides,
+    pub disable_local_binary: bool,
     pub client: reqwest::Client,
     pub state: Arc<Mutex<ManagerState>>,
 }
@@ -92,6 +94,8 @@ impl fmt::Debug for JupiterBinaryManager {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("JupiterBinaryManager")
             .field("config", &self.config)
+            .field("launch_overrides", &self.launch_overrides)
+            .field("disable_local_binary", &self.disable_local_binary)
             .finish()
     }
 }

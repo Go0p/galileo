@@ -1,9 +1,11 @@
 use std::ffi::OsStr;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use flate2::read::GzDecoder;
 use futures::StreamExt;
+use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::task;
@@ -17,6 +19,7 @@ use crate::config::JupiterConfig;
 use crate::metrics::{LatencyMetadata, guard_with_metadata};
 
 pub(crate) const USER_AGENT: &str = "galileo-bot/0.1";
+pub(crate) const VERSION_FILE_NAME: &str = ".jupiter-version";
 
 pub async fn fetch_latest_release(
     client: &reqwest::Client,
@@ -127,7 +130,6 @@ async fn fetch_release_by_url(
     })
 }
 
-
 fn parse_release(value: &serde_json::Value) -> Result<Option<ReleaseInfo>, JupiterError> {
     let tag_name = match value.get("tag_name").and_then(|v| v.as_str()) {
         Some(tag) => tag.to_string(),
@@ -140,9 +142,7 @@ fn parse_release(value: &serde_json::Value) -> Result<Option<ReleaseInfo>, Jupit
             if let (Some(id), Some(name), Some(download_url)) = (
                 item.get("id").and_then(|v| v.as_u64()),
                 item.get("name").and_then(|v| v.as_str()),
-                item
-                    .get("browser_download_url")
-                    .and_then(|v| v.as_str()),
+                item.get("browser_download_url").and_then(|v| v.as_str()),
             ) {
                 assets.push(ReleaseAsset {
                     id,
@@ -163,7 +163,6 @@ fn parse_release(value: &serde_json::Value) -> Result<Option<ReleaseInfo>, Jupit
 
     Ok(Some(ReleaseInfo { tag_name, assets }))
 }
-
 
 pub fn select_asset_for_host(
     release: &ReleaseInfo,
@@ -229,21 +228,108 @@ pub async fn download_and_install(
     }
 
     let mut file = fs::File::create(&temp_path).await?;
+    let total_size = if asset.size > 0 {
+        asset.size
+    } else {
+        response.content_length().unwrap_or_default()
+    };
+    let has_known_size = total_size > 0;
+    let mut progress_bar = create_download_progress_bar(&asset.name, total_size);
+    if let Some(pb) = progress_bar.as_ref() {
+        if !has_known_size {
+            pb.set_message(format!("下载 {} {}", asset.name, HumanBytes(0)));
+        }
+    } else {
+        info!(
+            target: "jupiter",
+            asset = %asset.name,
+            total_bytes = total_size,
+            "started downloading release asset"
+        );
+    }
     let mut stream = response.bytes_stream();
+    let mut downloaded: u64 = 0;
+    let mut last_logged_bytes: u64 = 0;
+    let mut last_logged_at = Instant::now();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
+        downloaded += chunk.len() as u64;
         file.write_all(&chunk).await?;
+        if let Some(pb) = progress_bar.as_ref() {
+            pb.inc(chunk.len() as u64);
+            if !has_known_size {
+                pb.set_message(format!("下载 {} {}", asset.name, HumanBytes(downloaded)));
+            }
+        } else {
+            let should_log = downloaded == total_size
+                || downloaded.saturating_sub(last_logged_bytes) >= 2 * 1024 * 1024
+                || last_logged_at.elapsed() >= Duration::from_secs(5);
+            if should_log {
+                if has_known_size {
+                    let percent = if total_size > 0 {
+                        (downloaded as f64 / total_size as f64 * 100.0).min(100.0)
+                    } else {
+                        0.0
+                    };
+                    info!(
+                        target: "jupiter",
+                        asset = %asset.name,
+                        downloaded_bytes = downloaded,
+                        total_bytes = total_size,
+                        progress_pct = format_args!("{percent:.1}"),
+                        "downloading release asset"
+                    );
+                } else {
+                    info!(
+                        target: "jupiter",
+                        asset = %asset.name,
+                        downloaded_bytes = downloaded,
+                        "downloading release asset"
+                    );
+                }
+                last_logged_bytes = downloaded;
+                last_logged_at = Instant::now();
+            }
+        }
     }
     file.flush().await?;
+    if progress_bar.is_none() {
+        info!(
+            target: "jupiter",
+            asset = %asset.name,
+            downloaded_bytes = downloaded,
+            "download completed, preparing to install"
+        );
+    }
+    if let Some(pb) = progress_bar.take() {
+        if has_known_size {
+            pb.finish_with_message(format!(
+                "{} 下载完成 ({}/{})，开始解压…",
+                asset.name,
+                HumanBytes(downloaded),
+                HumanBytes(total_size)
+            ));
+        } else {
+            pb.finish_with_message(format!(
+                "{} 下载完成 ({})，开始解压…",
+                asset.name,
+                HumanBytes(downloaded)
+            ));
+        }
+    }
     download_guard.finish();
     drop(download_guard);
 
     let binary_path = install_asset(&temp_path, config).await?;
+    let binary_path = canonicalize_path(binary_path).await;
     let updated_at = SystemTime::now();
+    let versioned_path = create_versioned_copy(&binary_path, version, config).await?;
+    write_version_file(&config.binary.install_dir, version).await?;
     info!(
         target: "jupiter",
         version,
         path = %binary_path.display(),
+        versioned_path = %versioned_path.display(),
         size_bytes = asset.size,
         content_type = ?asset.content_type,
         updated_at = ?updated_at,
@@ -419,12 +505,8 @@ fn is_zip(path: &Path) -> bool {
     matches!(path.extension().and_then(OsStr::to_str), Some("zip"))
 }
 
-fn target_candidates(config: &JupiterConfig) -> Vec<String> {
+fn target_candidates(_config: &JupiterConfig) -> Vec<String> {
     let mut candidates = Vec::new();
-    if !config.download_preference.is_empty() {
-        candidates.extend(config.download_preference.iter().cloned());
-    }
-
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => {
             candidates.push("x86_64-unknown-linux-gnu".to_string());
@@ -456,4 +538,68 @@ fn target_candidates(config: &JupiterConfig) -> Vec<String> {
     }
 
     candidates
+}
+
+async fn create_versioned_copy(
+    binary_path: &Path,
+    version: &str,
+    config: &JupiterConfig,
+) -> Result<PathBuf, JupiterError> {
+    let versioned_name = format!("{}-{}", config.binary.binary_name, version);
+    let versioned_path = config.binary.install_dir.join(versioned_name);
+    if fs::metadata(&versioned_path).await.is_ok() {
+        fs::remove_file(&versioned_path)
+            .await
+            .map_err(JupiterError::Io)?;
+    }
+    fs::copy(binary_path, &versioned_path)
+        .await
+        .map_err(JupiterError::Io)?;
+    set_executable(&versioned_path)?;
+    Ok(versioned_path)
+}
+
+pub(crate) async fn write_version_file(dir: &Path, version: &str) -> Result<(), JupiterError> {
+    fs::write(dir.join(VERSION_FILE_NAME), version)
+        .await
+        .map_err(JupiterError::Io)
+}
+
+pub(crate) async fn read_version_file(dir: &Path) -> Option<String> {
+    fs::read_to_string(dir.join(VERSION_FILE_NAME))
+        .await
+        .map(|content| content.trim().to_string())
+        .ok()
+}
+
+async fn canonicalize_path(path: PathBuf) -> PathBuf {
+    match fs::canonicalize(&path).await {
+        Ok(abs) => abs,
+        Err(_) => path,
+    }
+}
+
+fn create_download_progress_bar(name: &str, total_size: u64) -> Option<ProgressBar> {
+    if !std::io::stderr().is_terminal() {
+        return None;
+    }
+
+    if total_size > 0 {
+        let pb = ProgressBar::new(total_size);
+        let style = ProgressStyle::with_template(
+            "{spinner:.green} {msg} [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})",
+        )
+        .unwrap_or_else(|_| ProgressStyle::default_bar());
+        pb.set_style(style);
+        pb.set_message(format!("下载 {name}"));
+        Some(pb)
+    } else {
+        let pb = ProgressBar::new_spinner();
+        let style = ProgressStyle::with_template("{spinner:.green} {msg}")
+            .unwrap_or_else(|_| ProgressStyle::default_spinner());
+        pb.set_style(style);
+        pb.enable_steady_tick(Duration::from_millis(120));
+        pb.set_message(format!("下载 {name}"));
+        Some(pb)
+    }
 }
