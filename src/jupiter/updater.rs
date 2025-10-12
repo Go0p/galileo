@@ -28,15 +28,86 @@ pub async fn fetch_latest_release(
         owner = owner,
         repo = repo
     );
+    fetch_release_by_url(client, &url, "fetch_latest_release").await
+}
+
+pub async fn fetch_recent_releases(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    limit: usize,
+) -> Result<Vec<ReleaseInfo>, JupiterError> {
+    let url = format!(
+        "https://api.github.com/repos/{owner}/{repo}/releases",
+        owner = owner,
+        repo = repo
+    );
+
     let metadata = LatencyMetadata::new(
-        [("stage".to_string(), "fetch_latest_release".to_string())]
+        [("stage".to_string(), "fetch_releases".to_string())]
             .into_iter()
             .collect(),
     );
-    let _guard = guard_with_metadata("github.fetch_latest_release", metadata);
+    let _guard = guard_with_metadata("github.fetch_releases", metadata);
 
     let response = client
-        .get(&url)
+        .get(url)
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(JupiterError::Schema(format!(
+            "GitHub returned non-success status {}",
+            response.status()
+        )));
+    }
+
+    let body = response.text().await?;
+    let json: serde_json::Value = serde_json::from_str(&body)?;
+    let releases = json
+        .as_array()
+        .ok_or_else(|| JupiterError::Schema("releases payload is not an array".to_string()))?;
+
+    let mut infos = Vec::new();
+    for release in releases.iter().take(limit) {
+        if let Some(info) = parse_release(release)? {
+            infos.push(info);
+        }
+    }
+
+    Ok(infos)
+}
+
+pub async fn fetch_release_by_tag(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    tag: &str,
+) -> Result<ReleaseInfo, JupiterError> {
+    let url = format!(
+        "https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}",
+        owner = owner,
+        repo = repo,
+        tag = tag
+    );
+    fetch_release_by_url(client, &url, "fetch_release_by_tag").await
+}
+
+async fn fetch_release_by_url(
+    client: &reqwest::Client,
+    url: &str,
+    stage: &str,
+) -> Result<ReleaseInfo, JupiterError> {
+    let metadata = LatencyMetadata::new(
+        [("stage".to_string(), stage.to_string())]
+            .into_iter()
+            .collect(),
+    );
+    let _guard = guard_with_metadata("github.fetch_release", metadata);
+
+    let response = client
+        .get(url)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
         .send()
         .await?;
@@ -51,20 +122,29 @@ pub async fn fetch_latest_release(
     let body = response.text().await?;
 
     let json: serde_json::Value = serde_json::from_str(&body)?;
-    let tag_name = json
-        .get("tag_name")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| JupiterError::Schema("tag_name missing in release payload".to_string()))?;
+    parse_release(&json)?.ok_or_else(|| {
+        JupiterError::Schema("release payload missing required tag_name field".to_string())
+    })
+}
+
+
+fn parse_release(value: &serde_json::Value) -> Result<Option<ReleaseInfo>, JupiterError> {
+    let tag_name = match value.get("tag_name").and_then(|v| v.as_str()) {
+        Some(tag) => tag.to_string(),
+        None => return Ok(None),
+    };
 
     let mut assets = Vec::new();
-    if let Some(items) = json.get("assets").and_then(|a| a.as_array()) {
+    if let Some(items) = value.get("assets").and_then(|a| a.as_array()) {
         for item in items {
             if let (Some(id), Some(name), Some(download_url)) = (
                 item.get("id").and_then(|v| v.as_u64()),
                 item.get("name").and_then(|v| v.as_str()),
-                item.get("browser_download_url").and_then(|v| v.as_str()),
+                item
+                    .get("browser_download_url")
+                    .and_then(|v| v.as_str()),
             ) {
-                let asset = ReleaseAsset {
+                assets.push(ReleaseAsset {
                     id,
                     name: name.to_string(),
                     download_url: download_url.to_string(),
@@ -76,17 +156,14 @@ pub async fn fetch_latest_release(
                         .get("content_type")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string()),
-                };
-                assets.push(asset);
+                });
             }
         }
     }
 
-    Ok(ReleaseInfo {
-        tag_name: tag_name.to_string(),
-        assets,
-    })
+    Ok(Some(ReleaseInfo { tag_name, assets }))
 }
+
 
 pub fn select_asset_for_host(
     release: &ReleaseInfo,

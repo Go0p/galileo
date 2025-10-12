@@ -72,7 +72,7 @@ tasks:
     cmds:
       - task: galileo:run
         vars:
-          CMD: "jupiter update"
+          CMD: "jupiter update {{.CLI_ARGS | default \"\"}}"
 
   galileo:status:
     desc: "查看 Jupiter 二进制当前状态"
@@ -81,6 +81,13 @@ tasks:
         vars:
           CMD: "jupiter status"
 
+  galileo:list:
+    desc: "列出最近可用的 Jupiter 版本"
+    cmds:
+      - task: galileo:run
+        vars:
+          CMD: "jupiter list {{.CLI_ARGS | default \"\"}}"
+
   galileo:quote:
     desc: "请求 Jupiter 报价（需传入必要参数）"
     cmds:
@@ -88,12 +95,12 @@ tasks:
         vars:
           CMD: "quote {{.CLI_ARGS | default \"--help\"}}"
 
-  galileo:swap:
-    desc: "请求 Jupiter Swap（需传入必要参数）"
+  galileo:swap-instructions:
+    desc: "请求 Jupiter swap-instructions（需传入必要参数）"
     cmds:
       - task: galileo:run
         vars:
-          CMD: "swap {{.CLI_ARGS | default \"--help\"}}"
+          CMD: "swap-instructions {{.CLI_ARGS | default \"--help\"}}"
 
   galileo:strategy:
     desc: "运行套利策略循环"

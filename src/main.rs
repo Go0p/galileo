@@ -11,10 +11,7 @@ mod metrics;
 mod strategy;
 
 use config::{AppConfig, ConfigError, LoggingConfig, load_config};
-use jupiter::{
-    BinaryStatus, JupiterBinaryManager, JupiterError,
-    client::{JupiterApiClient, QuoteRequest, SwapRequest},
-};
+use jupiter::{BinaryStatus, JupiterApiClient, JupiterBinaryManager, JupiterError, QuoteRequest, SwapRequest};
 use strategy::engine::ArbitrageEngine;
 
 #[derive(Parser, Debug)]
@@ -43,8 +40,9 @@ enum Command {
     Jupiter(JupiterCmd),
     /// 请求 Jupiter API 报价
     Quote(QuoteCmd),
-    /// 请求 Jupiter API Swap 交易
-    Swap(SwapCmd),
+    #[command(name = "swap-instructions")]
+    /// 请求 Jupiter API Swap 指令
+    SwapInstructions(SwapInstructionsCmd),
     /// 运行已配置的套利策略循环
     Strategy,
     /// 初始化配置模版文件
@@ -82,7 +80,7 @@ struct QuoteCmd {
 }
 
 #[derive(Args, Debug)]
-struct SwapCmd {
+struct SwapInstructionsCmd {
     #[arg(long, help = "包含 quoteResponse 的 JSON 文件路径")]
     quote_path: PathBuf,
     #[arg(long, help = "发起 Swap 的用户公钥")]
@@ -138,7 +136,7 @@ async fn main() -> Result<()> {
             let quote = api_client.quote(&request).await?;
             println!("{}", serde_json::to_string_pretty(&quote.raw)?);
         }
-        Command::Swap(args) => {
+        Command::SwapInstructions(args) => {
             ensure_running(&manager).await?;
             let quote_raw = tokio::fs::read_to_string(&args.quote_path).await?;
             let quote_value: serde_json::Value = serde_json::from_str(&quote_raw)?;
@@ -148,8 +146,8 @@ async fn main() -> Result<()> {
             request.fee_account = args.fee_account;
             request.compute_unit_price_micro_lamports = args.compute_unit_price;
 
-            let swap = api_client.swap(&request).await?;
-            println!("{}", serde_json::to_string_pretty(&swap.raw)?);
+            let instructions = api_client.swap_instructions(&request).await?;
+            println!("{}", serde_json::to_string_pretty(&instructions.raw)?);
         }
         Command::Strategy => {
             let strategy_config = match config.galileo.strategy.clone() {
@@ -299,9 +297,17 @@ enum JupiterCmd {
     /// 重启 Jupiter 二进制
     Restart,
     /// 下载并安装最新 Jupiter 二进制
-    Update,
+    Update {
+        #[arg(short = 'v', long, value_name = "TAG", help = "指定版本 tag，缺省为最新版本")]
+        version: Option<String>,
+    },
     /// 查看当前二进制状态
     Status,
+    /// 列出最近可用版本
+    List {
+        #[arg(long, default_value_t = 5, help = "展示最近的版本数量")]
+        limit: usize,
+    },
 }
 
 async fn handle_jupiter_cmd(cmd: JupiterCmd, manager: &JupiterBinaryManager) -> Result<()> {
@@ -315,12 +321,18 @@ async fn handle_jupiter_cmd(cmd: JupiterCmd, manager: &JupiterBinaryManager) -> 
         JupiterCmd::Restart => {
             manager.restart().await?;
         }
-        JupiterCmd::Update => {
-            manager.update().await?;
+        JupiterCmd::Update { version } => {
+            manager.update(version.as_deref()).await?;
         }
         JupiterCmd::Status => {
             let status = manager.status().await;
             println!("{status:?}");
+        }
+        JupiterCmd::List { limit } => {
+            let releases = manager.list_releases(limit).await?;
+            for (idx, release) in releases.iter().enumerate() {
+                println!("{:<2} {}", idx + 1, release.tag_name);
+            }
         }
     }
     Ok(())

@@ -6,9 +6,10 @@ use tracing::{info, warn};
 
 use super::error::JupiterError;
 use super::process::{shutdown_process, spawn_process};
-use super::types::{BinaryInstall, BinaryStatus, JupiterBinaryManager, ProcessHandle};
+use super::types::{BinaryInstall, BinaryStatus, JupiterBinaryManager, ProcessHandle, ReleaseInfo};
 use super::updater::{
-    USER_AGENT, download_and_install, fetch_latest_release, select_asset_for_host,
+    USER_AGENT, download_and_install, fetch_latest_release, fetch_recent_releases,
+    fetch_release_by_tag, select_asset_for_host,
 };
 use crate::config::{HealthCheckConfig, JupiterConfig};
 use crate::metrics::{LatencyMetadata, guard_with_metadata};
@@ -51,10 +52,10 @@ impl JupiterBinaryManager {
             return Err(JupiterError::BinaryMissing(path));
         }
 
-        self.update().await
+        self.update(None).await
     }
 
-    pub async fn update(&self) -> Result<BinaryInstall, JupiterError> {
+    pub async fn update(&self, version: Option<&str>) -> Result<BinaryInstall, JupiterError> {
         {
             let mut state = self.state.lock().await;
             state.status = BinaryStatus::Updating;
@@ -67,12 +68,13 @@ impl JupiterBinaryManager {
         );
         let guard = guard_with_metadata("jupiter.update", metadata);
 
-        let release = fetch_latest_release(
-            &self.client,
-            &self.config.binary.repo_owner,
-            &self.config.binary.repo_name,
-        )
-        .await?;
+        let owner = &self.config.binary.repo_owner;
+        let repo = &self.config.binary.repo_name;
+
+        let release = match version {
+            Some(tag) => fetch_release_by_tag(&self.client, owner, repo, tag).await?,
+            None => fetch_latest_release(&self.client, owner, repo).await?,
+        };
         info!(target: "jupiter", version = %release.tag_name, asset_count = release.assets.len(), "fetched latest release metadata");
         let asset = select_asset_for_host(&release, &self.config)?;
         info!(
@@ -109,7 +111,7 @@ impl JupiterBinaryManager {
         }
 
         if force_update {
-            self.update().await?;
+            self.update(None).await?;
         }
 
         let install = self.ensure_install().await?;
@@ -185,6 +187,13 @@ impl JupiterBinaryManager {
     pub async fn restart(&self) -> Result<(), JupiterError> {
         let _ = self.stop().await;
         self.start(false).await
+    }
+
+    pub async fn list_releases(&self, limit: usize) -> Result<Vec<ReleaseInfo>, JupiterError> {
+        let owner = &self.config.binary.repo_owner;
+        let repo = &self.config.binary.repo_name;
+        let releases = fetch_recent_releases(&self.client, owner, repo, limit).await?;
+        Ok(releases)
     }
 
     pub async fn wait_for_health(&self, config: &HealthCheckConfig) -> Result<(), JupiterError> {

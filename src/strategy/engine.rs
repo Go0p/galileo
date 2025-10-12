@@ -4,8 +4,7 @@ use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::config::{BotConfig, BotIdentityConfig};
-use crate::jupiter::client::http::JupiterApiClient;
-use crate::jupiter::client::types::{QuoteRequest, QuoteResponse, SwapRequest};
+use crate::jupiter::{JupiterApiClient, QuoteRequest, QuoteResponse, SwapRequest};
 
 use super::config::StrategyConfig;
 use super::error::{StrategyError, StrategyResult};
@@ -253,17 +252,17 @@ impl ArbitrageEngine {
             self.identity.compute_unit_price_micro_lamports;
         swap_request.skip_user_accounts_rpc_calls =
             self.identity.skip_user_accounts_rpc_calls.or(Some(true));
-
-        let response = self.client.swap(&swap_request).await?;
+        let instructions = self.client.swap_instructions(&swap_request).await?;
         info!(
             target: "strategy::execution",
-            tx_len = response.swap_transaction.len(),
-            last_valid_block_height = ?response.last_valid_block_height,
-            priority_fee_micro_lamports = ?response.priority_fee_micro_lamports,
-            "swap transaction ready"
+            compute_unit_limit = ?instructions.compute_unit_limit,
+            prioritization_fee_lamports = ?instructions.prioritization_fee_lamports,
+            setup_ix = instructions.setup_instructions.len(),
+            other_ix = instructions.other_instructions.len(),
+            "swap instructions ready"
         );
 
-        // TODO: wire Jito bundle submission using response.swap_transaction and configured engines.
+        // TODO: assemble transaction using instructions.* and submit via configured lander/Jito.
         Ok(())
     }
 }
