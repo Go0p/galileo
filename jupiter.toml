@@ -1,0 +1,52 @@
+[jupiter.binary]
+repo_owner = "jup-ag"
+repo_name = "jupiter-swap-api"
+binary_name = "jupiter-swap-api"
+install_dir = "bin"
+
+[jupiter.launch]
+rpc_url = "https://rpc.your-provider.example"
+host = "0.0.0.0"
+port = 18080
+metrics_port = 18081
+market_cache = "https://cache.jup.ag/markets?v=4"
+market_mode = "remote"
+disable_local_binary = false
+allow_circular_arbitrage = true
+enable_new_dexes = true
+expose_quote_and_simulate = true
+enable_markets = true
+enable_tokens = true
+skip_user_accounts_rpc = true
+
+[jupiter.launch.yellowstone]
+endpoint = "https://yellowstone.example.com:443"
+x_token = "replace-with-your-token"
+
+[jupiter.performance]
+total_thread_count = 64
+webserver_thread_count = 24
+update_thread_count = 5
+
+[jupiter.tokens]
+filter_markets_with_mints = [
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "So11111111111111111111111111111111111111112",
+]
+exclude_dex_program_ids = [
+  "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+  "MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG",
+]
+
+[jupiter.process]
+auto_restart_minutes = 60
+max_restart_attempts = 3
+graceful_shutdown_timeout_ms = 5000
+
+[jupiter.environment]
+RUST_LOG = "info"
+
+[jupiter.health_check]
+url = "http://127.0.0.1:18080/health"
+timeout_ms = 10000
+expected_status = 200

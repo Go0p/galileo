@@ -1,0 +1,78 @@
+# 上链器
+lander:
+  enable_log: false
+  # fixed, random
+  priority_fee_strategy: "fixed"
+
+  # 固定优先费
+  fixed_priority_fee: 3000
+  # 随机优先费范围
+  random_priority_fee_range:
+    - 3000
+    - 4000
+
+  jito:
+    endpoints:
+      - ""
+
+    # 小费策略，
+    # 支持的值 static, static-list, fixed, fixed-list, floor，floor-list
+    tip_strategies:
+      - "static-list"
+      - "fixed"
+      - "floor"
+
+    # Jito 小费将使用您利润的一部分。5000 表示您利润的 50% 将用作 Jito 小费。小费金额越高，
+    # 您成功交易的机会就越大，但利润也会随之减少
+    static_tip_bp: 1000
+    # 与static_tip_bp 类似，但您可以针对同一机会发送多个具有不同静态 BP 的交易。
+    static_tip_bps:
+      - 1000
+      - 2000
+    # 使用固定的 lamports 作为小费
+    fixed_tip: 3000
+    # 固定小费，您可以针对同一机会发送多个具有不同固定 BP 的交易。
+    fixed_tips:
+      - 3000
+      - 4000
+
+    # https://bundles.jito.wtf/api/v1/bundles/tip_floor 查看当前的 tip floor
+    # [
+    #   {
+    #     "time": "2025-10-12T05:00:52+00:00",
+    #     "landed_tips_25th_percentile": 0.000001,
+    #     "landed_tips_50th_percentile": 0.000003011,
+    #     "landed_tips_75th_percentile": 0.000036239,
+    #     "landed_tips_95th_percentile": 0.000124499999999999,
+    #     "landed_tips_99th_percentile": 0.00035562034,
+    #     "ema_landed_tips_50th_percentile": 0.000002071238115379
+    #   }
+    # ]
+    # 结果是 sol，需要乘 10^9
+    # 需要自行转换为 lamports
+    floor_tip: "75th"
+    # 与floor_tip 类似，但您可以针对同一机会发送多个具有不同 floor BP 的交易。
+    floor_tips:
+      - "75th"
+      - "95th"
+      - "99th"
+    # 限制 floor tip 的最大值，防止 tip 过于夸张
+    max_floor_tip_lamports: 100000
+
+    uuid_config:
+      - uuid: ""
+        rate_limit: 10
+
+  # 本质上是一个质押的 rpc 节点
+  staked:
+    endpoints:
+      - ""
+
+  # 第三方提供商，需要额外的发送 tip 
+  temporal:
+    endpoints:
+      - ""
+
+  astralane:
+    endpoints:
+      - ""

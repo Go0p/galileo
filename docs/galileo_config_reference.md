@@ -1,6 +1,6 @@
 # Galileo 配置映射参考
 
-本页整理了 `third_party/config.yaml.example` 中常用的 Jupiter 参数，并映射到 `galileo` 的结构化配置，以便快速完成自托管环境的迁移。示例配置可直接参考根目录下的 `galileo.toml`。
+本页整理了 `third_party/config.yaml.example` 中常用的 Jupiter 参数，并映射到 `galileo` 的结构化配置，以便快速完成自托管环境的迁移。示例配置可直接参考根目录下的 `galileo.yaml`。
 
 ## 网络与监听
 - `rpc_url` → `[bot].rpc_url`（策略运行时访问主链 RPC）
@@ -32,6 +32,9 @@
 - `jupiter-api.log` 的日志级别 → `[jupiter.environment].RUST_LOG`
 - `--metrics-port`/`--enable-markets --enable-tokens` 已纳入 `effective_args`，默认开启 Prometheus 指标与市集加载检查。
 
+## 上链器与小费
+上链器（Jito、Staked、Temporal、Astralane 等）以及优先费、tip 策略已拆分到独立的 `lander.yaml`，程序会在 `galileo.yaml` 所在目录或 `config/` 目录中自动加载该文件，可直接复制模板并按需扩展字段。
+
 ## 高性能默认值
 `galileo` 会自动生成以下核心启动参数：
 
@@ -48,7 +51,14 @@
 --update-thread-count {>=1}
 ```
 
-如需附加实验标志，可在 `galileo.toml` 中设置 `jupiter.extra_args = ["--flag-a", "--flag-b=value"]`。
+如需附加实验标志，可在 `galileo.yaml` 中设置：
+
+```yaml
+jupiter:
+  extra_args:
+    - "--flag-a"
+    - "--flag-b=value"
+```
 
 ## 套利策略配置
 - `base_mint`/`intermediate_tokens` → `[strategy].base_mint` 与 `[strategy].quote_mints`
@@ -64,4 +74,4 @@
 ## 后续建议
 1. 根据环境补全 RPC、Yellowstone、Jito 等敏感信息。
 2. 将 `token-cache.json` 的生成流程移植为 Rust 子命令或定时任务，保持和 `filter_markets_with_mints` 同步。
-3. 若需要多环境差分，可把 `galileo.toml` 拆分为 `config/galileo.{prod,dev}.toml` 并通过启动参数覆盖。
+3. 若需要多环境差分，可把 `galileo.yaml` 拆分为 `config/galileo.{prod,dev}.yaml` 并通过启动参数覆盖。

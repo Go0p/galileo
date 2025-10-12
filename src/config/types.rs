@@ -29,6 +29,13 @@ impl Default for GalileoConfig {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct AppConfig {
+    pub galileo: GalileoConfig,
+    #[allow(dead_code)]
+    pub lander: LanderConfig,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct LoggingConfig {
     #[serde(default = "LoggingConfig::default_level")]
@@ -497,4 +504,94 @@ pub struct HealthCheckConfig {
     pub timeout_ms: Option<u64>,
     #[serde(default)]
     pub expected_status: Option<u16>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)]
+pub struct LanderConfig {
+    #[serde(default)]
+    pub lander: LanderSettings,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct LanderSettings {
+    #[serde(default)]
+    pub enable_log: bool,
+    #[serde(default = "LanderSettings::default_priority_fee_strategy")]
+    pub priority_fee_strategy: String,
+    #[serde(default)]
+    pub fixed_priority_fee: Option<u64>,
+    #[serde(default)]
+    pub random_priority_fee_range: Vec<u64>,
+    #[serde(default)]
+    pub jito: Option<LanderJitoConfig>,
+    #[serde(default)]
+    pub staked: Option<LanderEndpointConfig>,
+    #[serde(default)]
+    pub temporal: Option<LanderEndpointConfig>,
+    #[serde(default)]
+    pub astralane: Option<LanderEndpointConfig>,
+}
+
+impl Default for LanderSettings {
+    fn default() -> Self {
+        Self {
+            enable_log: false,
+            priority_fee_strategy: Self::default_priority_fee_strategy(),
+            fixed_priority_fee: None,
+            random_priority_fee_range: Vec::new(),
+            jito: None,
+            staked: None,
+            temporal: None,
+            astralane: None,
+        }
+    }
+}
+
+impl LanderSettings {
+    fn default_priority_fee_strategy() -> String {
+        "fixed".to_string()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)]
+pub struct LanderJitoConfig {
+    #[serde(default)]
+    pub endpoints: Vec<String>,
+    #[serde(default)]
+    pub tip_strategies: Vec<String>,
+    #[serde(default)]
+    pub static_tip_bp: Option<u64>,
+    #[serde(default)]
+    pub static_tip_bps: Vec<u64>,
+    #[serde(default)]
+    pub fixed_tip: Option<u64>,
+    #[serde(default)]
+    pub fixed_tips: Vec<u64>,
+    #[serde(default)]
+    pub floor_tip: Option<String>,
+    #[serde(default)]
+    pub floor_tips: Vec<String>,
+    #[serde(default)]
+    pub max_floor_tip_lamports: Option<u64>,
+    #[serde(default)]
+    pub uuid_config: Vec<LanderJitoUuidConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)]
+pub struct LanderJitoUuidConfig {
+    #[serde(default)]
+    pub uuid: String,
+    #[serde(default)]
+    pub rate_limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)]
+pub struct LanderEndpointConfig {
+    #[serde(default)]
+    pub endpoints: Vec<String>,
 }

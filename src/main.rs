@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 use anyhow::{Result, anyhow};
 use clap::{Args, Parser, Subcommand};
@@ -10,7 +10,7 @@ mod jupiter;
 mod metrics;
 mod strategy;
 
-use config::{ConfigError, GalileoConfig, LoggingConfig, load_config};
+use config::{AppConfig, ConfigError, LoggingConfig, load_config};
 use jupiter::{
     BinaryStatus, JupiterBinaryManager, JupiterError,
     client::{JupiterApiClient, QuoteRequest, SwapRequest},
@@ -21,14 +21,14 @@ use strategy::engine::ArbitrageEngine;
 #[command(
     name = "galileo",
     version,
-    about = "Jupiter self-hosted orchestration bot"
+    about = "Jupiter 自托管调度机器人"
 )]
 struct Cli {
     #[arg(
         short,
         long,
         value_name = "FILE",
-        help = "Path to configuration file (defaults to galileo.toml or config/galileo.toml)"
+        help = "配置文件路径（默认查找 galileo.yaml 或 config/galileo.yaml）"
     )]
     config: Option<PathBuf>,
 
@@ -38,52 +38,44 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Start the Jupiter self-hosted binary (optionally forcing an update)
-    Start {
-        #[arg(long, help = "Force update before starting the binary")]
-        force_update: bool,
-    },
-    /// Stop the running Jupiter binary
-    Stop,
-    /// Restart the Jupiter binary
-    Restart,
-    /// Fetch and install the latest Jupiter binary
-    Update,
-    /// Print current binary status
-    Status,
-    /// Request a quote from the Jupiter API
+    /// Jupiter 二进制管理相关命令
+    #[command(subcommand)]
+    Jupiter(JupiterCmd),
+    /// 请求 Jupiter API 报价
     Quote(QuoteCmd),
-    /// Request a swap transaction from the Jupiter API
+    /// 请求 Jupiter API Swap 交易
     Swap(SwapCmd),
-    /// Run the configured arbitrage strategy loop
+    /// 运行已配置的套利策略循环
     Strategy,
+    /// 初始化配置模版文件
+    Init(InitCmd),
 }
 
 #[derive(Args, Debug)]
 struct QuoteCmd {
-    #[arg(long, help = "Input mint address")]
+    #[arg(long, help = "输入代币的 Mint 地址")]
     input: String,
-    #[arg(long, help = "Output mint address")]
+    #[arg(long, help = "输出代币的 Mint 地址")]
     output: String,
-    #[arg(long, help = "Amount in raw units (lamports/atoms)")]
+    #[arg(long, help = "交易数量（原始单位，lamports/atoms）")]
     amount: u64,
     #[arg(
         long,
         default_value_t = 50,
-        help = "Slippage tolerance in basis points"
+        help = "允许滑点（基点）"
     )]
     slippage_bps: u16,
-    #[arg(long, help = "Restrict to 1-hop direct routes only")]
+    #[arg(long, help = "仅限一跳直连路线")]
     direct_only: bool,
     #[arg(
         long,
-        help = "Allow intermediate tokens (disables restrictIntermediateTokens flag)"
+        help = "允许中间代币（对应关闭 restrictIntermediateTokens）"
     )]
     allow_intermediate: bool,
     #[arg(
         long = "extra",
         value_parser = parse_key_val,
-        help = "Additional query parameter in the form key=value",
+        help = "附加查询参数，格式为 key=value",
         value_name = "KEY=VALUE"
     )]
     extra: Vec<(String, String)>,
@@ -91,48 +83,47 @@ struct QuoteCmd {
 
 #[derive(Args, Debug)]
 struct SwapCmd {
-    #[arg(long, help = "Path to JSON file containing quoteResponse")]
+    #[arg(long, help = "包含 quoteResponse 的 JSON 文件路径")]
     quote_path: PathBuf,
-    #[arg(long, help = "User public key for the swap request")]
+    #[arg(long, help = "发起 Swap 的用户公钥")]
     user: String,
-    #[arg(long, help = "Wrap/unwrap SOL automatically")]
+    #[arg(long, help = "是否自动 wrap/unwrap SOL")]
     wrap_sol: bool,
-    #[arg(long, help = "Use Jupiter shared accounts for the swap")]
+    #[arg(long, help = "是否使用 Jupiter 共享账户")]
     shared_accounts: bool,
-    #[arg(long, help = "Optional fee account to collect platform fees")]
+    #[arg(long, help = "可选的手续费账户")]
     fee_account: Option<String>,
     #[arg(
         long,
-        help = "Compute unit price (micro lamports) to request higher priority"
+        help = "优先费（微 lamports）"
     )]
     compute_unit_price: Option<u64>,
+}
+
+#[derive(Args, Debug)]
+struct InitCmd {
+    #[arg(
+        long,
+        value_name = "DIR",
+        help = "可选输出目录（默认当前目录）"
+    )]
+    output: Option<PathBuf>,
+    #[arg(long, help = "若文件存在则覆盖")]
+    force: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = load_configuration(cli.config.clone())?;
-    init_tracing(&config.logging)?;
+    init_tracing(&config.galileo.logging)?;
 
-    let manager = JupiterBinaryManager::new(config.jupiter.clone())?;
-    let api_client = JupiterApiClient::new(manager.client.clone(), &config.bot);
+    let manager = JupiterBinaryManager::new(config.galileo.jupiter.clone())?;
+    let api_client = JupiterApiClient::new(manager.client.clone(), &config.galileo.bot);
 
     match cli.command {
-        Command::Start { force_update } => {
-            manager.start(force_update).await?;
-        }
-        Command::Stop => {
-            manager.stop().await?;
-        }
-        Command::Restart => {
-            manager.restart().await?;
-        }
-        Command::Update => {
-            manager.update().await?;
-        }
-        Command::Status => {
-            let status = manager.status().await;
-            println!("{status:?}");
+        Command::Jupiter(cmd) => {
+            handle_jupiter_cmd(cmd, &manager).await?;
         }
         Command::Quote(args) => {
             ensure_running(&manager).await?;
@@ -161,46 +152,49 @@ async fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&swap.raw)?);
         }
         Command::Strategy => {
-            let strategy_config = match config.strategy.clone() {
+            let strategy_config = match config.galileo.strategy.clone() {
                 Some(cfg) => cfg,
-                None => return Err(anyhow!("strategy configuration not provided")),
+                None => return Err(anyhow!("未提供策略配置")),
             };
 
             if !strategy_config.is_enabled() {
                 warn!(
                     target: "strategy",
-                    "strategy disabled by configuration; exiting"
+                    "策略在配置中被禁用，直接退出"
                 );
                 return Ok(());
             }
 
-            if !config.jupiter.launch.disable_local_binary {
+            if !config.galileo.jupiter.launch.disable_local_binary {
                 match manager.start(false).await {
                     Ok(()) => {
-                        info!(target: "strategy", "local jupiter binary started");
+                        info!(target: "strategy", "已启动本地 Jupiter 二进制");
                     }
                     Err(JupiterError::AlreadyRunning) => {
-                        info!(target: "strategy", "local jupiter binary already running");
+                        info!(target: "strategy", "本地 Jupiter 二进制已在运行");
                     }
                     Err(err) => return Err(err.into()),
                 }
             } else {
                 info!(
                     target: "strategy",
-                    "local jupiter binary disabled; using remote API"
+                    "已禁用本地 Jupiter 二进制，将使用远端 API"
                 );
             }
 
             let engine =
-                ArbitrageEngine::new(strategy_config, config.bot.clone(), api_client.clone())
+                ArbitrageEngine::new(strategy_config, config.galileo.bot.clone(), api_client.clone())
                     .map_err(|err| anyhow!(err))?;
 
             tokio::select! {
                 res = engine.run() => res.map_err(|err| anyhow!(err))?,
                 _ = tokio::signal::ctrl_c() => {
-                    info!(target: "strategy", "received shutdown signal");
+                    info!(target: "strategy", "收到终止信号，停止运行");
                 }
             }
+        }
+        Command::Init(args) => {
+            init_configs(args)?;
         }
     }
 
@@ -223,21 +217,24 @@ fn init_tracing(config: &LoggingConfig) -> Result<()> {
     Ok(())
 }
 
-fn load_configuration(path: Option<PathBuf>) -> Result<GalileoConfig, ConfigError> {
+fn load_configuration(path: Option<PathBuf>) -> Result<AppConfig, ConfigError> {
     load_config(path)
 }
 
 async fn ensure_running(manager: &JupiterBinaryManager) -> Result<(), JupiterError> {
+    if manager.config.launch.disable_local_binary {
+        return Ok(());
+    }
     match manager.status().await {
         BinaryStatus::Running => Ok(()),
         status => {
             error!(
                 target: "jupiter",
                 ?status,
-                "Jupiter binary is not running; start it with `galileo start`"
+                "Jupiter 二进制未运行，请先执行 `galileo jupiter start`"
             );
             Err(JupiterError::Schema(format!(
-                "binary not running, current status: {status:?}"
+                "二进制未运行，当前状态: {status:?}"
             )))
         }
     }
@@ -246,6 +243,85 @@ async fn ensure_running(manager: &JupiterBinaryManager) -> Result<(), JupiterErr
 fn parse_key_val(s: &str) -> std::result::Result<(String, String), String> {
     let pos = s
         .find('=')
-        .ok_or_else(|| "expected key=value format".to_string())?;
+        .ok_or_else(|| "参数格式需为 key=value".to_string())?;
     Ok((s[..pos].to_string(), s[pos + 1..].to_string()))
+}
+
+fn init_configs(args: InitCmd) -> Result<()> {
+    let output_dir = match args.output {
+        Some(dir) => dir,
+        None => std::env::current_dir()?,
+    };
+
+    fs::create_dir_all(&output_dir)?;
+
+    let templates: [(&str, &str); 3] = [
+        (
+            "galileo.yaml",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/galileo.yaml")),
+        ),
+        (
+            "lander.yaml",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/lander.yaml")),
+        ),
+        (
+            "jupiter.toml",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/jupiter.toml")),
+        ),
+    ];
+
+    for (filename, contents) in templates {
+        let target_path = output_dir.join(filename);
+        if target_path.exists() && !args.force {
+            println!(
+                "跳过 {}（文件已存在，如需覆盖请加 --force）",
+                target_path.display()
+            );
+            continue;
+        }
+
+        fs::write(&target_path, contents)?;
+        println!("已写入 {}", target_path.display());
+    }
+
+    Ok(())
+}
+
+#[derive(Subcommand, Debug)]
+enum JupiterCmd {
+    /// 启动 Jupiter 自托管二进制（可选强制更新）
+    Start {
+        #[arg(long, help = "启动前强制更新二进制")]
+        force_update: bool,
+    },
+    /// 停止已运行的 Jupiter 二进制
+    Stop,
+    /// 重启 Jupiter 二进制
+    Restart,
+    /// 下载并安装最新 Jupiter 二进制
+    Update,
+    /// 查看当前二进制状态
+    Status,
+}
+
+async fn handle_jupiter_cmd(cmd: JupiterCmd, manager: &JupiterBinaryManager) -> Result<()> {
+    match cmd {
+        JupiterCmd::Start { force_update } => {
+            manager.start(force_update).await?;
+        }
+        JupiterCmd::Stop => {
+            manager.stop().await?;
+        }
+        JupiterCmd::Restart => {
+            manager.restart().await?;
+        }
+        JupiterCmd::Update => {
+            manager.update().await?;
+        }
+        JupiterCmd::Status => {
+            let status = manager.status().await;
+            println!("{status:?}");
+        }
+    }
+    Ok(())
 }
