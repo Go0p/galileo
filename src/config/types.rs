@@ -398,8 +398,14 @@ impl JupiterConfig {
             args.push(core.market_cache.clone());
         }
 
+        let market_mode = if core.use_local_market_cache {
+            MarketMode::File
+        } else {
+            core.market_mode
+        };
+
         args.push("--market-mode".to_string());
-        args.push(core.market_mode.as_str().to_string());
+        args.push(market_mode.as_str().to_string());
 
         args.push("--host".to_string());
         args.push(core.host.clone());

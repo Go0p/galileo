@@ -30,12 +30,13 @@ port = 18080
 metrics_port = 18081
 # 当设置为 true 时，它​​将从本地文件 mainnet.json 加载市场缓存。当你运行 jup 时，
 # 如果启动速度很慢，甚至出现 error reading a body from connection 错误，
-# 这个选项会很有用。你可以使用 wget https://cache.jup.ag/markets?v=6 -O markets.json 更新本地文件。
+# 这个选项会很有用。你可以使用 wget https://cache.jup.ag/markets?v=4 -O markets.json 更新本地文件。
+# 如果开启，market_mode 会自动切换为 file。
 use_local_market_cache = true
 # 如果开启，则只保留 included_dexes 中的市场；否则保留所有市场。
 exclude_other_dex_program_ids = true
-# 市场快照地址，可使用官方缓存或自建文件（相对路径相对于 `bin/`）。
-market_cache = "markets.json"
+# 市场快照地址，可使用官方缓存或自建文件（建议以 `./bin/` 为前缀指向下载结果）。
+market_cache = "./bin/markets.json"
 # 当启用本地缓存时，每次启动都会从该 URL 重新下载最新缓存。
 market_cache_download_url = "https://cache.jup.ag/markets?v=4"
 # 市场模式，可选值：`remote`（固定快照）、`file`（本地文件）、`europa`（实时推送）。
