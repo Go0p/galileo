@@ -49,7 +49,7 @@ https://github.com/ValidatorsDAO/solana-stream/blob/main/crate/solana-stream-sdk
 常用 CLI 入口：
 - `galileo strategy`：根据配置运行套利循环，必要时会自动拉起本地 Jupiter。
 - `galileo jupiter start|stop|restart|status|update`：管理本地 Jupiter 二进制（当 `disable_local_binary = false` 且使用本地 URL 时生效）。
-- `galileo swap-instructions`：基于本地 quote/result 生成 Jupiter swap 指令 JSON，便于自定义组装交易。
+- Jupiter 启动参数解释可参考 `docs/jupiter_cli_options.md`，或使用 `galileo jupiter help` 查看 CLI。
 
 
 ## 缓存系统设计

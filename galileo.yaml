@@ -1,8 +1,8 @@
 global:
   # rpc url
-  rpc_url: "http://xxxx"
+  rpc_url: "https://solana-rpc.publicnode.com"
   # yellowstone grpc url
-  yellowstone_grpc_url: "http://xxxx"
+  yellowstone_grpc_url: "http://185.26.10.237:10000"
   # yellowstone grpc token
   yellowstone_grpc_token: ""
 
@@ -27,57 +27,34 @@ global:
     level: "info"
     json: true
 
-# 当使用 JUPITER_URL=http://0.0.0.0:18080 或 JUPITER_URL=http://127.0.0.1:18080 运行机器人时，
-# 机器人将首先根据 intermedium 中获取的 mint。然后启动 JupV6 API，并将 FILTER_MARKETS_WITH_MINTS 设置为从 intermedium 提取的 mints。
-# mints 数量越多，您获得的机会就越多，因为来自不同代币对的潜在路径越多。然而，数值越高也意味着从 JupV6 API 获取报价的时间越长，
-# 并且会占用更多计算机资源。
-jupiter:
-  # 如果 JUPITER_URL 设置为其他值，则以下格式中的任何参数均不适用。
-  # 当您拥有 JupV6 API 提供程序或自行运行它时，可以使用此选项。
-  jupiter_url: "http://0.0.0.0:18080"
-
-  # 设置为 true 时，不会在本地启动 Jupiter API。当你想在同一台机器上运行多个机器人时，这很有用。
-  disable_local_binary: false
-
+request_params:
   # 完整列表在 https://lite-api.jup.ag/swap/v1/program-id-to-label 。您可以在启动 jup api 时选择要包含哪个 Dex。
   # 请使用 Dex 的地址（而非名称），并以逗号分隔。
-  included_dexes: []
+  included_dexes: [
+    "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+  ]
 
-  excluded_dexes: []
+  excluded_dexes: [
 
-  # 用于读取数据的 RPC。使用默认 JUPITER_URL 值时，此 RPC 还将用于启动 JupV6 API。
-  # 如果未设置，则将使用 global 中 rpc_url 的值。
-  jupiter_rpc_url: ""
-
-  # 用于从 JupV6 调用引用的 maxAccounts 参数。建议不要将其设置为高于 32。此数字越高，您可以找到的路由越多。
-  # 但由于账户总数存在限制，因此此处的数字过高也会导致出现无效路由的可能性更高，因为账户数量过多，并且搜索时间也会更长。
-  jup_max_accounts: 32
-
-  # 当设置为 true 时，它​​将从本地文件 mainnet.json 加载市场缓存。当你运行 jup 时，
-  # 如果启动速度很慢，甚至出现 error reading a body from connection 错误，
-  # 这个选项会很有用。你可以使用 wget https://cache.jup.ag/markets?v=4 -O mainnet.json 更新本地文件。
-  use_local_market_cache: false
-
-  # 支持的值： europa 、 file 、 remote
-  # 此处的默认行为（remote）将获取您指定的中间铸币厂的所有市场的快照，并且仅在重启时更新它们。
-  # Europa 模式会将铸币厂列表中的新市场传输到 Jupiter，但这对某些 RPC 来说可能非常繁重。
-  market_mode: "remote"
-
-  # Jup uses thread for 3 things: webserver, update, router. You can config thread count for webserver and update, the rest of the cores will be used for router.
-  # Router thread is handling the workload to find the best route for each quote request. This can be heavy especially when you have USE_DIRECT_ROUTE_ONLY false.
-  # Make sure you leave some cores beside WEBSERVER_THREAD_COUNT and UPDATE_THREAD_COUNT for routing calculation.
-  # jupiter的webserver线程数
-  jupiter_webserver: 24
-  # jup的更新线程数
-  jupiter_update: 5
-  # jupiter的总线程数
-  total_thread_count: 64
+  ]
+  # /quote 接口的参数 onlyDirectRoutes
   # 设置为 true 时，机器人将仅寻找两跳（A -> B -> A）交易。设置为 true 将缩短跳转报价时间，加快落地速度。设置为 false 将获得更多机会，但需要更多报价时间。
-  use_direct_route_only: false
+  only_direct_routes: false
+  # /quote 接口的参数 restrictIntermediateTokens
   # 仅当 use_direct_route_only 为 false 时，此设置才会生效。
   # 将中间代币限制为具有稳定流动性的顶级代币集合。这将有助于降低兑换时潜在的高滑点错误率，并将对定价的影响降至最低。
   # 当您将 use_direct_route_only 设置为 false 时，这可以帮助加快 jupiter 的报价时间。不过，正如它所说，它也会限制在您的路线中使用的额外 mint。
   restrict_intermediate_tokens: true
+
+  # /swap-instructions 接口的参数
+  # 跳过用户账户相关 RPC 调用，以减少重复拉取。
+  skip_user_accounts_rpc_calls: false
+
+  # /swap-instructions 接口的参数 dynamicComputeUnitLimit
+  # 启用后，它将进行交换模拟以获取使用的计算单元并将其设置在 ComputeBudget 的计算单元限制中
+  # 这会导致一个额外的 RPC 调用来模拟这个交易
+  # 我们建议启用此功能以正确估计计算单元并减少所需的优先费用或有更高的机会被纳入区块
+  dynamic_compute_unit_limit: true
 
 # 机器人会尝试找到盈利路线，具体方法是：获取给定交易规模的 base_mint 到 intermediate_mints 的报价，
 # 然后再获取 intermediate_mints 到 base_mint 的另一个报价，
@@ -94,17 +71,18 @@ intermedium:
   disable_mints: []
 
 bot:
-  manager:
-    # 是否禁止启动机器人
-    disable_running: false
-    # request timeout ms
-    request_timeout_ms: 2000
-    # 自动重启 jupiter binary 的时间间隔，单位为分钟，0表示不重启
-    auto_restart_minutes: 30
-    # 是否通过 geyser 获取 block hash, 否则通过 rpc 获取
-    get_block_hash_by_grpc: true
-    # 是否允许模拟
-    enable_simulation: false
+  # 设置为 true 时，不会在本地启动 Jupiter API。当你想在同一台机器上运行多个机器人时，这很有用。
+  disable_local_binary: false
+  # 是否禁止启动机器人
+  disable_running: false
+  # request timeout ms
+  request_timeout_ms: 2000
+  # 自动重启 jupiter binary 的时间间隔，单位为分钟，0表示不重启
+  auto_restart_minutes: 30
+  # 是否通过 geyser 获取 block hash, 否则通过 rpc 获取
+  get_block_hash_by_grpc: true
+  # 是否允许模拟
+  enable_simulation: false
 
 flashloan:
   # 是否启用 flash 贷款

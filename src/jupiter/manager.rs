@@ -2,6 +2,7 @@ use std::path::Path;
 use std::process::ExitStatus;
 use std::time::Duration;
 
+use tokio::process::Command;
 use tracing::{info, warn};
 
 use super::error::JupiterError;
@@ -194,6 +195,33 @@ impl JupiterBinaryManager {
         let repo = &self.config.binary.repo_name;
         let releases = fetch_recent_releases(&self.client, owner, repo, limit).await?;
         Ok(releases)
+    }
+
+    pub async fn installed_version(&self) -> Result<Option<String>, JupiterError> {
+        let binary_path = self.config.binary_path();
+        if !binary_path.exists() {
+            return Ok(None);
+        }
+
+        let output = Command::new(&binary_path).arg("--version").output().await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(JupiterError::Schema(format!(
+                "执行 {} --version 失败: {}",
+                binary_path.display(),
+                stderr.trim()
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if stdout.is_empty() {
+            return Ok(Some(format!(
+                "{} --version (无输出)",
+                binary_path.display()
+            )));
+        }
+
+        Ok(Some(stdout))
     }
 
     pub async fn wait_for_health(&self, config: &HealthCheckConfig) -> Result<(), JupiterError> {

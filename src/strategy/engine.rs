@@ -3,7 +3,7 @@ use std::convert::TryFrom;
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
-use crate::config::{BotConfig, BotIdentityConfig};
+use crate::config::{BotConfig, BotIdentityConfig, JupiterRequestParamsConfig};
 use crate::jupiter::{JupiterApiClient, QuoteRequest, QuoteResponse, SwapRequest};
 
 use super::config::StrategyConfig;
@@ -19,13 +19,15 @@ pub struct ArbitrageEngine {
     pairs: Vec<TradePair>,
     trade_amounts: Vec<u64>,
     identity: BotIdentityConfig,
+    request_params: JupiterRequestParamsConfig,
 }
 
 impl ArbitrageEngine {
     pub fn new(
-        config: StrategyConfig,
+        mut config: StrategyConfig,
         bot: BotConfig,
         client: JupiterApiClient,
+        request_params: JupiterRequestParamsConfig,
     ) -> StrategyResult<Self> {
         if !config.is_enabled() {
             return Err(StrategyError::Disabled);
@@ -50,6 +52,22 @@ impl ArbitrageEngine {
             ));
         }
 
+        if config.quote_max_accounts.is_none() {
+            config.quote_max_accounts = request_params.max_accounts;
+        }
+        if request_params.use_direct_route_only {
+            config.only_direct_routes = true;
+        }
+        if !request_params.restrict_intermediate_tokens {
+            config.restrict_intermediate_tokens = false;
+        }
+        if config.controls.only_quote_dexs.is_empty()
+            && !request_params.included_dex_program_ids.is_empty()
+        {
+            config.controls.only_quote_dexs =
+                request_params.included_dex_program_ids.clone();
+        }
+
         let identity = bot.identity.clone();
         if identity.user_pubkey.is_none() {
             return Err(StrategyError::InvalidConfig(
@@ -68,6 +86,7 @@ impl ArbitrageEngine {
             pairs,
             trade_amounts,
             identity,
+            request_params,
         })
     }
 
@@ -188,7 +207,49 @@ impl ArbitrageEngine {
                 self.config.controls.only_quote_dexs.join(","),
             );
         }
+        self.apply_request_defaults(&mut request);
         request
+    }
+
+    fn apply_request_defaults(&self, request: &mut QuoteRequest) {
+        if request.extra.get("maxAccounts").is_none() {
+            if let Some(max_accounts) = self.request_params.max_accounts {
+                request
+                    .extra
+                    .insert("maxAccounts".to_string(), max_accounts.to_string());
+            }
+        }
+
+        if request.extra.get("onlyDexes").is_none()
+            && !self.request_params.included_dex_program_ids.is_empty()
+        {
+            request.extra.insert(
+                "onlyDexes".to_string(),
+                self.request_params
+                    .included_dex_program_ids
+                    .join(","),
+            );
+        }
+
+        if request.extra.get("excludeDexes").is_none()
+            && !self.request_params.excluded_dex_program_ids.is_empty()
+        {
+            request.extra.insert(
+                "excludeDexes".to_string(),
+                self.request_params
+                    .excluded_dex_program_ids
+                    .join(","),
+            );
+        }
+
+        if !request.only_direct_routes && self.request_params.use_direct_route_only {
+            request.only_direct_routes = true;
+        }
+
+        if request.restrict_intermediate_tokens && !self.request_params.restrict_intermediate_tokens
+        {
+            request.restrict_intermediate_tokens = false;
+        }
     }
 
     fn merge_quotes(

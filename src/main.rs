@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{collections::BTreeSet, fs, path::PathBuf};
 
 use anyhow::{Result, anyhow};
 use clap::{Args, Parser, Subcommand};
@@ -10,7 +10,7 @@ mod jupiter;
 mod metrics;
 mod strategy;
 
-use config::{AppConfig, ConfigError, LoggingConfig, load_config};
+use config::{AppConfig, ConfigError, IntermediumConfig, JupiterConfig, JupiterRequestParamsConfig, LoggingConfig, load_config};
 use jupiter::{BinaryStatus, JupiterApiClient, JupiterBinaryManager, JupiterError, QuoteRequest, SwapRequest};
 use strategy::engine::ArbitrageEngine;
 
@@ -116,7 +116,14 @@ async fn main() -> Result<()> {
     let config = load_configuration(cli.config.clone())?;
     init_tracing(&config.galileo.logging)?;
 
-    let manager = JupiterBinaryManager::new(config.galileo.jupiter.clone())?;
+    let mut jupiter_cfg = config.jupiter.clone();
+    apply_request_overrides_to_jupiter(
+        &mut jupiter_cfg,
+        &config.galileo.request_params,
+        &config.galileo.intermedium,
+    );
+
+    let manager = JupiterBinaryManager::new(jupiter_cfg)?;
     let api_client = JupiterApiClient::new(manager.client.clone(), &config.galileo.bot);
 
     match cli.command {
@@ -132,6 +139,7 @@ async fn main() -> Result<()> {
             for (k, v) in args.extra {
                 request.extra.insert(k, v);
             }
+            apply_request_defaults_to_quote(&mut request, &config.galileo.request_params);
 
             let quote = api_client.quote(&request).await?;
             println!("{}", serde_json::to_string_pretty(&quote.raw)?);
@@ -163,7 +171,7 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
-            if !config.galileo.jupiter.launch.disable_local_binary {
+            if !manager.config.launch.disable_local_binary {
                 match manager.start(false).await {
                     Ok(()) => {
                         info!(target: "strategy", "已启动本地 Jupiter 二进制");
@@ -180,9 +188,13 @@ async fn main() -> Result<()> {
                 );
             }
 
-            let engine =
-                ArbitrageEngine::new(strategy_config, config.galileo.bot.clone(), api_client.clone())
-                    .map_err(|err| anyhow!(err))?;
+            let engine = ArbitrageEngine::new(
+                strategy_config,
+                config.galileo.bot.clone(),
+                api_client.clone(),
+                config.galileo.request_params.clone(),
+            )
+            .map_err(|err| anyhow!(err))?;
 
             tokio::select! {
                 res = engine.run() => res.map_err(|err| anyhow!(err))?,
@@ -243,6 +255,76 @@ fn parse_key_val(s: &str) -> std::result::Result<(String, String), String> {
         .find('=')
         .ok_or_else(|| "参数格式需为 key=value".to_string())?;
     Ok((s[..pos].to_string(), s[pos + 1..].to_string()))
+}
+
+fn apply_request_defaults_to_quote(
+    request: &mut QuoteRequest,
+    params: &JupiterRequestParamsConfig,
+) {
+    if request.extra.get("maxAccounts").is_none() {
+        if let Some(max_accounts) = params.max_accounts {
+            request
+                .extra
+                .insert("maxAccounts".to_string(), max_accounts.to_string());
+        }
+    }
+
+    if request.extra.get("onlyDexes").is_none()
+        && !params.included_dex_program_ids.is_empty()
+    {
+        request.extra.insert(
+            "onlyDexes".to_string(),
+            params.included_dex_program_ids.join(","),
+        );
+    }
+
+    if request.extra.get("excludeDexes").is_none()
+        && !params.excluded_dex_program_ids.is_empty()
+    {
+        request.extra.insert(
+            "excludeDexes".to_string(),
+            params.excluded_dex_program_ids.join(","),
+        );
+    }
+
+    if !request.only_direct_routes && params.use_direct_route_only {
+        request.only_direct_routes = true;
+    }
+
+    if request.restrict_intermediate_tokens && !params.restrict_intermediate_tokens {
+        request.restrict_intermediate_tokens = false;
+    }
+}
+
+fn apply_request_overrides_to_jupiter(
+    jupiter: &mut JupiterConfig,
+    params: &JupiterRequestParamsConfig,
+    intermedium: &IntermediumConfig,
+) {
+    let mut mint_set: BTreeSet<String> = intermedium.mints.iter().cloned().collect();
+    for mint in &intermedium.disable_mints {
+        mint_set.remove(mint);
+    }
+
+    if !mint_set.is_empty() {
+        jupiter.tokens.filter_markets_with_mints = mint_set.into_iter().collect();
+    } else {
+        jupiter.tokens.filter_markets_with_mints.clear();
+    }
+
+    jupiter.tokens.exclude_dex_program_ids = params.excluded_dex_program_ids.clone();
+    jupiter.tokens.include_dex_program_ids = params.included_dex_program_ids.clone();
+}
+
+fn status_indicator(status: BinaryStatus) -> (&'static str, &'static str) {
+    match status {
+        BinaryStatus::Running => ("🚀", "运行中"),
+        BinaryStatus::Starting => ("⏳", "启动中"),
+        BinaryStatus::Updating => ("⬇️", "更新中"),
+        BinaryStatus::Stopping => ("🛑", "停止中"),
+        BinaryStatus::Stopped => ("⛔", "已停止"),
+        BinaryStatus::Failed => ("⚠️", "失败"),
+    }
 }
 
 fn init_configs(args: InitCmd) -> Result<()> {
@@ -325,8 +407,21 @@ async fn handle_jupiter_cmd(cmd: JupiterCmd, manager: &JupiterBinaryManager) -> 
             manager.update(version.as_deref()).await?;
         }
         JupiterCmd::Status => {
-            let status = manager.status().await;
-            println!("{status:?}");
+            if manager.config.launch.disable_local_binary {
+                println!("status: 🚫 已禁用本地 Jupiter（二进制不运行，使用远程 API）");
+            } else {
+                let status = manager.status().await;
+                let (emoji, label) = status_indicator(status);
+                println!("status: {emoji} {label} ({status:?})");
+                let binary_path = manager.config.binary_path();
+                println!("binary: {binary_path}", binary_path = binary_path.display());
+
+                match manager.installed_version().await {
+                    Ok(Some(version)) => println!("version: 🎯 {version}"),
+                    Ok(None) => println!("version: ❔ 未检测到已安装的二进制"),
+                    Err(err) => println!("version: ⚠️ 获取失败：{err}"),
+                };
+            }
         }
         JupiterCmd::List { limit } => {
             let releases = manager.list_releases(limit).await?;
