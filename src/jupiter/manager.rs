@@ -297,23 +297,26 @@ impl JupiterBinaryManager {
 
         let process = {
             let mut state = self.state.lock().await;
-            match state.process.take() {
-                Some(process) => {
-                    state.status = BinaryStatus::Stopping;
-                    if self.config.process.graceful_shutdown_timeout_ms > 0 {
-                        info!(
-                            target: "jupiter",
-                            timeout_ms = self.config.process.graceful_shutdown_timeout_ms,
-                            "开始执行优雅关闭"
-                        );
-                    }
-                    process
-                }
-                None => return Err(JupiterError::NotRunning),
+            let process = state.process.take();
+            state.status = BinaryStatus::Stopping;
+            if process.is_some() && self.config.process.graceful_shutdown_timeout_ms > 0 {
+                info!(
+                    target: "jupiter",
+                    timeout_ms = self.config.process.graceful_shutdown_timeout_ms,
+                    "开始执行优雅关闭"
+                );
             }
+            process
         };
 
-        shutdown_process(process).await?;
+        if let Some(process) = process {
+            shutdown_process(process).await?;
+        } else {
+            info!(
+                target: "jupiter",
+                "未检测到正在运行的 Jupiter 进程，视为已停止"
+            );
+        }
 
         self.transition(BinaryStatus::Stopped).await;
 

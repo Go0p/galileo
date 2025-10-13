@@ -20,6 +20,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_with = "3.7"
 base64 = "0.22"
+bs58 = "0.5"
+bincode = { version = "2.0.1", features = ["serde"] }
 serde_yaml = "0.9"
 toml = "0.9"
 tempfile = "3.10"
@@ -35,3 +37,6 @@ zip = { version = "6.0.0", default-features = false, features = ["deflate"] }
 tar = "0.4"
 rand = "0.9.2"
 indicatif = { version = "0.18.0", features = ["tokio"] }
+solana-address-lookup-table-interface = { version = "3.0.0", features = ["bincode", "bytemuck"] }
+rust_decimal = { version = "1.35", features = ["serde"] }
+solana-account-decoder = "3.0.0"

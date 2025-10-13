@@ -1,5 +1,7 @@
 use std::num::ParseIntError;
 
+use anyhow::Error;
+use solana_client::client_error::ClientError;
 use thiserror::Error;
 
 use crate::jupiter::error::JupiterError;
@@ -16,6 +18,14 @@ pub enum StrategyError {
     Jupiter(#[from] JupiterError),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("rpc error: {0}")]
+    Rpc(#[from] ClientError),
+    #[error("network error: {0}")]
+    Network(#[from] reqwest::Error),
+    #[error("transaction error: {0}")]
+    Transaction(#[from] Error),
+    #[error("bundle submission failed: {0}")]
+    Bundle(String),
 }
 
 pub type StrategyResult<T> = Result<T, StrategyError>;

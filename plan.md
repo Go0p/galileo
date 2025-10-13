@@ -9,49 +9,73 @@
   身份信息由环境变量与 `global.wallet` 提供，去掉强制的配置段；保留套利循环框架，可接入后续交易执行逻辑。
 - ✅ **日志与 CLI 行为对齐**  
   支持 `JUPITER_URL`/`JUPITER_URL` 环境变量覆盖 base URL；无效的 CLI flag 已移除。
+- ✅ **Quote 接口联调通过**  
+  手动执行 `curl` 至 `http://172.22.166.244:18080/quote` 返回预期 JSON，`restrictIntermediateTokens=true` 等全局配置已生效。
+- ✅ **Rust Demo 完整示例**  
+  `docs/demo.md` 提供 Rust 版 quote/swap/bundle 样例，对齐 spam / blind / back_run 策略配置。
+- ✅ **策略执行链路初版**  
+  `ArbitrageEngine` 接入交易构建与 Jito Bundle 发送，支持 spam/blind 基础配置（DEX 白名单、优先费、落地通道）。
 - ⚙️ `cargo check` 通过；`cargo run -- jupiter start` 会在前台输出 Jupiter 日志并复用本地二进制。
 
 ## 未决问题 / 约束
 1. **策略身份环境变量**：运行套利前需要设置 `GALILEO_USER_PUBKEY`（可选：`GALILEO_FEE_ACCOUNT` 等）；缺失时引擎会报错。
-2. **高性能与可观测性**：尚未覆盖缓存、压测指标、监控埋点等增强项。
-3. **运维流程**：缺少部署/灰度/告警脚本与文档。
-4. **今日进度**：完成配置精简与启动流程调试，暂定今日收工，下一次会话继续推进阶段 A 的环境验证。
+2. **生产级套利引擎**：尚需补齐行情采集、实时调度、执行落地、风控等核心模块。
+3. **高性能与可观测性**：需按 README 中的并发/监控方案实现指标、限流、压测工具（报价场景以低延迟为主，暂不引入 quote 缓存）。
+4. **运维流程**：缺少部署/灰度/告警脚本与文档。
+5. **今日进度**：完成 Quote 接口远端验证与 Rust Demo 编写，即将进入生产套利阶段。
 
 ## 下一阶段计划
 
 ### 阶段 A（短期）— 完成基础运行闭环
 1. **运行配置验收**  
-   - [ ] 在预期环境执行 `cargo run -- jupiter start`，验证 `.jupiter-version` 与版本化副本写入。  
-   - [ ] 通过 `cargo run -- jupiter status` 和 `ps` 双重确认后台进程存在。  
-   - [ ] 根据需要将 `global.logging.json` 设为 `false` 以启用文本日志。  
+   - [x] 在预期环境执行 `cargo run -- jupiter start`，验证 `.jupiter-version` 与版本化副本写入（用户实测通过）。  
+   - [x] 通过 `cargo run -- jupiter status` 和 `ps` 双重确认后台进程存在。  
+   - [x] 根据需要将 `global.logging.json` 设为 `false` 以启用文本日志。  
 2. **策略最小自检**  
-   - [ ] 准备必需环境变量（`GALILEO_USER_PUBKEY` 等）  
-   - [ ] 运行 `cargo run -- strategy` 检查初始化与身份解析是否顺利。  
-   - [ ] 确认 Jupiter API base URL 正常解析（本地或远端）。
+   - [x] 准备必需环境变量（`GALILEO_USER_PUBKEY` 等）。  
+   - [x] 运行 `cargo run -- strategy` 检查初始化与身份解析是否顺利。  
+   - [x] 确认 Jupiter API base URL 正常解析（本地或远端）。
+3. **文档对齐**  
+   - [x] 将 `docs/demo.md` 更新为涵盖 spam / blind / back run 策略的调用流程要点。  
+   - [x] 补充 `/quote` 与 `/swap-instructions` 请求参数与 `request_params` 段配置之间的映射说明。
 
-### 阶段 B（中期）— 高性能与可观测性
-1. **HTTP/Quote 性能优化**  
-   - [ ] 评估 `JupiterApiClient` 连接池、超时和重试策略。  
-   - [ ] 考虑缓存热门 quote 结果，减少重复 API 调用。
-2. **监控与日志**  
-   - [ ] 扩充 `metrics` 模块，记录 quote / swap latency、下载耗时等。  
-   - [ ] 建立统一的日志字段规范，规划是否接入 Prometheus / OpenTelemetry。
+### 阶段 B（中期）— 生产级套利引擎
+1. **架构定稿与设计输出**  
+   - [x] 结合 README 高性能方案拆分模块（行情采集、报价调度、执行落地、风控监控）。  
+   - [ ] 明确策略 trait/泛型接口与缓存职责，形成 `docs/strategy_arch.md` 草案。
+2. **行情采集与状态服务**  
+   - [ ] 接入 Yellowstone gRPC / RPC，维护最新 slot / blockhash / orderbook 等热数据（quote 请求直接走实时通道）。  
+   - [ ] 为落地与风控提供只读状态服务，并补充一致性 / 延迟基准测试脚本。
+3. **套利调度执行链路**  
+   - [ ] 搭建异步通道 + Rayon 组合的多策略报价流水线（spam/blind/back_run）。  
+   - [x] 抽象 bundle 发送器，支持 Jito / Staked 等落地通道，并实现优先费/小费策略（当前实现 Jito，预留多通道扩展）。
+4. **风险控制与资金管理**  
+   - [ ] 实现滑点、持仓阈值、冷却时间等风控模块。  
+   - [ ] 增加失败回退、重试与黑名单逻辑。
 
-### 阶段 C（长期）— 策略执行与运维
-1. **套利执行闭环**  
-   - [ ] 接入实时机会过滤、落地交易（Jito 或自建 relayer）。  
-   - [ ] 补充滑点、资金阈值、失败回退等风控模块。
-2. **部署与告警**  
-   - [ ] 编写 systemd/docker 部署脚本与巡检脚本。  
-   - [ ] 定义 SLO / 告警策略（进程存活、API 失败率等）。
+### 阶段 C（长期）— 可观测性与性能运营
+1. **监控与日志**  
+   - [ ] 扩充 metrics（quote/swap latency、bundle 命中率、缓存命中率）。  
+   - [ ] 统一日志字段，评估接入 Prometheus / OpenTelemetry。
+2. **压测与调优**  
+   - [ ] 构建压测场景（模拟高并发报价与 bundle 提交），评估 CPU/内存/延迟。  
+   - [ ] 按压测结果优化内存布局、锁粒度与异步调度策略。
+
+### 阶段 D（运维）— 部署与告警
+1. **部署流程**  
+   - [ ] 编写 systemd/docker 部署脚本与滚动升级策略。  
+   - [ ] 整合配置下发、版本管理与回滚流程。
+2. **告警与 SLO**  
+   - [ ] 定义核心告警项（进程心跳、API 错误率、套利利润波动等）。  
+   - [ ] 建立日常巡检与故障演练清单。
 
 ## 里程碑
 - **M1**：Jupiter 二进制管理 + 基本策略循环稳定运行（当前大部分内容已完成，待环境验证 ✅）。
-- **M2**：性能指标达标并具备监控体系（阶段 B 完成）。
-- **M3**：套利执行闭环 + 运维体系落地（阶段 C 完成）。
+- **M2**：生产套利引擎上线（阶段 B 完成）。
+- **M3**：可观测性完善 + 运维体系落地（阶段 C、D 完成）。
 
 ## 后续协作建议
 - 若需新增配置字段，优先更新 `galileo.yaml` / `jupiter.toml` 模板并同步 `types.rs`；保持“配置先行，代码跟随”的约定。
 - 策略模块依赖的环境变量请在 README 或单独文档中列出，方便部署人员配置。
 - 关键变更（性能、监控、策略执行）建议先方案评审，再进入开发阶段。
-- 若暂时不继续开发，可按当前状态保存；下次会话从阶段 A 的验证任务开始。
+- 运维与性能相关的新增文档建议归档于 `docs/` 子目录，便于后续查阅。

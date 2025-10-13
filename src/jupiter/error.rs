@@ -13,6 +13,7 @@ pub enum JupiterError {
     #[error("process is already running")]
     AlreadyRunning,
     #[error("no process is running")]
+    #[allow(dead_code)]
     NotRunning,
     #[error("download failed for {url}: {source}")]
     DownloadFailed {

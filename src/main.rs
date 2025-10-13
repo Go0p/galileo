@@ -1,23 +1,26 @@
-use std::{collections::BTreeSet, fs, path::PathBuf};
+use std::{collections::BTreeSet, env, fs, path::PathBuf, str::FromStr, sync::Arc};
 
 use anyhow::{Result, anyhow};
 use clap::{Args, Parser, Subcommand};
 use tracing::{error, info, warn};
 use tracing_subscriber::{EnvFilter, fmt};
 
+mod api;
 mod config;
 mod jupiter;
 mod metrics;
 mod strategy;
 
+use api::{ComputeUnitPriceMicroLamports, JupiterApiClient, QuoteRequest, SwapInstructionsRequest};
 use config::{
     AppConfig, BotConfig, ConfigError, GlobalConfig, IntermediumConfig, JupiterConfig,
     LaunchOverrides, RequestParamsConfig, YellowstoneConfig, load_config,
 };
-use jupiter::{
-    BinaryStatus, JupiterApiClient, JupiterBinaryManager, JupiterError, QuoteRequest, SwapRequest,
-};
+use jupiter::{BinaryStatus, JupiterBinaryManager, JupiterError};
+use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::pubkey::Pubkey;
 use strategy::engine::ArbitrageEngine;
+use strategy::execution::StrategyMode;
 
 #[derive(Parser, Debug)]
 #[command(name = "galileo", version, about = "Jupiter 自托管调度机器人")]
@@ -122,12 +125,15 @@ async fn main() -> Result<()> {
         }
         Command::Quote(args) => {
             ensure_running(&manager).await?;
-            let mut request =
-                QuoteRequest::new(args.input, args.output, args.amount, args.slippage_bps);
-            request.only_direct_routes = args.direct_only;
-            request.restrict_intermediate_tokens = !args.allow_intermediate;
+            let input = Pubkey::from_str(&args.input)
+                .map_err(|err| anyhow!("输入代币 Mint 无效 {}: {err}", args.input))?;
+            let output = Pubkey::from_str(&args.output)
+                .map_err(|err| anyhow!("输出代币 Mint 无效 {}: {err}", args.output))?;
+            let mut request = QuoteRequest::new(input, output, args.amount, args.slippage_bps);
+            request.only_direct_routes = Some(args.direct_only);
+            request.restrict_intermediate_tokens = Some(!args.allow_intermediate);
             for (k, v) in args.extra {
-                request.extra.insert(k, v);
+                request.extra_query_params.insert(k, v);
             }
             apply_request_defaults_to_quote(&mut request, &config.galileo.request_params);
 
@@ -138,11 +144,20 @@ async fn main() -> Result<()> {
             ensure_running(&manager).await?;
             let quote_raw = tokio::fs::read_to_string(&args.quote_path).await?;
             let quote_value: serde_json::Value = serde_json::from_str(&quote_raw)?;
-            let mut request = SwapRequest::new(quote_value, args.user);
-            request.wrap_and_unwrap_sol = Some(args.wrap_sol);
-            request.use_shared_accounts = Some(args.shared_accounts);
-            request.fee_account = args.fee_account;
-            request.compute_unit_price_micro_lamports = args.compute_unit_price;
+            let user = Pubkey::from_str(&args.user)
+                .map_err(|err| anyhow!("用户公钥无效 {}: {err}", args.user))?;
+            let mut request = SwapInstructionsRequest::new(quote_value, user);
+            request.config.wrap_and_unwrap_sol = args.wrap_sol;
+            request.config.use_shared_accounts = Some(args.shared_accounts);
+            if let Some(fee) = args.fee_account {
+                let fee_pubkey = Pubkey::from_str(&fee)
+                    .map_err(|err| anyhow!("手续费账户无效 {}: {err}", fee))?;
+                request.config.fee_account = Some(fee_pubkey);
+            }
+            if let Some(price) = args.compute_unit_price {
+                request.config.compute_unit_price_micro_lamports =
+                    Some(ComputeUnitPriceMicroLamports::MicroLamports(price));
+            }
 
             let instructions = api_client.swap_instructions(&request).await?;
             println!("{}", serde_json::to_string_pretty(&instructions.raw)?);
@@ -178,12 +193,22 @@ async fn main() -> Result<()> {
                 );
             }
 
+            let mode = resolve_strategy_mode(&config.galileo);
+            let rpc_client = resolve_rpc_client(&config.galileo.global)?;
+            let submission_client = reqwest::Client::builder().build()?;
             let engine = ArbitrageEngine::new(
+                mode,
                 strategy_config,
                 config.galileo.bot.clone(),
                 config.galileo.global.wallet.clone(),
                 api_client.clone(),
                 config.galileo.request_params.clone(),
+                config.galileo.global.instruction.clone(),
+                config.galileo.spam.clone(),
+                config.galileo.blind.clone(),
+                config.lander.lander.clone(),
+                rpc_client,
+                submission_client,
             )
             .map_err(|err| anyhow!(err))?;
 
@@ -191,6 +216,16 @@ async fn main() -> Result<()> {
                 res = engine.run() => res.map_err(|err| anyhow!(err))?,
                 _ = tokio::signal::ctrl_c() => {
                     info!(target: "strategy", "收到终止信号，停止运行");
+                }
+            }
+
+            if !manager.disable_local_binary {
+                if let Err(err) = manager.stop().await {
+                    warn!(
+                        target: "strategy",
+                        error = %err,
+                        "停止 Jupiter 二进制失败"
+                    );
                 }
             }
         }
@@ -249,24 +284,31 @@ fn parse_key_val(s: &str) -> std::result::Result<(String, String), String> {
 }
 
 fn apply_request_defaults_to_quote(request: &mut QuoteRequest, params: &RequestParamsConfig) {
-    if request.extra.get("onlyDexes").is_none() && !params.included_dexes.is_empty() {
+    if request.dexes.is_none() && !params.included_dexes.is_empty() {
+        let dexes = params.included_dexes.join(",");
+        request.dexes = Some(dexes.clone());
         request
-            .extra
-            .insert("onlyDexes".to_string(), params.included_dexes.join(","));
+            .extra_query_params
+            .entry("onlyDexes".to_string())
+            .or_insert(dexes);
     }
 
-    if request.extra.get("excludeDexes").is_none() && !params.excluded_dexes.is_empty() {
+    if request.excluded_dexes.is_none() && !params.excluded_dexes.is_empty() {
+        let dexes = params.excluded_dexes.join(",");
+        request.excluded_dexes = Some(dexes.clone());
         request
-            .extra
-            .insert("excludeDexes".to_string(), params.excluded_dexes.join(","));
+            .extra_query_params
+            .entry("excludeDexes".to_string())
+            .or_insert(dexes);
     }
 
-    if !request.only_direct_routes && params.only_direct_routes {
-        request.only_direct_routes = true;
+    if !request.only_direct_routes.unwrap_or(false) && params.only_direct_routes {
+        request.only_direct_routes = Some(true);
     }
 
-    if request.restrict_intermediate_tokens && !params.restrict_intermediate_tokens {
-        request.restrict_intermediate_tokens = false;
+    if request.restrict_intermediate_tokens.unwrap_or(true) && !params.restrict_intermediate_tokens
+    {
+        request.restrict_intermediate_tokens = Some(false);
     }
 }
 
@@ -279,6 +321,42 @@ fn resolve_jupiter_base_url(_bot: &BotConfig, jupiter: &JupiterConfig) -> String
     }
 
     format!("http://{}:{}", jupiter.core.host, jupiter.core.port)
+}
+
+fn resolve_strategy_mode(config: &config::GalileoConfig) -> StrategyMode {
+    if let Ok(value) = env::var("GALILEO_STRATEGY_MODE") {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "spam" => return StrategyMode::Spam,
+            "blind" => return StrategyMode::Blind,
+            other => {
+                warn!(target: "strategy", mode = other, "未知 GALILEO_STRATEGY_MODE，按配置回退")
+            }
+        }
+    }
+
+    if config.spam.enable {
+        StrategyMode::Spam
+    } else if config.blind.enable {
+        StrategyMode::Blind
+    } else {
+        warn!(target: "strategy", "未启用 spam/blind，默认使用 blind" );
+        StrategyMode::Blind
+    }
+}
+
+fn resolve_rpc_client(global: &GlobalConfig) -> Result<Arc<RpcClient>> {
+    let url = env::var("GALILEO_RPC_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            global
+                .rpc_url
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_else(|| "https://api.mainnet-beta.solana.com".to_string());
+
+    Ok(Arc::new(RpcClient::new(url)))
 }
 
 fn build_launch_overrides(
