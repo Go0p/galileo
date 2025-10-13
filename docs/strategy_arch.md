@@ -1,169 +1,178 @@
-# Galileo 策略引擎架构草案（Spam / Blind）
+# Galileo 策略与执行架构
 
-> 目标：在 `galileo` 内构建生产级别的套利引擎，为 Spam 与 Blind 策略提供高性能、可扩展、可观测的执行框架。Back-run 将在完成 gRPC 监听、DEX 事件流等前置工作后独立推进。
+> 目标：在保证极致性能的前提下，通过 trait + 泛型实现零成本抽象，统一多种落地通道，实现可观测、可扩展的套利引擎。本文描述整个套利链路的模块职责、目录规划、扩展规则与监控要求。
 
-## 1. 总体目标
-- **低延迟**：端到端（行情→报价→组包→落地）延迟控制在 150~300ms。
-- **高吞吐**：Spam 可持续 50+ qps 的报价 & bundle 提交；Blind 在多套利规模组合下保持稳定执行。
-- **高可靠**：内建风控、重试与降级机制，避免单一组件故障导致套利挂起。
-- **模块化**：策略层（Spam/Blind）共享底层组件（行情、缓存、落地、风控）。
-- **易观测**：提供细粒度 metrics、分布式 tracing、结构化日志。
+## 1. 核心设计目标
+- **高性能**：端到端延迟控制在 150~300ms；Quote 环节并发拉满，避免任何阻塞等待；不对 Quote 做缓存，保证发现收益实时。
+- **零成本抽象**：关键路径全部采用 trait + 泛型，编译期单态化，避免动态分发；落地通道、策略逻辑均可在编译时拼装。
+- **优雅分层**：策略（业务意图）与引擎（调度、资源、容错）彻底解耦；落地器通过统一接口提供多实现；监控模块贯穿全链路。
+- **易扩展**：新增策略只需新增 `src/strategy/<name>.rs`；新增落地器或风控策略不用触及现有核心逻辑。
+- **强观测**：统一的 metrics / tracing / logging 埋点策略，能够追踪一笔套利机会从 Quote 到落地的每一步。
 
-## 2. 模块划分
+## 2. 模块分层与目录约定
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    Strategy Orchestrator                 │
-│   ┌─────────────┬─────────────┬─────────────┬──────────┐ │
-│   │ Spam Engine │ BlindEngine │ RiskEngine  │ Metrics  │ │
-│   └──────┬──────┴──────┬──────┴──────┬──────┴──────┬───┘ │
-└──────────┼─────────────┼─────────────┼─────────────┼─────┘
-           │             │             │             │
-   ┌───────▼──────┐┌─────▼─────┐┌──────▼──────┐┌─────▼──────┐
-   │ Quote Router ││ CachePool ││ Tx Builder  ││ Bundle Tx  │
-   │ (Jupiter)    ││ (Dash/Moka││ (Solana V0) ││ Sender     │
-   └───────┬──────┘└─────┬─────┘└──────┬──────┘└─────┬──────┘
-           │             │             │             │
-   ┌───────▼──────┐┌─────▼─────┐┌──────▼──────┐┌─────▼──────┐
-   │ Market Feed  ││ Task Sched││ Fee Manager ││ Failure Mgr│
-   │ (RPC/gRPC)   ││ (Tokio/   ││ (Tips/PF)   ││ (Retry/Ban)│
-   │              ││ Rayon)    ││             ││             │
-   └──────────────┘└───────────┘└────────────┘└─────────────┘
+src/
+├── engine/            # 调度、worker、风险、数据管线
+│   ├── context.rs     # EngineContext<TL: Lander>
+│   ├── quote.rs       # QuoteExecutor/Router
+│   ├── swap.rs        # SwapInstructionFetcher
+│   ├── builder.rs     # TransactionBuilder
+│   ├── scheduler.rs   # Tokio/Rayon 协调
+│   └── mod.rs
+├── strategy/          # 业务策略(Spam/Blind/未来策略)
+│   ├── spam.rs
+│   ├── blind.rs
+│   ├── backrun.rs     # 例：未来扩展
+│   └── mod.rs         # 仅做 re-export
+├── lander/            # 上链通道 trait + 实现
+│   ├── traits.rs      # pub trait Lander
+│   ├── jito.rs
+│   ├── third_party.rs
+│   ├── rpc.rs
+│   ├── staked.rs
+│   └── mod.rs
+├── monitoring/        # metrics/tracing/logging 封装
+│   ├── metrics.rs
+│   ├── tracing.rs
+│   ├── events.rs      # 自定义事件上报
+│   └── mod.rs
+└── ...
 ```
 
-### 2.1 Market Feed
-- 来源：`global.rpc_url` / `global.yellowstone_grpc_url`。
-- 作用：收集最新 slot、blockhash、account data、orderbook 深度。
-- 输出数据结构：
-  - `BlockhashContext`（用于 bundle 构建与签名）。
-  - `MarketSnapshot`：围绕 base mint（配置中的套利基准 token，例如 WSOL/USDC）与中间 token (`intermedium.mints`) 的成交深度。
-- 策略约束说明：
-- Quote 的输入/输出 mint 均来自策略定义的基准资产或 `blind.base_mints`，中间资产集合 (`intermedium.mints`) 由配置决定，可形成 A→B→A 或 A→B→C→A 等多跳结构。
-  - Spam/Blind 均依赖实时行情，不对 quote 结果做缓存。
+- **策略命名规范**：`src/strategy/<策略名>.rs`，例如 `spam.rs` / `blind.rs`，便于后续增量添加。
+- **Engine 层**：仅关心「如何高效执行」，不关心套利意图；对外暴露 `StrategyEngine<TL: Lander>`。
+- **共享类型**：放在 `types.rs`、`config.rs` 等主题化文件中，不在 `mod.rs` 内定义结构体或 trait。
+- **监控模块**：与 Engine、Strategy、Lander 均解耦，只通过事件/回调传递指标数据。
 
-### 2.2 状态存储（非 Quote 缓存）
-- `DashMap`：维护 blockhash、最新 slot、bundle 结果、token metadata 等轻量状态。
-- `Moka`（可选）：存放 orderbook / geyser 补丁等冷数据，提高稳态读取效率。
-- 不缓存 quote：高频报价必须实时命中 Jupiter，以避免利润遗漏或使用过期价格。
-- 落地路径：必要时将关键快照（slot、blockhash、失败统计）写入 `sled`，保证故障恢复能力。
+## 3. Jupiter Quote → Swap → Lander 执行链路
 
-### 2.3 Quote Router
-- 将策略请求映射到 Jupiter Quote API。
-- 参数对齐：
-  - `onlyDirectRoutes`：Spam 强制 `true`。
-  - `restrictIntermediateTokens`：Blind/Spam 继承 `request_params`。
-  - `dexes` 白名单：基于 `request_params.included_dexes` + 策略自定义 `enable_dexs`。
-- 快速失败策略：
-  - `timeout_ms`（继承 `bot.request_timeout_ms`）。
-  - `retry`：Spam 提供 2 次快速重试；Blind 仅在失败率升高时启用重试。
-- 预留回调：quote 返回后立刻写 metrics、触发下一次调度（不落缓存）。
+### 3.1 Quote 阶段
+- 依赖本地 Jupiter 二进制，针对配置文件中的 `base_mint` 反复 Quote；配置项 `mints` 仅表示可能的中间市场（A→B→A 时的 B）。
+- 输入/输出 mint 均固定为 `base_mint`，通过两次 Quote（正向、反向）确认利润，Quote 请求参数应直接来自配置（`request_params`）。
+- Quote 频率极高，不启用缓存；失败快速回退，使用 `try_send` + 降级通道防止积压。
+- `QuoteExecutor` 负责构造请求、执行 HTTP/gRPC 调用、解析响应，并同步写入监控。
 
-### 2.4 Task Scheduler
-- 生产者：Spam & Blind 策略主循环。
-- 消费者：报价执行 worker（Tokio runtime）+ 计算密集 worker（Rayon）。
-- 通道设计：
-  - `async_channel::bounded` -> Spam 使用 `try_send`；队列满时直接丢弃旧任务（避免阻塞）。
-  - `tokio::mpsc::channel` -> Blind 使用 低水位 prefetch。
-- 背压策略：结合 `controls.over_trade_process_delay_ms` 与 `blind.base_mints[*].process_delay`。
+### 3.2 盈利判定
+- `ProfitEvaluator` 接收双向 Quote 结果，执行手续费、滑点、tip 开销评估。
+- 若盈利则将两次 Quote 的返回值（含 `swapMode`, `route_plan` 等）封装为 `SwapOpportunity` 推入 Engine。
+- 可配置的风控门限：`min_profit`, `max_slippage`, `cooldown` 等均在 Strategy 层完成判定，Engine 只负责并发调度。
 
-### 2.5 Tx Builder
-- 输入：`SwapInstructionsResponse`、策略上下文（memo、小费、风控限制）。
-- 功能：
-  - 组装 compute budget 指令（尊重 `request_params.dynamic_compute_unit_limit`）。
-  - 附加策略备注 (`global.instruction.memo` / `blind.memo`)。
-- 追加指令：
-    - Memo：`global.instruction.memo` 或策略自定内容。
-    - Tip/优先费：Spam 使用 `spam.compute_unit_price_micro_lamports` / Jito tip；Blind 可读取 `BlindConfig` 静态 tip。
-    - 额外组件：闪电贷、风控检查等指令在该阶段注入。
-- 处理 Landers：根据 `enable_landers` 选择 Jito、Staked 等发送通道。
-  - Blockhash 管理：支持 RPC 获取或 gRPC 订阅（`bot.get_block_hash_by_grpc`）。
-- 输出：`PreparedBundle { slot, blockhash, transactions }`。
+### 3.3 Swap 指令获取
+- `SwapInstructionFetcher` 通过 `/swap-instructions` API 获取 Jupiter 返回的核心指令集。
+- 按策略要求在指令序列前/后插入扩展指令：
+  - Memo（调试 / 审计）
+  - Jito tip（需额外小费账户）
+  - 第三方加速器 tip
+  - 闪电贷账户指令
+- 指令装配结果形成 `TransactionPlan`，继续交由 Builder。
 
-### 2.6 Bundle Sender
-- 多路发送：
-  - `JitoSender`：HTTP bundle API（`lander.yaml`）。
-  - `RPCSender`：常规 `send_transaction`（默认/`staked` 共享实现）。
-- 重试与超时：
-  - Spam：重试 `spam.max_retries` 次，失败放入 `FailureMgr`，记录 metrics。
-  - Blind：单次失败直接降级到下一落地通道，防止阻塞。
+### 3.4 交易打包
+- `TransactionBuilder` 对 `TransactionPlan` 执行：
+  1. 按 blockhash 缓存设置最近的 `recent_blockhash`；
+  2. 填充 signer（来自配置 `bot.identity`）；
+  3. 计算 CU、优先费，若策略重写 `compute_unit_price` 则在此应用；
+  4. 输出 `PreparedTxn<TL::Payload>`，其中 `Payload` 由具体 Lander 决定。
+- 该阶段完全泛型化，允许通过 trait 约束在编译期选择不同的打包策略。
 
-### 2.7 Risk & Failure Manager
-- 风控：
-  - 余额检查：`global.wallet.min_sol_balance`。
-  - 滑点/容错：确保 `profit - tip - prioritization_fee >= threshold`。
-  - 冷却时间：Blind 参照 `blind.base_mints[*].sending_cooldown`，Spam 使用全局 `controls.over_trade_process_delay_ms`。
-- 失败处理：
-  - Blacklist Dex：当连续失败超过阈值时，将 dex 加入临时黑名单。
-  - Retry 队列（有限大小）：避免洪泛造成雪崩。
+### 3.5 Lander 发送
+- `EngineContext` 调用泛型参数 `TL: Lander` 的实现，将交易提交到对应上链服务。
+- 所有落地器返回 `LanderOutcome`（成功 / 失败 / 可重试 / 不可重试），Engine 根据结果决定重试策略或熔断。
 
-## 3. 策略细节
+## 4. Lander Trait 设计
 
-### 3.1 Spam
-- 配置来源：`galileo.yaml` → `spam` 段。
-- 核心特点：
-  - **基准资产循环**：输入 / 输出 mint 由策略配置控制，可形成两跳或多跳结构（如 A→B→A、A→B→C→A），中间代币来自 `intermedium.mints` 或策略段落中声明的 hop 列表。
-  - **直连路线**：强制 `onlyDirectRoutes = true`，追求最短路径延迟。
-  - **Landers**：根据 `spam.enable_landers` 选择落地（默认 Jito / Staked）。
-  - **优先费**：使用 `spam.compute_unit_price_micro_lamports`；如为 0，则按利润比例动态计算。
-  - **预检查**：为压缩延迟，默认 `skip_user_accounts_rpc_calls = true`（若配置允许）。
-  - **重试**：`spam.max_retries` 控制；失败记录日志（`enable_log`）。
+```rust
+pub trait Lander {
+    type Payload<'a>: Send + 'a;
+    type Response: Send;
 
-执行流程：
-1. 轮询基准资产对（A→B→A），连续两次 quote。
-2. 立即计算利润，满足 `min_profit_threshold_lamports` 时进入执行链。
-3. 使用首个 quote 的原始 JSON 作为 payload 调用 `/swap-instructions`。
-4. 在返回指令末尾附加 memo / tip / 闪电贷等附加指令。
-5. 组装 bundle 并通过 Lander 提交，记录 `spam.profit_lamports`、`spam.bundle_latency_ms` 等指标。
+    fn name(&self) -> &'static str;
 
-### 3.2 Blind
-- 配置来源：`galileo.yaml` → `blind` 段。
-- 核心特点：
-  - **交易规模**：基于 `base_mints[*].trade_size_range` 与 `trade_range_count` 生成多组交易量。
-  - **Route 类型**：支持 `2hop` 与 `3hop`，在 Quote Router 中映射成 `onlyDirectRoutes=false` 且 `three_hop_mints` 作为中间币白名单。
-  - **利润阈值**：`min_quote_profit` + 可选 `TipCalculator`。
-  - **节奏控制**：`process_delay` 决定每对 mint 对应请求的间隔；`sending_cooldown` 管理同一 mint 的最小发送间隔。
-  - **Memo**：使用 `blind.memo` 或 `global.instruction.memo`。
+    fn prepare<'a>(
+        &'a self,
+        tx: &'a solana_sdk::transaction::VersionedTransaction,
+        ctx: &'a LanderContext,
+    ) -> Result<Self::Payload<'a>, LanderError>;
 
-执行流程：
-1. 对每个 `base_mint` 创建独立 worker，按 `trade_size_range` 生成交易规模。
-2. 若配置了 `three_hop_mints`，在 Quote Router 中插入 `restrictIntermediateTokens=false` 且 `onlyDexes` 添加三跳路径必要的 dex。
-3. 按 `process_delay` 轮询 quote，基于缓存结果判断是否继续请求新的 quote。
-4. 收益超过 `min_quote_profit` 后进入执行链，依据 `sending_cooldown` 检查是否放行。
-5. Bundle 发送时可选择 Staked 通道（若在 `enable_landers` 中配置），默认 Jito。
+    fn submit(
+        &self,
+        payload: Self::Payload<'_>,
+        deadline: Deadline,
+    ) -> impl Future<Output = Result<Self::Response, LanderError>> + Send;
+}
+```
 
-## 4. 配置映射汇总
+- **零成本抽象**：Engine 使用 `impl<L: Lander> StrategyEngine<L>`，编译器为每种落地器生成专用代码。
+- **实现类型**：
+  - `JitoLander`：插入 bundle tip，支持 Jito 特有的认证与 bundle API。
+  - `RpcLander`：使用标准 RPC `sendTransaction`，可选优先费。
+  - `StakedLander`：面向 stake-driven 服务，添加 stake tip 指令。
+  - `ThirdPartyLander`：扩展额外指令或认证信息（例如自建中继）。
+- **调度策略**：Engine 可持有多个 Lander，实现多播或容错，例如 `Primary<Jito> + Fallback<Rpc>`。
+- **配置映射**：`lander.yaml` 定义默认落地器与优先费参数，通过 `LanderFactory` 在启动时注入。
 
-| 配置项 | 模块 | 行为 |
+## 5. Engine / Strategy 解耦模式
+
+```rust
+pub trait Strategy {
+    type Event;
+    fn on_market_event(&mut self, event: &Self::Event, ctx: &mut StrategyContext) -> Action;
+}
+
+pub struct StrategyEngine<L: Lander> {
+    lander: L,
+    scheduler: Scheduler,
+    quote_executor: QuoteExecutor,
+    swap_fetcher: SwapInstructionFetcher,
+    tx_builder: TransactionBuilder<L>,
+    observers: ObserverRegistry,
+}
+```
+
+- **策略层**：仅处理业务意图（何时 Quote、如何判定利润、如何调度多 base mint）。文件独立（`spam.rs`, `blind.rs`）。支持通过泛型将策略绑定到 Engine，例如 `Engine<SpamStrategy, JitoLander>`。
+- **Engine 层**：负责资源调度、并发、重试、失败隔离、监控上报；完全独立于具体策略。
+- **上下文对象**：`StrategyContext` 向策略暴露 Quote 请求句柄、异步任务派发、风险决策接口等；策略无法直接访问底层实现，只能通过 trait。
+- **任务通道**：继续沿用 README 中的建议：`async_channel`（Spam）、`tokio::mpsc`（Blind）、`rayon` 处理 >10ms 计算。
+- **扩展流程**：新增策略 -> 新建文件 -> 实现 `Strategy` trait -> 在 orchestrator 中注册。
+
+## 6. 监控贯穿设计
+
+- **统一事件模型**：每个关键步骤向 `ObserverRegistry` 发送结构化事件（QuoteStart/QuoteEnd, SwapFetched, TxBuilt, LanderSubmitted, LanderFailed）。
+- **Metrics**：通过 `metrics` crate 暴露
+  - `quote.latency_ms{strategy=spam}`
+  - `swap.fetch.success_total`
+  - `lander.submit.latency_ms{lander=jito}`
+  - `profit.estimated_lamports`
+  - `engine.retry.count{reason=tip_fail}`
+- **Tracing**：使用 `tracing::span!` 在一次套利流程中传播 `trace_id`，Lander 回执后关闭 span。
+- **Logging**：结构化日志附带 `slot`, `blockhash`, `dex`, `tip`, `profit`, `lander`。
+- **告警**：监控模块支持阈值告警（Quote 失败率、落地失败率、利润分布异常）。
+
+## 7. 性能敏感点与优化策略
+
+- **Quote 优先级**：Quote 是最长耗时环节，Engine 应支持并发批量发起，并在配置中限制最大并行数；避免所有策略共用单队列导致阻塞。
+- **无缓存策略**：保持 Quote 实时性，除非后续需要冷启动快照，否则不做任何本地缓存。
+- **线程模型**：沿用 README 指导——异步 IO 与 rayon 计算分离；计算密集型逻辑（盈利判断、路径评估）放入 rayon 持久线程池。
+- **背压机制**：`try_send` + 丢弃旧任务，Strategies 按 `process_delay` 控制节奏；Engine 提供统一的 `RateLimiter` 工具。
+- **Blockhash / 账户状态**：通过 DashMap 管理，更新频次与 Engine 解耦；监控中暴露 freshness。
+
+## 8. 配置映射（节选）
+
+| 配置项 | 影响模块 | 描述 |
 | --- | --- | --- |
-| `request_params.*` | Quote Router / Tx Builder | 构建 quote/swap 请求默认值。 |
-| `spam.enable` | Strategy Orchestrator | 控制 Spam Engine 是否激活。 |
-| `spam.skip_preflight` | Tx Builder | 组装 bundle 时控制模拟策略。 |
-| `spam.compute_unit_price_micro_lamports` | Fee Manager | 覆写 CU 优先费。 |
-| `blind.base_mints[*].trade_size_range` | Blind Engine | 生成交易规模队列。 |
-| `blind.base_mints[*].route_types` | Quote Router | 切换 2/3-hop 报价。 |
-| `blind.base_mints[*].three_hop_mints` | Quote Router | 扩展 intermediate token 白名单。 |
-| `global.wallet.min_sol_balance` | Risk Manager | 余额低于阈值时暂停策略。 |
-| `bot.enable_simulation` | Tx Builder | 决定是否执行预模拟或直接发送 bundle。 |
+| `strategy.spam.*` / `strategy.blind.*` | `src/strategy/*.rs` | 策略节奏、利润阈值、禁用状态；策略模块读取后决定是否发起 Quote。 |
+| `bot.request_params.*` | `engine::quote` | 构造 Jupiter Quote 请求的默认参数。 |
+| `lander.enable` / `lander.type` | `lander::*` | 选择默认 Lander 实现与启用列表。 |
+| `lander.tips` | `engine::builder` + `lander::*` | 配置 tip 账户、优先费；Builder 根据策略覆盖 CU。 |
+| `controls.over_trade_process_delay_ms` | `engine::scheduler` | 控制任务节奏，防止过载。 |
+| `monitoring.*` | `monitoring::*` | 指标上报端点、采样率、日志级别等。 |
 
-## 5. 指标与日志
+## 9. 迭代路线建议
 
-- Metrics
-  - `strategy.quote.latency_ms{strategy=spam}` 等。
-  - `strategy.bundle.success_total` / `failure_total`。
-  - `strategy.cache.hit_ratio{layer=hot|cold}`。
-  - `strategy.tip.lamports_sum`。
-- 日志
-  - 结构化：`strategy::spam`, `strategy::blind`, `risk`, `bundle`.
-  - 关键字段：`slot`, `blockhash`, `dex`, `profit`, `tip`, `lander`.
-- Tracing
-  - 采用 `tracing` span，将一次套利机会标记 `trace_id=<bundle_id>`。
+1. **P0**：落地 `lander` 目录与 `Lander` trait，Jito/RPC 实现先行；引擎现有逻辑迁入 `engine::*`。
+2. **P1**：重构 `strategy` 目录，Spam/Blind 拆分为独立文件并实现统一 `Strategy` trait。
+3. **P2**：补齐监控模块，统一事件流；梳理 metrics 名称，接入现有监控体系。
+4. **P3**：引入多落地器编排（主用 Jito + 备选 RPC/Staked），完善失败重试策略。
+5. **P4**：为未来 Back-run 策略预留接口，扩展策略 orchestrator，补充测试与压测脚本。
 
-## 6. 实施路线
-
-1. **P0**：抽象 `StrategyContext`（包含 cache、quote router、tx builder、bundle sender）。
-2. **P1**：实现 Spam Engine → Quote→Swap→Bundle 完整链路，覆盖重试/日志/metrics。
-3. **P2**：实现 Blind Engine → 多 worker 架构、三跳支持、节奏控制。
-4. **P3**：接入 Risk Manager（余额、滑点、失败降级）。
-5. **P4**：补充压测脚本与指标面板，整理 README/Docs。
-
-> 说明：Back-run 依赖的 gRPC DEX 监听与池子事件归档不在当前草案范围，将在 Spam/Blind 稳定后迭代。
+> 通过以上分层与规范，可在不牺牲性能的情况下，实现落地通道与策略的组合爆炸，同时保持代码库的可维护性与可观测性。
