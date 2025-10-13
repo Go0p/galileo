@@ -1,10 +1,13 @@
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::io::IsTerminal;
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitStatus;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
+use futures::StreamExt;
+use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
 use serde_json::Value;
-use tokio::{fs, process::Command};
+use tokio::{fs, net::TcpStream, process::Command};
 use tracing::{info, warn};
 
 use super::error::JupiterError;
@@ -22,6 +25,7 @@ impl JupiterBinaryManager {
         config: JupiterConfig,
         launch_overrides: LaunchOverrides,
         disable_local_binary: bool,
+        show_jupiter_logs: bool,
     ) -> Result<Self, JupiterError> {
         let proxy = config.binary.proxy.clone();
         let mut builder = reqwest::Client::builder().user_agent(USER_AGENT);
@@ -41,6 +45,7 @@ impl JupiterBinaryManager {
             config,
             launch_overrides,
             disable_local_binary,
+            show_jupiter_logs,
             client,
             state: Default::default(),
         })
@@ -218,9 +223,14 @@ impl JupiterBinaryManager {
 
         self.transition(BinaryStatus::Starting).await;
 
-        self.prepare_local_market_cache().await?;
+        let market_cache_override = self
+            .prepare_local_market_cache()
+            .await?
+            .map(|path| path.to_string_lossy().into_owned());
 
-        let effective_args = self.config.effective_args(&self.launch_overrides);
+        let effective_args = self
+            .config
+            .effective_args(&self.launch_overrides, market_cache_override.as_deref());
         let command_line = format_command(&install.path, &effective_args);
         info!(
             target: "jupiter",
@@ -228,7 +238,17 @@ impl JupiterBinaryManager {
             "准备启动 Jupiter 二进制进程"
         );
 
-        let process = spawn_process(&self.config, &install, &effective_args).await?;
+        if !self.show_jupiter_logs {
+            info!(target: "jupiter", "Jupiter 二进制控制台输出已根据配置禁用");
+        }
+
+        let process = spawn_process(
+            &self.config,
+            &install,
+            &effective_args,
+            self.show_jupiter_logs,
+        )
+        .await?;
         let pid = process.child.id();
 
         {
@@ -305,9 +325,9 @@ impl JupiterBinaryManager {
         self.start(false).await
     }
 
-    async fn prepare_local_market_cache(&self) -> Result<(), JupiterError> {
+    async fn prepare_local_market_cache(&self) -> Result<Option<PathBuf>, JupiterError> {
         if !self.config.core.use_local_market_cache {
-            return Ok(());
+            return Ok(None);
         }
 
         let Some(local_path) = market_cache_local_path(
@@ -319,12 +339,28 @@ impl JupiterBinaryManager {
             ));
         };
 
+        let auto_download = self.config.core.auto_download_market_cache;
         let existed = fs::metadata(&local_path).await.is_ok();
         if existed {
             info!(
                 target: "jupiter",
                 path = %local_path.display(),
-                "检测到已存在的市场缓存文件，将刷新"
+                "检测到已存在的市场缓存文件"
+            );
+            if !auto_download {
+                info!(
+                    target: "jupiter",
+                    path = %local_path.display(),
+                    "auto_download_market_cache 已禁用，本次启动跳过重新下载"
+                );
+                let resolved_path = canonicalize_path(local_path).await;
+                return Ok(Some(resolved_path));
+            }
+        } else if !auto_download {
+            warn!(
+                target: "jupiter",
+                path = %local_path.display(),
+                "auto_download_market_cache 已禁用但未找到市场缓存，将改为下载最新文件"
             );
         }
 
@@ -362,13 +398,86 @@ impl JupiterBinaryManager {
                     url: url.clone(),
                     source,
                 })?;
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|source| JupiterError::DownloadFailed {
+
+        let total_size = response.content_length().unwrap_or_default();
+        let has_known_size = total_size > 0;
+        let mut progress_bar =
+            create_market_download_progress_bar(total_size, &local_path, has_known_size);
+        if let Some(pb) = progress_bar.as_ref() {
+            if !has_known_size {
+                pb.set_message(format!("下载市场缓存 {}", HumanBytes(0)));
+            }
+        }
+        let mut stream = response.bytes_stream();
+        let mut downloaded: u64 = 0;
+        let mut last_logged_bytes: u64 = 0;
+        let mut last_logged_at = Instant::now();
+        let mut raw_bytes = if has_known_size {
+            Vec::with_capacity(total_size as usize)
+        } else {
+            Vec::new()
+        };
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|source| JupiterError::DownloadFailed {
                 url: url.clone(),
                 source,
             })?;
+            downloaded += chunk.len() as u64;
+            raw_bytes.extend_from_slice(&chunk);
+
+            if let Some(pb) = progress_bar.as_ref() {
+                pb.inc(chunk.len() as u64);
+                if !has_known_size {
+                    pb.set_message(format!("下载市场缓存 {}", HumanBytes(downloaded)));
+                }
+            } else {
+                let should_log = downloaded == total_size
+                    || downloaded.saturating_sub(last_logged_bytes) >= 2 * 1024 * 1024
+                    || last_logged_at.elapsed() >= Duration::from_secs(5);
+                if should_log {
+                    if has_known_size && total_size > 0 {
+                        let percent = (downloaded as f64 / total_size as f64 * 100.0).min(100.0);
+                        info!(
+                            target: "jupiter",
+                            downloaded_bytes = downloaded,
+                            total_bytes = total_size,
+                            progress_pct = format_args!("{percent:.1}"),
+                            "市场缓存下载进度"
+                        );
+                    } else {
+                        info!(
+                            target: "jupiter",
+                            downloaded_bytes = downloaded,
+                            "市场缓存下载进度"
+                        );
+                    }
+                    last_logged_bytes = downloaded;
+                    last_logged_at = Instant::now();
+                }
+            }
+        }
+
+        if let Some(pb) = progress_bar.take() {
+            if has_known_size {
+                pb.finish_with_message(format!(
+                    "市场缓存下载完成 ({}/{})，开始处理…",
+                    HumanBytes(downloaded),
+                    HumanBytes(total_size)
+                ));
+            } else {
+                pb.finish_with_message(format!(
+                    "市场缓存下载完成 ({})，开始处理…",
+                    HumanBytes(downloaded)
+                ));
+            }
+        } else {
+            info!(
+                target: "jupiter",
+                downloaded_bytes = downloaded,
+                "市场缓存下载完成"
+            );
+        }
 
         let include_filter: HashSet<_> = if self.config.core.exclude_other_dex_program_ids {
             self.launch_overrides
@@ -381,9 +490,9 @@ impl JupiterBinaryManager {
         };
 
         let filtered_bytes = if include_filter.is_empty() {
-            bytes.to_vec()
+            raw_bytes
         } else {
-            let markets: Vec<Value> = serde_json::from_slice(&bytes)
+            let markets: Vec<Value> = serde_json::from_slice(&raw_bytes)
                 .map_err(|err| JupiterError::Schema(format!("解析市场缓存失败: {err}")))?;
             let total = markets.len();
             let filtered: Vec<Value> = markets
@@ -426,7 +535,8 @@ impl JupiterBinaryManager {
             "市场缓存文件下载完成"
         );
 
-        Ok(())
+        let resolved_path = canonicalize_path(local_path).await;
+        Ok(Some(resolved_path))
     }
 
     pub async fn list_releases(&self, limit: usize) -> Result<Vec<ReleaseInfo>, JupiterError> {
@@ -464,9 +574,16 @@ impl JupiterBinaryManager {
     }
 
     pub async fn wait_for_health(&self, config: &HealthCheckConfig) -> Result<(), JupiterError> {
-        let timeout = Duration::from_secs(config.timeout.unwrap_or(5));
-        let expected_status = config.expected_status.unwrap_or(200);
+        let host = self.config.core.host.clone();
+        let port = self.config.core.port;
+
+        let interval_secs = std::cmp::max(config.interval_secs, 1);
+        let interval = Duration::from_secs(interval_secs);
+        let max_wait_secs = std::cmp::max(config.max_wait_secs, interval_secs);
+        let max_wait = Duration::from_secs(max_wait_secs);
         let start = std::time::Instant::now();
+        let mut attempts: u32 = 0;
+
         loop {
             {
                 let state = self.state.lock().await;
@@ -479,40 +596,90 @@ impl JupiterBinaryManager {
                 }
             }
 
-            let response = self.client.get(&config.url).timeout(timeout).send().await;
+            attempts = attempts.saturating_add(1);
+            let remaining = max_wait
+                .checked_sub(start.elapsed())
+                .unwrap_or_else(|| Duration::from_secs(0));
+            if remaining.is_zero() {
+                break;
+            }
 
-            match response {
-                Ok(resp) if resp.status().as_u16() == expected_status => {
+            let connect_timeout = std::cmp::min(interval, remaining);
+            let attempt_result =
+                tokio::time::timeout(connect_timeout, TcpStream::connect((host.as_str(), port)))
+                    .await;
+
+            match attempt_result {
+                Ok(Ok(stream)) => {
+                    drop(stream);
                     info!(
                         target: "jupiter",
+                        host = %host,
+                        port,
+                        attempts,
                         elapsed_ms = start.elapsed().as_millis() as u64,
-                        "健康检查通过"
+                        "健康检查通过，端口已就绪"
                     );
                     return Ok(());
                 }
-                Ok(resp) => {
+                Ok(Err(err)) => {
+                    let elapsed_now = start.elapsed();
+                    let elapsed_secs = elapsed_now.as_secs();
+                    let remaining_secs = max_wait_secs.saturating_sub(elapsed_secs);
+                    let next_retry_secs = if remaining_secs == 0 {
+                        0
+                    } else {
+                        interval_secs.min(remaining_secs)
+                    };
                     warn!(
                         target: "jupiter",
-                        status = resp.status().as_u16(),
-                        expected_status,
-                        "健康检查状态码不匹配"
+                        host = %host,
+                        port,
+                        attempts,
+                        elapsed_ms = elapsed_now.as_millis() as u64,
+                        remaining_secs,
+                        next_retry_secs,
+                        error = %err,
+                        "健康检查连接失败，将在下一个轮询间隔重试"
                     );
                 }
-                Err(err) => {
-                    warn!(target: "jupiter", error = %err, "健康检查请求失败");
+                Err(_) => {
+                    let elapsed_now = start.elapsed();
+                    let elapsed_secs = elapsed_now.as_secs();
+                    let remaining_secs = max_wait_secs.saturating_sub(elapsed_secs);
+                    let next_retry_secs = if remaining_secs == 0 {
+                        0
+                    } else {
+                        interval_secs.min(remaining_secs)
+                    };
+                    warn!(
+                        target: "jupiter",
+                        host = %host,
+                        port,
+                        attempts,
+                        elapsed_ms = elapsed_now.as_millis() as u64,
+                        remaining_secs,
+                        next_retry_secs,
+                        "健康检查连接尝试超时，将在下一个轮询间隔重试"
+                    );
                 }
             }
 
-            if start.elapsed() > timeout {
-                self.transition(BinaryStatus::Failed).await;
-                return Err(JupiterError::HealthCheck(format!(
-                    "等待 {} 时超时，耗时 {:?}",
-                    config.url, timeout
-                )));
+            let elapsed = start.elapsed();
+            if elapsed >= max_wait {
+                break;
             }
 
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            let sleep_duration = std::cmp::min(interval, max_wait - elapsed);
+            if !sleep_duration.is_zero() {
+                tokio::time::sleep(sleep_duration).await;
+            }
         }
+
+        self.transition(BinaryStatus::Failed).await;
+        Err(JupiterError::HealthCheck(format!(
+            "在 {max_wait_secs}s 内未检测到 {host}:{port} 端口就绪"
+        )))
     }
 
     async fn transition(&self, status: BinaryStatus) {
@@ -667,6 +834,40 @@ impl JupiterBinaryManager {
     }
 }
 
+fn create_market_download_progress_bar(
+    total_size: u64,
+    path: &Path,
+    has_known_size: bool,
+) -> Option<ProgressBar> {
+    if !std::io::stderr().is_terminal() {
+        return None;
+    }
+
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("market-cache");
+
+    if has_known_size && total_size > 0 {
+        let pb = ProgressBar::new(total_size);
+        let style = ProgressStyle::with_template(
+            "{spinner:.green} {msg} [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})",
+        )
+        .unwrap_or_else(|_| ProgressStyle::default_bar());
+        pb.set_style(style);
+        pb.set_message(format!("下载 {name}"));
+        Some(pb)
+    } else {
+        let pb = ProgressBar::new_spinner();
+        let style = ProgressStyle::with_template("{spinner:.green} {msg}")
+            .unwrap_or_else(|_| ProgressStyle::default_spinner());
+        pb.set_style(style);
+        pb.enable_steady_tick(Duration::from_millis(120));
+        pb.set_message(format!("下载 {name}"));
+        Some(pb)
+    }
+}
+
 fn market_cache_local_path(path: &str, install_dir: &Path) -> Option<PathBuf> {
     let trimmed = path.trim();
     if trimmed.is_empty() || trimmed.starts_with("http://") || trimmed.starts_with("https://") {
@@ -677,7 +878,27 @@ fn market_cache_local_path(path: &str, install_dir: &Path) -> Option<PathBuf> {
     if candidate.is_absolute() {
         Some(candidate.to_path_buf())
     } else {
-        Some(install_dir.join(candidate))
+        let use_current_dir = matches!(
+            candidate.components().next(),
+            Some(Component::CurDir | Component::ParentDir)
+        ) || candidate.starts_with(install_dir)
+            || candidate.components().count() > 1;
+
+        if use_current_dir {
+            match std::env::current_dir() {
+                Ok(dir) => Some(dir.join(candidate)),
+                Err(err) => {
+                    warn!(
+                        target: "jupiter",
+                        error = %err,
+                        "无法获取当前工作目录，退回使用 install_dir 解析市场缓存路径"
+                    );
+                    Some(install_dir.join(candidate))
+                }
+            }
+        } else {
+            Some(install_dir.join(candidate))
+        }
     }
 }
 

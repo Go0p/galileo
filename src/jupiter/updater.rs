@@ -536,17 +536,92 @@ async fn create_versioned_copy(
     config: &JupiterConfig,
 ) -> Result<PathBuf, JupiterError> {
     let versioned_name = format!("{}-{}", config.binary.binary_name, version);
-    let versioned_path = config.binary.install_dir.join(versioned_name);
+    let releases_dir = config.binary.install_dir.join("releases");
+    fs::create_dir_all(&releases_dir)
+        .await
+        .map_err(JupiterError::Io)?;
+    let versioned_path = releases_dir.join(&versioned_name);
+
+    // 将历史遗留的版本化二进制迁移至 releases 目录，确保 bin/ 根目录保持整洁
+    relocate_legacy_versioned_binaries(config, &releases_dir, &versioned_name).await?;
+
     if fs::metadata(&versioned_path).await.is_ok() {
         fs::remove_file(&versioned_path)
             .await
             .map_err(JupiterError::Io)?;
     }
+
+    // 清理历史遗留的根目录副本，防止在 bin/ 下留下重复版本文件
+    let legacy_path = config.binary.install_dir.join(&versioned_name);
+    if legacy_path != versioned_path && fs::metadata(&legacy_path).await.is_ok() {
+        if let Err(err) = fs::remove_file(&legacy_path).await {
+            warn!(
+                target: "jupiter",
+                path = %legacy_path.display(),
+                error = %err,
+                "移除旧版本化二进制失败"
+            );
+        }
+    }
+
     fs::copy(binary_path, &versioned_path)
         .await
         .map_err(JupiterError::Io)?;
     set_executable(&versioned_path)?;
     Ok(versioned_path)
+}
+
+async fn relocate_legacy_versioned_binaries(
+    config: &JupiterConfig,
+    releases_dir: &Path,
+    current_versioned_name: &str,
+) -> Result<(), JupiterError> {
+    let mut entries = match fs::read_dir(&config.binary.install_dir).await {
+        Ok(entries) => entries,
+        Err(err) => return Err(JupiterError::Io(err)),
+    };
+    let prefix = format!("{}-", config.binary.binary_name);
+
+    while let Some(entry) = entries.next_entry().await.map_err(JupiterError::Io)? {
+        let path = entry.path();
+        if path == releases_dir {
+            continue;
+        }
+        let file_type = entry.file_type().await.map_err(JupiterError::Io)?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !file_name.starts_with(&prefix) {
+            continue;
+        }
+
+        if file_name == current_versioned_name {
+            // 交由后续 copy 移除 legacy_path 即可
+            continue;
+        }
+
+        let target = releases_dir.join(file_name);
+        if target == path {
+            continue;
+        }
+
+        if let Err(err) = fs::rename(&path, &target).await {
+            warn!(
+                target: "jupiter",
+                from = %path.display(),
+                to = %target.display(),
+                error = %err,
+                "迁移旧版 Jupiter 二进制至 releases 目录失败，尝试回退为复制"
+            );
+            fs::copy(&path, &target).await.map_err(JupiterError::Io)?;
+            fs::remove_file(&path).await.map_err(JupiterError::Io)?;
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) async fn write_version_file(dir: &Path, version: &str) -> Result<(), JupiterError> {

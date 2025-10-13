@@ -1,9 +1,8 @@
 use std::process::Stdio;
 use std::time::Instant;
 
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use super::error::JupiterError;
 use super::types::{BinaryInstall, ProcessHandle};
@@ -13,34 +12,34 @@ pub async fn spawn_process(
     config: &JupiterConfig,
     install: &BinaryInstall,
     args: &[String],
+    show_output: bool,
 ) -> Result<ProcessHandle, JupiterError> {
     let mut command = Command::new(&install.path);
-    command
-        .current_dir(&config.binary.install_dir)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    command.current_dir(&config.binary.install_dir).args(args);
+
+    if show_output {
+        command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    } else {
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+    }
     command.kill_on_drop(false);
 
     if !config.environment.contains_key("RUST_LOG") {
         command.env("RUST_LOG", "info");
     }
 
+    if !config.environment.contains_key("NO_COLOR") && !show_output {
+        command.env("NO_COLOR", "1");
+    }
+
     for (key, value) in &config.environment {
         command.env(key, value);
     }
 
-    let mut child = command.spawn()?;
+    let child = command.spawn()?;
 
-    let stdout_task = child
-        .stdout
-        .take()
-        .map(|stdout| spawn_output_task(stdout, "stdout"));
-
-    let stderr_task = child
-        .stderr
-        .take()
-        .map(|stderr| spawn_output_task(stderr, "stderr"));
+    let stdout_task = None;
+    let stderr_task = None;
 
     Ok(ProcessHandle {
         child,
@@ -91,30 +90,4 @@ pub async fn shutdown_process(mut handle: ProcessHandle) -> Result<(), JupiterEr
         }
         Err(err) => Err(JupiterError::Io(err)),
     }
-}
-
-fn spawn_output_task<R>(reader: R, stream: &'static str) -> tokio::task::JoinHandle<()>
-where
-    R: AsyncRead + Unpin + Send + 'static,
-{
-    tokio::spawn(async move {
-        let mut lines = BufReader::new(reader).lines();
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    info!(target: "jupiter::process", stream, message = %line);
-                }
-                Ok(None) => break,
-                Err(err) => {
-                    error!(
-                        target: "jupiter::process",
-                        stream,
-                        error = %err,
-                        "读取进程输出失败"
-                    );
-                    break;
-                }
-            }
-        }
-    })
 }

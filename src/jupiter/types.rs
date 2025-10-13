@@ -86,6 +86,7 @@ pub struct JupiterBinaryManager {
     pub config: JupiterConfig,
     pub launch_overrides: LaunchOverrides,
     pub disable_local_binary: bool,
+    pub show_jupiter_logs: bool,
     pub client: reqwest::Client,
     pub state: Arc<Mutex<ManagerState>>,
 }
@@ -96,6 +97,7 @@ impl fmt::Debug for JupiterBinaryManager {
             .field("config", &self.config)
             .field("launch_overrides", &self.launch_overrides)
             .field("disable_local_binary", &self.disable_local_binary)
+            .field("show_jupiter_logs", &self.show_jupiter_logs)
             .finish()
     }
 }

@@ -112,6 +112,7 @@ async fn main() -> Result<()> {
         jupiter_cfg,
         launch_overrides,
         config.galileo.bot.disable_local_binary,
+        config.galileo.bot.show_jupiter_logs,
     )?;
     let api_client = JupiterApiClient::new(manager.client.clone(), base_url, &config.galileo.bot);
 

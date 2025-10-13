@@ -93,6 +93,18 @@ pub(crate) fn default_environment() -> BTreeMap<String, String> {
     BTreeMap::from_iter([(String::from("RUST_LOG"), String::from("info"))])
 }
 
+pub(crate) fn default_auto_download_market_cache() -> bool {
+    true
+}
+
+pub(crate) fn default_health_check_interval_secs() -> u64 {
+    10
+}
+
+pub(crate) fn default_health_check_max_wait_secs() -> u64 {
+    120
+}
+
 impl Default for cfg::GalileoConfig {
     fn default() -> Self {
         Self {
@@ -192,6 +204,7 @@ impl Default for cfg::BotConfig {
             auto_restart_minutes: 30,
             get_block_hash_by_grpc: true,
             enable_simulation: false,
+            show_jupiter_logs: true,
         }
     }
 }
@@ -276,6 +289,7 @@ impl Default for cfg::JupiterCoreConfig {
             port: default_port(),
             metrics_port: default_metrics_port(),
             use_local_market_cache: false,
+            auto_download_market_cache: default_auto_download_market_cache(),
             market_cache: default_market_cache(),
             market_cache_download_url: default_market_cache_download_url(),
             exclude_other_dex_program_ids: false,

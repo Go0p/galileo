@@ -1,6 +1,6 @@
 global:
   # rpc url
-  rpc_url: "https://solana-rpc.publicnode.com"
+  rpc_url: "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
   # yellowstone grpc url
   yellowstone_grpc_url: "http://185.26.10.237:10000"
   # yellowstone grpc token
@@ -32,7 +32,10 @@ request_params:
   # 请使用 Dex 的地址（而非名称），并以逗号分隔。
   included_dexes: [
     "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
-    "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH"
+    "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH",
+    "SV2EYYJyRz2YhfXwXnhNAevDEui5Q6yrfyo13WtupPF",
+    "SoLFiHG9TfgtdUXUjWAxi3LtvYuFyDLVhBWxdMZxyCe",
+    "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY"
   ]
 
   excluded_dexes: [
@@ -69,6 +72,7 @@ intermedium:
   max_tokens_limit: 20
   mints:
     - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    - "So11111111111111111111111111111111111111112"
   disable_mints: []
 
 bot:
@@ -84,6 +88,8 @@ bot:
   get_block_hash_by_grpc: true
   # 是否允许模拟
   enable_simulation: false
+  # 是否在本地终端打印 Jupiter 二进制输出（默认开启，可保持彩色日志）。
+  show_jupiter_logs: true
 
 flashloan:
   # 是否启用 flash 贷款

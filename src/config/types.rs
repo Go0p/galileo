@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::Deserialize;
-use serde::de::{self, Deserializer};
 use serde_with::serde_as;
 
 use crate::strategy::config::StrategyConfig;
@@ -132,6 +131,8 @@ pub struct BotConfig {
     pub get_block_hash_by_grpc: bool,
     #[serde(default)]
     pub enable_simulation: bool,
+    #[serde(default = "super::default_true")]
+    pub show_jupiter_logs: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -303,6 +304,8 @@ pub struct JupiterCoreConfig {
     pub metrics_port: u16,
     #[serde(default)]
     pub use_local_market_cache: bool,
+    #[serde(default = "super::default_auto_download_market_cache")]
+    pub auto_download_market_cache: bool,
     #[serde(default = "super::default_market_cache")]
     pub market_cache: String,
     #[serde(default = "super::default_market_cache_download_url")]
@@ -375,7 +378,11 @@ impl JupiterConfig {
         self.binary.install_dir.join(&self.binary.binary_name)
     }
 
-    pub fn effective_args(&self, overrides: &LaunchOverrides) -> Vec<String> {
+    pub fn effective_args(
+        &self,
+        overrides: &LaunchOverrides,
+        market_cache_override: Option<&str>,
+    ) -> Vec<String> {
         let mut args = Vec::new();
         let core = &self.core;
 
@@ -393,7 +400,10 @@ impl JupiterConfig {
             args.push(url.clone());
         }
 
-        if !core.market_cache.trim().is_empty() {
+        if let Some(local_cache) = market_cache_override {
+            args.push("--market-cache".to_string());
+            args.push(local_cache.to_string());
+        } else if !core.market_cache.trim().is_empty() {
             args.push("--market-cache".to_string());
             args.push(core.market_cache.clone());
         }
@@ -476,40 +486,10 @@ impl JupiterConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct HealthCheckConfig {
-    pub url: String,
-    #[serde(default, deserialize_with = "deserialize_option_u64")]
-    pub timeout: Option<u64>,
-    #[serde(default)]
-    pub expected_status: Option<u16>,
-}
-
-fn deserialize_option_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum NumericOrString {
-        Int(u64),
-        Str(String),
-    }
-
-    let opt = Option::<NumericOrString>::deserialize(deserializer)?;
-    match opt {
-        Some(NumericOrString::Int(value)) => Ok(Some(value)),
-        Some(NumericOrString::Str(text)) => {
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
-                Ok(None)
-            } else {
-                trimmed
-                    .parse::<u64>()
-                    .map(Some)
-                    .map_err(|err| de::Error::custom(format!("无法解析数字 {trimmed}: {err}")))
-            }
-        }
-        None => Ok(None),
-    }
+    #[serde(default = "super::default_health_check_interval_secs")]
+    pub interval_secs: u64,
+    #[serde(default = "super::default_health_check_max_wait_secs")]
+    pub max_wait_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

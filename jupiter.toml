@@ -9,7 +9,7 @@ repo_owner = "jup-ag"
 repo_name = "jupiter-swap-api"
 binary_name = "jupiter-swap-api"
 install_dir = "bin"
-proxy= "http://127.0.0.1:2080"
+proxy= "http://192.168.3.3:2080"
 
 # 当使用 JUPITER_URL=http://0.0.0.0:18080 或 JUPITER_URL=http://127.0.0.1:18080 运行机器人时，
 # 机器人将首先根据 intermedium 中获取的 mint。然后启动 JupV6 API，并将 FILTER_MARKETS_WITH_MINTS 设置为从 intermedium 提取的 mints。
@@ -37,7 +37,9 @@ use_local_market_cache = true
 exclude_other_dex_program_ids = true
 # 市场快照地址，可使用官方缓存或自建文件（建议以 `./bin/` 为前缀指向下载结果）。
 market_cache = "./bin/markets.json"
-# 当启用本地缓存时，每次启动都会从该 URL 重新下载最新缓存。
+# 是否在启动时自动下载最新市场缓存；设置为 false 可复用已有文件。
+auto_download_market_cache = false
+# 当启用本地缓存且允许自动下载时，每次启动都会从该 URL 重新下载最新缓存。
 market_cache_download_url = "https://cache.jup.ag/markets?v=4"
 # 市场模式，可选值：`remote`（固定快照）、`file`（本地文件）、`europa`（实时推送）。
 market_mode = "remote"
@@ -83,12 +85,11 @@ graceful_shutdown_timeout_ms = 5000
 [jupiter.environment]
 # 追加给 `jupiter-swap-api` 的环境变量。
 # 默认日志级别，可改为 `debug`/`trace` 以便排查。
-RUST_LOG = "info"
+RUST_LOG = "warn"
 
 [jupiter.health_check]
-# Jupiter 启动后的健康检查 URL，Galileo 会轮询该地址以确认服务可用。
-url = "http://127.0.0.1:18080/health"
-# 健康检查超时（秒）。
-timeout = 360
-# 预期返回的 HTTP 状态码。
-expected_status = 200
+# Jupiter 启动后的健康检查，轮询 WebServer 端口是否可用。
+# 轮询间隔（秒），默认为 10 秒。
+interval_secs = 15
+# 等待端口就绪的最长时间（秒），超时将视为启动失败。
+max_wait_secs = 300
