@@ -16,7 +16,7 @@ use zip::read::ZipArchive;
 use super::error::JupiterError;
 use super::types::{BinaryInstall, ReleaseAsset, ReleaseInfo};
 use crate::config::JupiterConfig;
-use crate::metrics::{LatencyMetadata, guard_with_metadata};
+use crate::monitoring::{LatencyMetadata, guard_with_metadata};
 
 pub(crate) const USER_AGENT: &str = "galileo-bot/0.1";
 pub(crate) const VERSION_FILE_NAME: &str = ".jupiter-version";

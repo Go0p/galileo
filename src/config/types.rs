@@ -133,6 +133,10 @@ pub struct BotConfig {
     pub enable_simulation: bool,
     #[serde(default = "super::default_true")]
     pub show_jupiter_logs: bool,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub prometheus: PrometheusConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -241,6 +245,13 @@ pub struct BackRunTradeConfig {
     pub fixed_size: Option<u64>,
     #[serde(default)]
     pub route_types: Vec<String>,
+}
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrometheusConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default = "super::default_prometheus_listen")]
+    pub listen: String,
 }
 
 #[serde_as]

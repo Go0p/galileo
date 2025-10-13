@@ -5,7 +5,7 @@ use tracing::{debug, info};
 
 use crate::config::BotConfig;
 use crate::jupiter::error::JupiterError;
-use crate::metrics::{LatencyMetadata, guard_with_metadata};
+use crate::monitoring::{LatencyMetadata, guard_with_metadata};
 
 pub mod quote;
 pub mod route_plan_with_metadata;
@@ -34,7 +34,7 @@ impl JupiterApiClient {
     }
 
     pub async fn quote(&self, request: &QuoteRequest) -> Result<QuoteResponse, JupiterError> {
-        let url = self.endpoint("/swap/v1/quote");
+        let url = self.endpoint("/quote");
         let metadata = LatencyMetadata::new(
             [
                 ("stage".to_string(), "quote".to_string()),
@@ -104,7 +104,7 @@ impl JupiterApiClient {
         &self,
         request: &SwapInstructionsRequest,
     ) -> Result<SwapInstructionsResponse, JupiterError> {
-        let url = self.endpoint("/swap/v1/swap-instructions");
+        let url = self.endpoint("/swap-instructions");
         let metadata = LatencyMetadata::new(
             [
                 ("stage".to_string(), "swap_instructions".to_string()),

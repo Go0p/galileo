@@ -76,6 +76,12 @@ intermedium:
   disable_mints: []
 
 bot:
+  # 是否测试模式
+  dry_run: true
+  # 是否启用 prometheus
+  prometheus:
+    enable: true
+    listen: "0.0.0.0:9898"
   # 设置为 true 时，不会在本地启动 Jupiter API。当你想在同一台机器上运行多个机器人时，这很有用。
   disable_local_binary: false
   # 是否禁止启动机器人

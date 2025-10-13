@@ -19,7 +19,9 @@
 - **无缓存原则**：对 Jupiter Quote 不做缓存；如需缓存其他数据，阐明过期策略与命中率。
 - **配置驱动**：所有可调节参数必须来自配置文件，代码中不得写死魔法数字。
 - **观测覆盖**：新增逻辑需附带 metrics 名称、标签，并在文档或 PR 描述监控用途。
+- **Prometheus 输出**：如需线上监控，在 `galileo.yaml` 的 `bot.prometheus` 中开启 `enable` 并指定监听地址；新增指标请在 `monitoring::events` 中补充 `metrics` 打点，同时更新文档说明采集/看板用途。
 - **错误处理**：分清可重试/不可重试错误；不可重试场景需要落盘或打点，供排障使用。
+- **性能分析**：关键路径函数或代码块应使用 `cfg_attr(feature = "hotpath", hotpath::measure)` / `hotpath::measure_block!` 标注；新增模块记得在文档中说明如何开启 `cargo run --features=hotpath`，便于后续快速定位瓶颈。
 
 ## 4. 测试与验证
 - 引擎与策略新增功能须至少覆盖单元测试或集成测试；涉及多线程的逻辑使用 `#[tokio::test(flavor = "multi_thread")]` 或 rayon 安全测试。

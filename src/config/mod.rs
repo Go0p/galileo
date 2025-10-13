@@ -65,6 +65,10 @@ pub(crate) fn default_market_mode() -> cfg::MarketMode {
     cfg::MarketMode::Remote
 }
 
+pub(crate) fn default_prometheus_listen() -> String {
+    "0.0.0.0:9898".to_string()
+}
+
 pub(crate) fn default_total_thread_count() -> u16 {
     64
 }
@@ -205,6 +209,8 @@ impl Default for cfg::BotConfig {
             get_block_hash_by_grpc: true,
             enable_simulation: false,
             show_jupiter_logs: true,
+            dry_run: false,
+            prometheus: cfg::PrometheusConfig::default(),
         }
     }
 }
@@ -250,6 +256,15 @@ impl Default for cfg::BackRunConfig {
             memo: String::new(),
             trigger_memo: String::new(),
             base_mints: Vec::new(),
+        }
+    }
+}
+
+impl Default for cfg::PrometheusConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            listen: default_prometheus_listen(),
         }
     }
 }

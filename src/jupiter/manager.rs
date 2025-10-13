@@ -18,7 +18,7 @@ use super::updater::{
     fetch_release_by_tag, read_version_file, select_asset_for_host, write_version_file,
 };
 use crate::config::{HealthCheckConfig, JupiterConfig, LaunchOverrides};
-use crate::metrics::{LatencyMetadata, guard_with_metadata};
+use crate::monitoring::{LatencyMetadata, guard_with_metadata};
 
 impl JupiterBinaryManager {
     pub fn new(

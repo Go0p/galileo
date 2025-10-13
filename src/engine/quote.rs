@@ -1,0 +1,139 @@
+use std::convert::TryFrom;
+use std::str::FromStr;
+
+use solana_sdk::pubkey::Pubkey;
+use tracing::debug;
+
+use crate::api::{JupiterApiClient, QuoteRequest, QuoteResponse};
+use crate::config::RequestParamsConfig;
+use crate::strategy::types::TradePair;
+
+use super::error::{EngineError, EngineResult};
+use super::types::{DoubleQuote, QuoteTask};
+
+#[derive(Debug, Clone)]
+pub struct QuoteConfig {
+    pub slippage_bps: u16,
+    pub only_direct_routes: bool,
+    pub restrict_intermediate_tokens: bool,
+    pub quote_max_accounts: Option<u32>,
+    pub dex_whitelist: Vec<String>,
+}
+
+impl QuoteConfig {}
+
+#[derive(Clone)]
+pub struct QuoteExecutor {
+    client: JupiterApiClient,
+    defaults: RequestParamsConfig,
+}
+
+impl QuoteExecutor {
+    pub fn new(client: JupiterApiClient, defaults: RequestParamsConfig) -> Self {
+        Self { client, defaults }
+    }
+
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
+    pub async fn round_trip(
+        &self,
+        task: &QuoteTask,
+        config: &QuoteConfig,
+    ) -> EngineResult<Option<DoubleQuote>> {
+        let forward = self.quote_once(&task.pair, task.amount, config).await?;
+
+        let first_out = forward.out_amount as u128;
+        if first_out == 0 {
+            debug!(
+                target: "engine::quote",
+                input = %task.pair.input_mint,
+                output = %task.pair.output_mint,
+                amount = task.amount,
+                "首腿报价输出为零，跳过"
+            );
+            return Ok(None);
+        }
+
+        let second_amount = match u64::try_from(first_out) {
+            Ok(value) => value,
+            Err(_) => {
+                debug!(
+                    target: "engine::quote",
+                    amount = first_out,
+                    "首腿输出超过 u64，可疑路线，跳过"
+                );
+                return Ok(None);
+            }
+        };
+
+        let reverse_pair = task.pair.reversed();
+        let reverse = self
+            .quote_once(&reverse_pair, second_amount, config)
+            .await?;
+
+        Ok(Some(DoubleQuote { forward, reverse }))
+    }
+
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
+    async fn quote_once(
+        &self,
+        pair: &TradePair,
+        amount: u64,
+        config: &QuoteConfig,
+    ) -> EngineResult<QuoteResponse> {
+        let input = Pubkey::from_str(&pair.input_mint).map_err(|err| {
+            EngineError::InvalidConfig(format!("输入 mint 无效 {}: {err}", pair.input_mint))
+        })?;
+        let output = Pubkey::from_str(&pair.output_mint).map_err(|err| {
+            EngineError::InvalidConfig(format!("输出 mint 无效 {}: {err}", pair.output_mint))
+        })?;
+
+        let mut request = QuoteRequest::new(input, output, amount, config.slippage_bps);
+        request.only_direct_routes = Some(config.only_direct_routes);
+        request.restrict_intermediate_tokens = Some(config.restrict_intermediate_tokens);
+        if let Some(max_accounts) = config.quote_max_accounts {
+            request.max_accounts = Some(max_accounts as usize);
+        }
+
+        if !config.dex_whitelist.is_empty() {
+            let dexes = config.dex_whitelist.join(",");
+            request.dexes = Some(dexes.clone());
+            request
+                .extra_query_params
+                .entry("onlyDexes".to_string())
+                .or_insert(dexes);
+        }
+
+        self.apply_defaults(&mut request);
+        self.client.quote(&request).await.map_err(EngineError::from)
+    }
+
+    fn apply_defaults(&self, request: &mut QuoteRequest) {
+        if request.dexes.is_none() && !self.defaults.included_dexes.is_empty() {
+            let dexes = self.defaults.included_dexes.join(",");
+            request.dexes = Some(dexes.clone());
+            request
+                .extra_query_params
+                .entry("onlyDexes".to_string())
+                .or_insert(dexes);
+        }
+
+        if request.excluded_dexes.is_none() && !self.defaults.excluded_dexes.is_empty() {
+            let dexes = self.defaults.excluded_dexes.join(",");
+            request.excluded_dexes = Some(dexes.clone());
+            request
+                .extra_query_params
+                .entry("excludeDexes".to_string())
+                .or_insert(dexes);
+        }
+
+        if !request.only_direct_routes.unwrap_or(false) && self.defaults.only_direct_routes {
+            request.only_direct_routes = Some(true);
+        }
+
+        if request.restrict_intermediate_tokens.unwrap_or(true)
+            && !self.defaults.restrict_intermediate_tokens
+        {
+            request.restrict_intermediate_tokens = Some(false);
+        }
+    }
+}

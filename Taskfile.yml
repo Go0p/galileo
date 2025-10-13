@@ -14,6 +14,16 @@ tasks:
     cmds:
       - cargo build --release
 
+  build:hotpath:
+    desc: "编译项目（hotpath 模式）"
+    cmds:
+      - cargo build --release --features=hotpath
+
+  build:hotpath-alloc-bytes:
+    desc: "编译项目（hotpath + 总字节分配统计模式）"
+    cmds:
+      - cargo build --release --features="hotpath hotpath-alloc-bytes-total"
+
   galileo:run:
     desc: "运行 galileo CLI，自定义命令通过 CMD 变量传入"
     vars:
@@ -97,3 +107,17 @@ tasks:
       - task: galileo:run
         vars:
           CMD: 'jupiter list {{.CLI_ARGS | default ""}}'
+
+  galileo:hotpath:
+    desc: "启用 hotpath 特性运行 galileo（自定义命令通过 CMD 传入）"
+    vars:
+      CMD: '{{default "strategy" .CMD}}'
+    cmds:
+      - cargo run --features=hotpath -- {{.CMD}}
+
+  galileo:hotpath:alloc-bytes:
+    desc: "启用 hotpath + 总字节分配统计运行 galileo（默认执行 strategy）"
+    vars:
+      CMD: '{{default "strategy" .CMD}}'
+    cmds:
+      - cargo run --features="hotpath hotpath-alloc-bytes-total" -- {{.CMD}}

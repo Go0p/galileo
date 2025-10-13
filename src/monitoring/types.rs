@@ -74,9 +74,7 @@ impl LatencyGuard {
     }
 
     #[allow(dead_code)]
-    pub fn cancel(self) {
-        // Intentionally does nothing; dropping without logging.
-    }
+    pub fn cancel(self) {}
 }
 
 impl Drop for LatencyGuard {

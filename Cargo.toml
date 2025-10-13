@@ -40,3 +40,13 @@ indicatif = { version = "0.18.0", features = ["tokio"] }
 solana-address-lookup-table-interface = { version = "3.0.0", features = ["bincode", "bytemuck"] }
 rust_decimal = { version = "1.35", features = ["serde"] }
 solana-account-decoder = "3.0.0"
+hotpath = { version = "0.4", optional = true }
+metrics = "0.21"
+metrics-exporter-prometheus = "0.13"
+
+[features]
+default = []
+hotpath = ["dep:hotpath", "hotpath/hotpath"]
+hotpath-alloc-bytes-total = ["hotpath/hotpath-alloc-bytes-total"]
+hotpath-alloc-count-total = ["hotpath/hotpath-alloc-count-total"]
+hotpath-off = ["hotpath/hotpath-off"]
