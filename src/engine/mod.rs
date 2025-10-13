@@ -12,7 +12,7 @@ pub use builder::{BuilderConfig, PreparedTransaction, TransactionBuilder};
 pub use context::{Action, StrategyContext, StrategyResources};
 pub use error::{EngineError, EngineResult};
 pub use identity::EngineIdentity;
-pub use profit::{ProfitConfig, ProfitEvaluator};
+pub use profit::{ProfitConfig, ProfitEvaluator, TipConfig};
 pub use quote::{QuoteConfig, QuoteExecutor};
 pub use scheduler::Scheduler;
 pub use swap::SwapInstructionFetcher;
@@ -47,11 +47,6 @@ impl EngineSettings {
 
     pub fn with_landing_timeout(mut self, timeout: Duration) -> Self {
         self.landing_timeout = timeout;
-        self
-    }
-
-    pub fn with_compute_unit_override(mut self, value: Option<u64>) -> Self {
-        self.compute_unit_price_override = value;
         self
     }
 

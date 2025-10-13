@@ -1,19 +1,19 @@
 # Galileo Jupiter Demo (Rust)
 
-本文演示如何用 Rust 直接调用自托管的 Jupiter Quote / Swap API，并将返回的指令组装成 Versioned v0 交易后发送至 Jito。示例严格对齐 `galileo.yaml` 中的 `request_params` 与三类策略开关（`spam`、`blind`、`back_run`），并遵循“基准资产 ↔ 中间资产 ↔ 基准资产”的套利约束：`inputMint` / `outputMint` 永远选自策略配置的基准资产（例如 WSOL、USDC），`intermedium.mints` 仅用作中间流动性池。
+本文演示如何用 Rust 直接调用自托管的 Jupiter Quote / Swap API，并将返回的指令组装成 Versioned v0 交易后发送至 Jito。示例严格对齐 `galileo.yaml` 中的 `request_params` 与策略配置（`blind_strategy`、`back_run_strategy`），并遵循“基准资产 ↔ 中间资产 ↔ 基准资产”的套利约束：`inputMint` / `outputMint` 永远选自策略配置的基准资产（例如 WSOL、USDC），`intermedium.mints` 仅用作中间流动性池。
 
 ## 请求参数对齐
 
 | 配置路径 | 作用域 | Demo 中的字段 | 说明 |
 | --- | --- | --- | --- |
-| `request_params.included_dexes` | /quote, /swap-instructions | `INCLUDED_DEXES` + `QuoteRequest::dexes` | 将请求限制在白名单 Dex，满足 spam/back_run 白名单要求。 |
-| `request_params.only_direct_routes` | /quote | `StrategyKind::only_direct_routes` | spam 策略强制 2-hop，其余策略沿用配置中的 `false`。 |
-| `request_params.restrict_intermediate_tokens` | /quote | `REQUEST_DEFAULTS.restrict_intermediate_tokens` | blind/back_run 默认启用，保持顶级流动性中间池。 |
-| `request_params.skip_user_accounts_rpc_calls` | /swap-instructions | `StrategyKind::skip_user_accounts_rpc_calls` | spam 为降低延迟可改为 `true`，其余策略延续配置。 |
-| `request_params.dynamic_compute_unit_limit` | /swap-instructions | `REQUEST_DEFAULTS.dynamic_compute_unit_limit` | 三个策略都推荐开启，自动估计 CU。 |
+| `request_params.included_dexes` | /quote, /swap-instructions | `INCLUDED_DEXES` + `QuoteRequest::dexes` | 将请求限制在白名单 Dex，满足策略白名单要求。 |
+| `request_params.only_direct_routes` | /quote | `StrategyKind::only_direct_routes` | blind_strategy 可按配置覆盖，back_run 固定直连。 |
+| `request_params.restrict_intermediate_tokens` | /quote | `REQUEST_DEFAULTS.restrict_intermediate_tokens` | 默认启用，保持顶级流动性中间池。 |
+| `request_params.skip_user_accounts_rpc_calls` | /swap-instructions | `StrategyKind::skip_user_accounts_rpc_calls` | 高频场景可按需关闭，示例沿用默认。 |
+| `request_params.dynamic_compute_unit_limit` | /swap-instructions | `REQUEST_DEFAULTS.dynamic_compute_unit_limit` | 推荐开启，自动估计 CU。 |
 | `global.wallet.warp_or_unwrap_sol` | /swap-instructions | `REQUEST_DEFAULTS.wrap_and_unwrap_sol` | 与机器人保持一致，确保 SOL ↔ WSOL 自行包裹。 |
-| `spam.enable_landers` | Bundle 落地 | `JITO_TIP_ACCOUNT` | Demo 选用 `jito` 通道，向示例账户支付小费。 |
-| `back_run.base_mints[*].min_quote_profit` 等阈值 | 策略过滤 | `StrategyKind::min_profit_lamports` | 依据策略对利润阈值做差异化设置。 |
+| `blind_strategy.enable_landers` | Bundle 落地 | `JITO_TIP_ACCOUNT` | Demo 选用 `jito` 通道，向示例账户支付小费。 |
+| `back_run_strategy.base_mints[*].min_quote_profit` 等阈值 | 策略过滤 | `StrategyKind::min_profit_lamports` | 依据策略对利润阈值做差异化设置。 |
 
 ## 策略关注点
 
@@ -22,9 +22,8 @@
 - **指令后处理**：只对 Jupiter 返回的指令做补充（memo、Jito tip、闪电贷等），不修改核心 swap 序列。
 - **高频特性**：quote 请求实时命中 Jupiter，不做本地缓存，以避免利润遗漏。
 - **落地路径**：若配置的 `enable_landers` 为空则默认走 RPC；`staked` 等值与 RPC 共享发送流程。
-- **spam**：高频直连、`onlyDirectRoutes=true`，并开启 `skip_user_accounts_rpc_calls`；重试次数由 `spam.max_retries` 控制。
-- **blind**：沿用默认配置，按 `blind.base_mints[*].trade_size_range` 生成交易规模，关注三跳白名单。
-- **back_run**：利润阈值与 tip 更激进，可结合后续 DEX gRPC 监听扩展。
+- **blind_strategy**：沿用默认配置，按 `blind_strategy.base_mints[*].trade_size_range` 生成交易规模，关注三跳白名单。
+- **back_run_strategy**：利润阈值与 tip 更激进，可结合后续 DEX gRPC 监听扩展。
 
 ## 依赖声明
 
@@ -51,7 +50,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 - `GALILEO_PRIVATE_KEY`：对应 `global.wallet.private_key`，可为 base58 字符串或 64 字节 JSON 数组。
 - `GALILEO_RPC_URL`：覆盖 `global.rpc_url`。
 - `JUPITER_URL`：覆盖请求 Jupiter 的基地址。
-- `GALILEO_STRATEGY`：取值 `spam`、`blind`、`back_run`，默认 `blind`。
+- `GALILEO_STRATEGY`：取值 `blind`、`back_run`，默认 `blind`。
 - （可选）`GALILEO_MEMO`：追加 Memo 指令，贴合 `global.instruction.memo`。
 
 ```rust
@@ -113,7 +112,6 @@ const REQUEST_DEFAULTS: RequestDefaults = RequestDefaults {
 
 #[derive(Clone, Copy)]
 enum StrategyKind {
-    Spam,
     Blind,
     BackRun,
 }
@@ -125,7 +123,6 @@ impl StrategyKind {
             .to_lowercase()
             .as_str()
         {
-            "spam" => StrategyKind::Spam,
             "back_run" | "backrun" => StrategyKind::BackRun,
             _ => StrategyKind::Blind,
         }
@@ -133,7 +130,6 @@ impl StrategyKind {
 
     fn sample_amount(&self) -> u64 {
         match self {
-            StrategyKind::Spam => 5_000_000,      // 0.005 SOL
             StrategyKind::Blind => 10_000_000,    // 0.01 SOL
             StrategyKind::BackRun => 100_000_000, // 0.1 SOL
         }
@@ -141,21 +137,18 @@ impl StrategyKind {
 
     fn only_direct_routes(&self, default: bool) -> bool {
         match self {
-            StrategyKind::Spam => true,
             _ => default,
         }
     }
 
     fn skip_user_accounts_rpc_calls(&self, default: bool) -> bool {
         match self {
-            StrategyKind::Spam => true,
             _ => default,
         }
     }
 
     fn min_profit_lamports(&self) -> u64 {
         match self {
-            StrategyKind::Spam => 1_000,
             StrategyKind::Blind => 5_000,
             StrategyKind::BackRun => 100_000,
         }
@@ -163,7 +156,6 @@ impl StrategyKind {
 
     fn tip_ratio(&self) -> f64 {
         match self {
-            StrategyKind::Spam => 0.3,
             StrategyKind::Blind => 0.5,
             StrategyKind::BackRun => 0.6,
         }
@@ -171,7 +163,6 @@ impl StrategyKind {
 
     fn loop_delay_ms(&self) -> u64 {
         match self {
-            StrategyKind::Spam => 100,
             StrategyKind::Blind => 200,
             StrategyKind::BackRun => 400,
         }
@@ -379,7 +370,6 @@ async fn main() -> Result<()> {
 
 fn strategy_label(strategy: StrategyKind) -> &'static str {
     match strategy {
-        StrategyKind::Spam => "spam",
         StrategyKind::Blind => "blind",
         StrategyKind::BackRun => "back_run",
     }

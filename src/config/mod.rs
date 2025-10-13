@@ -117,10 +117,8 @@ impl Default for cfg::GalileoConfig {
             intermedium: cfg::IntermediumConfig::default(),
             bot: cfg::BotConfig::default(),
             flashloan: cfg::FlashloanConfig::default(),
-            spam: cfg::SpamConfig::default(),
-            blind: cfg::BlindConfig::default(),
-            back_run: cfg::BackRunConfig::default(),
-            strategy: None,
+            blind_strategy: cfg::BlindStrategyConfig::default(),
+            back_run_strategy: cfg::BackRunStrategyConfig::default(),
         }
     }
 }
@@ -221,21 +219,7 @@ impl Default for cfg::FlashloanConfig {
     }
 }
 
-impl Default for cfg::SpamConfig {
-    fn default() -> Self {
-        Self {
-            enable: false,
-            enable_log: false,
-            skip_preflight: true,
-            max_retries: 0,
-            compute_unit_price_micro_lamports: 0,
-            enable_dexs: Vec::new(),
-            enable_landers: Vec::new(),
-        }
-    }
-}
-
-impl Default for cfg::BlindConfig {
+impl Default for cfg::BlindStrategyConfig {
     fn default() -> Self {
         Self {
             enable: false,
@@ -247,7 +231,7 @@ impl Default for cfg::BlindConfig {
     }
 }
 
-impl Default for cfg::BackRunConfig {
+impl Default for cfg::BackRunStrategyConfig {
     fn default() -> Self {
         Self {
             enable: false,

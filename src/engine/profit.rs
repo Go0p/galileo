@@ -2,10 +2,25 @@ use rand::prelude::IndexedRandom;
 use serde_json::Value;
 use tracing::debug;
 
-use crate::strategy::config::TipConfig;
-
 use super::error::EngineResult;
 use super::types::{DoubleQuote, SwapOpportunity};
+
+#[derive(Debug, Clone)]
+pub struct TipConfig {
+    pub enable_random: bool,
+    pub static_tip_percentage: f64,
+    pub random_percentage: Vec<f64>,
+}
+
+impl Default for TipConfig {
+    fn default() -> Self {
+        Self {
+            enable_random: false,
+            static_tip_percentage: 0.5,
+            random_percentage: vec![0.5],
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ProfitConfig {

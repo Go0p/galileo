@@ -6,8 +6,6 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use serde_with::serde_as;
 
-use crate::strategy::config::StrategyConfig;
-
 #[derive(Debug, Clone, Default)]
 pub struct AppConfig {
     pub galileo: GalileoConfig,
@@ -30,13 +28,9 @@ pub struct GalileoConfig {
     #[serde(default)]
     pub flashloan: FlashloanConfig,
     #[serde(default)]
-    pub spam: SpamConfig,
+    pub blind_strategy: BlindStrategyConfig,
     #[serde(default)]
-    pub blind: BlindConfig,
-    #[serde(default)]
-    pub back_run: BackRunConfig,
-    #[serde(default)]
-    pub strategy: Option<StrategyConfig>,
+    pub back_run_strategy: BackRunStrategyConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -146,25 +140,7 @@ pub struct FlashloanConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct SpamConfig {
-    #[serde(default)]
-    pub enable: bool,
-    #[serde(default)]
-    pub enable_log: bool,
-    #[serde(default)]
-    pub skip_preflight: bool,
-    #[serde(default)]
-    pub max_retries: u32,
-    #[serde(default)]
-    pub compute_unit_price_micro_lamports: u64,
-    #[serde(default)]
-    pub enable_dexs: Vec<String>,
-    #[serde(default)]
-    pub enable_landers: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct BlindConfig {
+pub struct BlindStrategyConfig {
     #[serde(default)]
     pub enable: bool,
     #[serde(default)]
@@ -200,7 +176,7 @@ pub struct BlindBaseMintConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct BackRunConfig {
+pub struct BackRunStrategyConfig {
     #[serde(default)]
     pub enable: bool,
     #[serde(default)]

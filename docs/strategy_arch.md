@@ -20,11 +20,10 @@ src/
 │   ├── builder.rs     # TransactionBuilder
 │   ├── scheduler.rs   # Tokio/Rayon 协调
 │   └── mod.rs
-├── strategy/          # 业务策略(Spam/Blind/未来策略)
-│   ├── spam.rs
+├── strategy/          # 业务策略（Blind/未来策略）
 │   ├── blind.rs
-│   ├── backrun.rs     # 例：未来扩展
-│   └── mod.rs         # 仅做 re-export
+│   ├── backrun_strategy.rs  # 例：未来扩展
+│   └── mod.rs               # 仅做 re-export
 ├── lander/            # 上链通道 trait + 实现
 │   ├── traits.rs      # pub trait Lander
 │   ├── jito.rs
@@ -40,7 +39,7 @@ src/
 └── ...
 ```
 
-- **策略命名规范**：`src/strategy/<策略名>.rs`，例如 `spam.rs` / `blind.rs`，便于后续增量添加。
+- **策略命名规范**：`src/strategy/<策略名>.rs`，例如 `blind.rs`（当前默认策略）；未来策略建议使用 `<name>_strategy.rs` 命名，便于辨识。
 - **Engine 层**：仅关心「如何高效执行」，不关心套利意图；对外暴露 `StrategyEngine<TL: Lander>`。
 - **共享类型**：放在 `types.rs`、`config.rs` 等主题化文件中，不在 `mod.rs` 内定义结构体或 trait。
 - **监控模块**：与 Engine、Strategy、Lander 均解耦，只通过事件/回调传递指标数据。
@@ -122,7 +121,7 @@ pub struct StrategyEngine<S: Strategy> {
 }
 ```
 
-- **策略层**：只关注调度顺序/节奏（例如 Spam 随机打散对、Blind 顺序遍历），通过 `StrategyContext` 请求引擎执行 Quote。
+- **策略层**：只关注调度顺序/节奏（例如 Blind 顺序遍历、未来 Back-run 根据触发配置筛选），通过 `StrategyContext` 请求引擎执行 Quote。
 - **Engine 层**：负责资源调度、盈利判定、交易构建、落地与监控打点，细节完全从策略抽离；当配置 `bot.dry_run = true` 或 CLI 以 `galileo dry-run` 启动时，交易会在构建后记录日志并跳过落地提交，用于安全演练。
 - **上下文对象**：策略仅能调用 `schedule_pair_all_amounts` 等接口，无法越级访问底层实现，保证安全与解耦。
 - **扩展流程**：新增策略 -> 新建文件实现 `Strategy` -> 在 `main` 中按模式注册即可。
@@ -133,7 +132,7 @@ pub struct StrategyEngine<S: Strategy> {
 - **事件实现**：`monitoring::events` 模块封装 Quote/Swap/Transaction/Lander 的结构化 `tracing` 打点，Engine 调用即可在日志和指标系统中统一呈现。
 - **Prometheus 指标**：`monitoring::events` 会在配置启用时同步通过 `metrics` 宏上报关键指标。
 - **Metrics**：通过 `metrics` crate 暴露
-  - `quote.latency_ms{strategy=spam}`
+  - `quote.latency_ms{strategy=blind}`
   - `swap.fetch.success_total`
   - `lander.submit.latency_ms{lander=jito}`
   - `profit.estimated_lamports`
@@ -154,7 +153,7 @@ pub struct StrategyEngine<S: Strategy> {
 
 | 配置项 | 影响模块 | 描述 |
 | --- | --- | --- |
-| `strategy.spam.*` / `strategy.blind.*` | `src/strategy/*.rs` | 策略节奏、利润阈值、禁用状态；策略模块读取后决定是否发起 Quote。 |
+| `blind_strategy.*` / `back_run_strategy.*` | `src/strategy/*.rs` | 策略节奏、利润阈值、禁用状态；策略模块读取后决定是否发起 Quote。 |
 | `bot.request_params.*` | `engine::quote` | 构造 Jupiter Quote 请求的默认参数。 |
 | `lander.enable` / `lander.type` | `lander::*` | 选择默认 Lander 实现与启用列表。 |
 | `lander.tips` | `engine::builder` + `lander::*` | 配置 tip 账户、优先费；Builder 根据策略覆盖 CU。 |
@@ -164,7 +163,7 @@ pub struct StrategyEngine<S: Strategy> {
 ## 9. 迭代路线建议
 
 1. **P0**：落地 `lander` 目录与 `Lander` trait，Jito/RPC 实现先行；引擎现有逻辑迁入 `engine::*`。
-2. **P1**：重构 `strategy` 目录，Spam/Blind 拆分为独立文件并实现统一 `Strategy` trait。
+2. **P1**：重构 `strategy` 目录，拆分各策略并实现统一 `Strategy` trait。
 3. **P2**：补齐监控模块，统一事件流；梳理 metrics 名称，接入现有监控体系。
 4. **P3**：引入多落地器编排（主用 Jito + 备选 RPC/Staked），完善失败重试策略。
 5. **P4**：为未来 Back-run 策略预留接口，扩展策略 orchestrator，补充测试与压测脚本。

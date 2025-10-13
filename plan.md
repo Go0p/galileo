@@ -12,9 +12,9 @@
 - ✅ **Quote 接口联调通过**  
   手动执行 `curl` 至 `http://172.22.166.244:18080/quote` 返回预期 JSON，`restrictIntermediateTokens=true` 等全局配置已生效。
 - ✅ **Rust Demo 完整示例**  
-  `docs/demo.md` 提供 Rust 版 quote/swap/bundle 样例，对齐 spam / blind / back_run 策略配置。
+  `docs/demo.md` 提供 Rust 版 quote/swap/bundle 样例，对齐 blind_strategy / back_run_strategy 配置。
 - ✅ **策略执行链路初版**  
-  `ArbitrageEngine` 接入交易构建与 Jito Bundle 发送，支持 spam/blind 基础配置（DEX 白名单、优先费、落地通道）。
+  `ArbitrageEngine` 接入交易构建与 Jito Bundle 发送，现阶段以 blind_strategy 基础配置（DEX 白名单、优先费、落地通道）为主。
 - ⚙️ `cargo check` 通过；`cargo run -- jupiter start` 会在前台输出 Jupiter 日志并复用本地二进制。
 
 ## 未决问题 / 约束
@@ -36,7 +36,7 @@
    - [x] 运行 `cargo run -- strategy` 检查初始化与身份解析是否顺利。  
    - [x] 确认 Jupiter API base URL 正常解析（本地或远端）。
 3. **文档对齐**  
-   - [x] 将 `docs/demo.md` 更新为涵盖 spam / blind / back run 策略的调用流程要点。  
+   - [x] 将 `docs/demo.md` 更新为涵盖 blind_strategy / back_run_strategy 调用流程要点。  
    - [x] 补充 `/quote` 与 `/swap-instructions` 请求参数与 `request_params` 段配置之间的映射说明。
 
 ### 阶段 B（中期）— 生产级套利引擎
@@ -47,7 +47,7 @@
    - [ ] 接入 Yellowstone gRPC / RPC，维护最新 slot / blockhash / orderbook 等热数据（quote 请求直接走实时通道）。  
    - [ ] 为落地与风控提供只读状态服务，并补充一致性 / 延迟基准测试脚本。
 3. **套利调度执行链路**  
-   - [ ] 搭建异步通道 + Rayon 组合的多策略报价流水线（spam/blind/back_run）。  
+   - [ ] 搭建异步通道 + Rayon 组合的多策略报价流水线（blind/back_run）。  
    - [x] 抽象 bundle 发送器，支持 Jito / Staked 等落地通道，并实现优先费/小费策略（当前实现 Jito，预留多通道扩展）。
 4. **风险控制与资金管理**  
    - [ ] 实现滑点、持仓阈值、冷却时间等风控模块。  

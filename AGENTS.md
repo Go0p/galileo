@@ -9,7 +9,7 @@
 
 ## 2. 目录与模块规范
 - `src/engine/`：调度、交易构建、落地前处理；不允许嵌入策略特定逻辑。
-- `src/strategy/`：单一策略一个文件，命名沿用策略名（如 `spam.rs`, `blind.rs`）。`mod.rs` 仅负责 re-export。
+- `src/strategy/`：单一策略一个文件，例如 `blind.rs`；新增策略请以 `<name>_strategy.rs` 命名，`mod.rs` 仅负责 re-export。
 - `src/lander/`：统一 `Lander` trait，所有上链实现不可直接依赖策略模块。
 - `monitoring`、`config`、`types` 等共享逻辑保持纯粹，禁止夹带业务逻辑或 IO。
 - 若需新目录，必须在 PR 中解释它在分层体系中的位置。

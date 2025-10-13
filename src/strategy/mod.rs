@@ -1,7 +1,7 @@
-pub mod blind;
-pub mod config;
-pub mod spam;
+pub mod blind_strategy;
 pub mod types;
+
+pub use blind_strategy::BlindStrategy;
 
 use crate::engine::{Action, StrategyContext, StrategyTick};
 

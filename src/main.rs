@@ -21,16 +21,13 @@ use config::{
 use engine::{
     BuilderConfig, EngineError, EngineIdentity, EngineResult, EngineSettings, ProfitConfig,
     ProfitEvaluator, QuoteConfig, QuoteExecutor, Scheduler, StrategyEngine, SwapInstructionFetcher,
-    TransactionBuilder,
+    TipConfig, TransactionBuilder,
 };
 use jupiter::{BinaryStatus, JupiterBinaryManager, JupiterError};
 use lander::LanderFactory;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
-use strategy::blind::BlindStrategy;
-use strategy::config::StrategyConfig;
-use strategy::spam::SpamStrategy;
-use strategy::{Strategy, StrategyEvent};
+use strategy::{BlindStrategy, Strategy, StrategyEvent};
 
 #[derive(Parser, Debug)]
 #[command(name = "galileo", version, about = "Jupiter 自托管调度机器人")]
@@ -64,12 +61,6 @@ enum Command {
     StrategyDryRun,
     /// 初始化配置模版文件
     Init(InitCmd),
-}
-
-#[derive(Debug, Clone, Copy)]
-enum StrategyMode {
-    Spam,
-    Blind,
 }
 
 #[derive(Args, Debug)]
@@ -186,16 +177,9 @@ async fn run() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&instructions.raw)?);
         }
         Command::Strategy | Command::StrategyDryRun => {
-            let strategy_config = match config.galileo.strategy.clone() {
-                Some(cfg) => cfg,
-                None => return Err(anyhow!("未提供策略配置")),
-            };
-
-            if !strategy_config.is_enabled() {
-                warn!(
-                    target: "strategy",
-                    "策略在配置中被禁用，直接退出"
-                );
+            let blind_config = &config.galileo.blind_strategy;
+            if !blind_config.enable {
+                warn!(target: "strategy", "盲发策略未启用，直接退出");
                 return Ok(());
             }
 
@@ -219,24 +203,16 @@ async fn run() -> Result<()> {
                 );
             }
 
-            let mode = resolve_strategy_mode(&config.galileo);
             let rpc_client = resolve_rpc_client(&config.galileo.global)?;
             let identity = EngineIdentity::from_wallet(&config.galileo.global.wallet)
                 .map_err(|err| anyhow!(err))?;
 
-            let trade_pairs = resolve_trade_pairs(&strategy_config)?;
-            let trade_amounts = resolve_trade_amounts(&strategy_config)?;
-            let profit_config = build_profit_config(&strategy_config);
-            let scheduler_delay = strategy_config.trade_delay();
-            let quote_config = build_quote_config(
-                &strategy_config,
-                mode,
-                &config.galileo.request_params,
-                &config.galileo.spam,
-                &config.galileo.blind,
-            );
-            let compute_unit =
-                compute_unit_override(mode, &config.galileo.spam, &config.galileo.blind);
+            let trade_pairs = build_blind_trade_pairs(blind_config, &config.galileo.intermedium)?;
+            let trade_amounts = build_blind_trade_amounts(blind_config)?;
+            let profit_config = build_blind_profit_config(blind_config);
+            let scheduler_delay = resolve_blind_scheduler_delay(blind_config);
+            let quote_config =
+                build_blind_quote_config(blind_config, &config.galileo.request_params);
             let landing_timeout = default_landing_timeout();
             let builder_config =
                 BuilderConfig::new(resolve_instruction_memo(&config.galileo.global.instruction));
@@ -246,66 +222,31 @@ async fn run() -> Result<()> {
             let lander_factory = LanderFactory::new(rpc_client.clone(), submission_client.clone());
             let default_landers = ["rpc"];
 
-            let result = match mode {
-                StrategyMode::Spam => {
-                    let lander_stack = lander_factory
-                        .build_stack(
-                            &config.lander.lander,
-                            &config.galileo.spam.enable_landers,
-                            &default_landers,
-                            config.galileo.spam.max_retries as usize,
-                        )
-                        .map_err(|err| anyhow!(err))?;
+            let lander_stack = lander_factory
+                .build_stack(
+                    &config.lander.lander,
+                    &blind_config.enable_landers,
+                    &default_landers,
+                    0,
+                )
+                .map_err(|err| anyhow!(err))?;
 
-                    let engine = StrategyEngine::new(
-                        SpamStrategy::new(),
-                        lander_stack,
-                        identity.clone(),
-                        QuoteExecutor::new(api_client.clone(), request_defaults.clone()),
-                        ProfitEvaluator::new(profit_config.clone()),
-                        SwapInstructionFetcher::new(api_client.clone()),
-                        TransactionBuilder::new(rpc_client.clone(), builder_config.clone()),
-                        Scheduler::new(scheduler_delay),
-                        EngineSettings::new(quote_config.clone())
-                            .with_landing_timeout(landing_timeout)
-                            .with_compute_unit_override(compute_unit)
-                            .with_dry_run(dry_run),
-                        trade_pairs.clone(),
-                        trade_amounts.clone(),
-                    );
-                    drive_engine(engine).await
-                }
-                StrategyMode::Blind => {
-                    let lander_stack = lander_factory
-                        .build_stack(
-                            &config.lander.lander,
-                            &config.galileo.blind.enable_landers,
-                            &default_landers,
-                            0,
-                        )
-                        .map_err(|err| anyhow!(err))?;
-
-                    let engine = StrategyEngine::new(
-                        BlindStrategy::new(),
-                        lander_stack,
-                        identity,
-                        QuoteExecutor::new(api_client.clone(), request_defaults),
-                        ProfitEvaluator::new(profit_config),
-                        SwapInstructionFetcher::new(api_client),
-                        TransactionBuilder::new(rpc_client.clone(), builder_config),
-                        Scheduler::new(scheduler_delay),
-                        EngineSettings::new(quote_config)
-                            .with_landing_timeout(landing_timeout)
-                            .with_compute_unit_override(compute_unit)
-                            .with_dry_run(dry_run),
-                        trade_pairs,
-                        trade_amounts,
-                    );
-                    drive_engine(engine).await
-                }
-            };
-
-            result.map_err(|err| anyhow!(err))?;
+            let engine = StrategyEngine::new(
+                BlindStrategy::new(),
+                lander_stack,
+                identity,
+                QuoteExecutor::new(api_client.clone(), request_defaults),
+                ProfitEvaluator::new(profit_config),
+                SwapInstructionFetcher::new(api_client),
+                TransactionBuilder::new(rpc_client.clone(), builder_config),
+                Scheduler::new(scheduler_delay),
+                EngineSettings::new(quote_config)
+                    .with_landing_timeout(landing_timeout)
+                    .with_dry_run(dry_run),
+                trade_pairs,
+                trade_amounts,
+            );
+            drive_engine(engine).await.map_err(|err| anyhow!(err))?;
 
             if !manager.disable_local_binary {
                 if let Err(err) = manager.stop().await {
@@ -431,27 +372,6 @@ fn resolve_jupiter_base_url(_bot: &BotConfig, jupiter: &JupiterConfig) -> String
     format!("http://{}:{}", jupiter.core.host, jupiter.core.port)
 }
 
-fn resolve_strategy_mode(config: &config::GalileoConfig) -> StrategyMode {
-    if let Ok(value) = env::var("GALILEO_STRATEGY_MODE") {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "spam" => return StrategyMode::Spam,
-            "blind" => return StrategyMode::Blind,
-            other => {
-                warn!(target: "strategy", mode = other, "未知 GALILEO_STRATEGY_MODE，按配置回退")
-            }
-        }
-    }
-
-    if config.spam.enable {
-        StrategyMode::Spam
-    } else if config.blind.enable {
-        StrategyMode::Blind
-    } else {
-        warn!(target: "strategy", "未启用 spam/blind，默认使用 blind" );
-        StrategyMode::Blind
-    }
-}
-
 async fn drive_engine<S>(engine: StrategyEngine<S>) -> EngineResult<()>
 where
     S: Strategy<Event = StrategyEvent>,
@@ -465,97 +385,189 @@ where
     }
 }
 
-fn resolve_trade_pairs(config: &StrategyConfig) -> EngineResult<Vec<strategy::types::TradePair>> {
-    let mut pairs = config.resolved_pairs();
-    if pairs.is_empty() {
+fn build_blind_trade_pairs(
+    config: &config::BlindStrategyConfig,
+    intermedium: &IntermediumConfig,
+) -> EngineResult<Vec<strategy::types::TradePair>> {
+    if config.base_mints.is_empty() {
         return Err(EngineError::InvalidConfig(
-            "trade pairs or quote mints missing".into(),
+            "blind_strategy.base_mints 不能为空".into(),
         ));
     }
 
-    if config.controls.enable_reverse_trade {
-        let mut reversed: Vec<_> = pairs.iter().map(|pair| pair.reversed()).collect();
-        pairs.append(&mut reversed);
+    let disabled: std::collections::BTreeSet<String> = intermedium
+        .disable_mints
+        .iter()
+        .map(|mint| mint.trim().to_string())
+        .filter(|mint| !mint.is_empty())
+        .collect();
+
+    let intermediates: Vec<String> = intermedium
+        .mints
+        .iter()
+        .map(|mint| mint.trim())
+        .filter(|mint| !mint.is_empty())
+        .filter(|mint| !disabled.contains(&mint.to_string()))
+        .map(|mint| mint.to_string())
+        .collect();
+
+    if intermediates.is_empty() {
+        return Err(EngineError::InvalidConfig(
+            "intermedium.mints 不能为空".into(),
+        ));
     }
 
-    Ok(pairs)
+    let mut pairs_set: BTreeSet<(String, String)> = BTreeSet::new();
+    for base in &config.base_mints {
+        let base_mint = base.mint.trim();
+        if base_mint.is_empty() {
+            continue;
+        }
+
+        for intermediate in &intermediates {
+            if intermediate == base_mint {
+                continue;
+            }
+            pairs_set.insert((intermediate.clone(), base_mint.to_string()));
+        }
+    }
+
+    if pairs_set.is_empty() {
+        return Err(EngineError::InvalidConfig(
+            "盲发策略未生成任何交易对".into(),
+        ));
+    }
+
+    Ok(pairs_set
+        .into_iter()
+        .map(|(input_mint, output_mint)| strategy::types::TradePair {
+            input_mint,
+            output_mint,
+        })
+        .collect())
 }
 
-fn resolve_trade_amounts(config: &StrategyConfig) -> EngineResult<Vec<u64>> {
-    let amounts = config.effective_trade_amounts();
+fn build_blind_trade_amounts(config: &config::BlindStrategyConfig) -> EngineResult<Vec<u64>> {
+    let mut amounts: BTreeSet<u64> = BTreeSet::new();
+    for base in &config.base_mints {
+        for value in generate_amounts_for_base(base) {
+            amounts.insert(value);
+        }
+    }
+
     if amounts.is_empty() {
         return Err(EngineError::InvalidConfig(
-            "trade_range produced no amounts".into(),
+            "盲发策略未配置有效的交易规模".into(),
         ));
     }
-    Ok(amounts)
+
+    Ok(amounts.into_iter().collect())
 }
 
-fn build_profit_config(config: &StrategyConfig) -> ProfitConfig {
+fn generate_amounts_for_base(base: &config::BlindBaseMintConfig) -> Vec<u64> {
+    if base.trade_size_range.is_empty() {
+        return Vec::new();
+    }
+
+    let mut values: BTreeSet<u64> = base.trade_size_range.iter().copied().collect();
+    if base.trade_size_range.len() >= 2 {
+        if let Some(count) = base.trade_range_count {
+            if count >= 2 {
+                let mut sorted = base.trade_size_range.clone();
+                sorted.sort_unstable();
+                let min = sorted.first().copied().unwrap_or(0);
+                let max = sorted.last().copied().unwrap_or(min);
+                let strategy = base
+                    .trade_range_strategy
+                    .as_deref()
+                    .map(|s| s.to_ascii_lowercase())
+                    .unwrap_or_else(|| "linear".to_string());
+                for amount in generate_amounts(min, max, count, &strategy) {
+                    values.insert(amount);
+                }
+            }
+        }
+    }
+
+    values.into_iter().collect()
+}
+
+fn generate_amounts(min: u64, max: u64, count: u32, strategy: &str) -> Vec<u64> {
+    if count <= 1 || min == max {
+        return vec![min.max(max)];
+    }
+
+    let steps = count as usize - 1;
+    match strategy {
+        "exponential" if min > 0 && max > min => {
+            let ratio = (max as f64 / min as f64).max(1.0);
+            (0..=steps)
+                .map(|i| {
+                    let exponent = i as f64 / steps as f64;
+                    let value = (min as f64 * ratio.powf(exponent)).round() as u64;
+                    value.clamp(min, max)
+                })
+                .collect()
+        }
+        _ => {
+            let range = max.saturating_sub(min);
+            (0..=steps)
+                .map(|i| {
+                    let fraction = i as f64 / steps as f64;
+                    let value = min as f64 + fraction * range as f64;
+                    value.round() as u64
+                })
+                .collect()
+        }
+    }
+}
+
+fn build_blind_profit_config(config: &config::BlindStrategyConfig) -> ProfitConfig {
+    let min_profit = config
+        .base_mints
+        .iter()
+        .filter_map(|mint| mint.min_quote_profit)
+        .min()
+        .unwrap_or(0);
+
     ProfitConfig {
-        min_profit_threshold_lamports: config.min_profit_threshold_lamports,
-        max_tip_lamports: config.max_tip_lamports,
-        tip: config.controls.static_tip_config.clone(),
+        min_profit_threshold_lamports: min_profit,
+        max_tip_lamports: 0,
+        tip: TipConfig::default(),
     }
 }
 
-fn build_quote_config(
-    config: &StrategyConfig,
-    mode: StrategyMode,
+fn resolve_blind_scheduler_delay(config: &config::BlindStrategyConfig) -> Duration {
+    let delay = config
+        .base_mints
+        .iter()
+        .filter_map(|mint| mint.process_delay)
+        .min()
+        .unwrap_or(200)
+        .max(1);
+    Duration::from_millis(delay as u64)
+}
+
+fn build_blind_quote_config(
+    config: &config::BlindStrategyConfig,
     request_defaults: &RequestParamsConfig,
-    spam_config: &config::SpamConfig,
-    blind_config: &config::BlindConfig,
 ) -> QuoteConfig {
-    let mut only_direct_routes = config.only_direct_routes;
-    if request_defaults.only_direct_routes || matches!(mode, StrategyMode::Spam) {
-        only_direct_routes = true;
-    }
-
-    let restrict_intermediate_tokens =
-        if !request_defaults.restrict_intermediate_tokens && !matches!(mode, StrategyMode::Spam) {
-            false
-        } else {
-            config.restrict_intermediate_tokens
-        };
-
-    let mut dex_whitelist = if !config.controls.only_quote_dexs.is_empty() {
-        config.controls.only_quote_dexs.clone()
-    } else if !request_defaults.included_dexes.is_empty() {
-        request_defaults.included_dexes.clone()
+    let only_direct_routes = if config.base_mints.iter().any(|mint| {
+        mint.route_types
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case("2hop"))
+    }) {
+        true
     } else {
-        Vec::new()
+        request_defaults.only_direct_routes
     };
 
-    match mode {
-        StrategyMode::Spam if !spam_config.enable_dexs.is_empty() => {
-            dex_whitelist = spam_config.enable_dexs.clone();
-        }
-        StrategyMode::Blind if !blind_config.enable_dexs.is_empty() => {
-            dex_whitelist = blind_config.enable_dexs.clone();
-        }
-        _ => {}
-    }
-
     QuoteConfig {
-        slippage_bps: config.slippage_bps,
+        slippage_bps: 50,
         only_direct_routes,
-        restrict_intermediate_tokens,
-        quote_max_accounts: config.quote_max_accounts,
-        dex_whitelist,
-    }
-}
-
-fn compute_unit_override(
-    mode: StrategyMode,
-    spam_config: &config::SpamConfig,
-    _blind_config: &config::BlindConfig,
-) -> Option<u64> {
-    match mode {
-        StrategyMode::Spam => {
-            let price = spam_config.compute_unit_price_micro_lamports;
-            (price > 0).then_some(price)
-        }
-        StrategyMode::Blind => None,
+        restrict_intermediate_tokens: request_defaults.restrict_intermediate_tokens,
+        quote_max_accounts: None,
+        dex_whitelist: config.enable_dexs.clone(),
     }
 }
 

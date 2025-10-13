@@ -103,22 +103,8 @@ flashloan:
 
 # lander 相关配置已移至独立的 lander.yaml
 
-# 垃圾邮件策略
-spam:
-  # 是否启用 spam
-  enable: false
-  enable_log: false
-  skip_preflight: true
-  max_retries: 0
-  compute_unit_price_micro_lamports: 400000
-  # 只允许交易这些 dex
-  enable_dexs: []
-  enable_landers:
-    - "jito"
-    - "staked"
-
 # 盲发策略
-blind:
+blind_strategy:
   enable: false
   memo: ""
   # 只允许交易这些 dex
@@ -165,7 +151,7 @@ blind:
 #    MIN_TRADE_BP 和 MAX_TRADE_BP 之间的交易规模。或者，您也可以在此处定义一个 FIXED_SIZE 作为交易规模。
 # 4. 机器人将引通过 jupiter-swap-api quote 另一笔规模，创建一个完整的套利交易 tx
 # 5. 如果交易有利润，且利润高于 MIN_QUOTE_PROFIT，机器人就会将其发送出去
-back_run:
+back_run_strategy:
   enable: false
   # 只允许交易这些 dex
   enable_dexs: []

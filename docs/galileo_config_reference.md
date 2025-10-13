@@ -61,15 +61,12 @@ jupiter:
 ```
 
 ## 套利策略配置
-- `base_mint`/`intermediate_tokens` → `[strategy].base_mint` 与 `[strategy].quote_mints`
-- `trade_range` / `trade_range_strategy` → `[strategy].trade_range` / `[strategy].trade_range_strategy`
-- `min_profit_threshold` → `[strategy].min_profit_threshold_lamports`
-- `max_tip_lamports` → `[strategy].max_tip_lamports`
-- `bot_config` → `[strategy.controls]`（`enable_reverse_trade`、`over_trade_process_delay_ms`、`static_tip_config` 等）
-- `blind_config` → `[strategy.blind]`
-- `spam_config` → `[strategy.spam]`
-- `jito_engine`/`random_engine` → `[strategy.jito].engine_urls`、`random_engine`
-- `private_key`/`jito tip account` → `[bot.identity].user_pubkey`、`tip_account`
+- `BLIND_QUOTE_STRATEGY.base_mints` → `blind_strategy.base_mints`
+- `BLIND_QUOTE_STRATEGY.*.trade_size_range` → `blind_strategy.base_mints[*].trade_size_range`
+- `BLIND_QUOTE_STRATEGY.*.trade_range_strategy` → `blind_strategy.base_mints[*].trade_range_strategy`
+- `BLIND_QUOTE_STRATEGY.*.min_quote_profit` → `blind_strategy.base_mints[*].min_quote_profit`
+- `BACKRUN_STRATEGY.base_mints` → `back_run_strategy.base_mints`
+- `BACKRUN_STRATEGY.*.trade_configs` → `back_run_strategy.base_mints[*].trade_configs`
 
 ## 后续建议
 1. 根据环境补全 RPC、Yellowstone、Jito 等敏感信息。
