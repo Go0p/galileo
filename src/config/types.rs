@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::Deserialize;
+use serde::de::{Deserializer, Error as DeError};
 use serde_with::serde_as;
 
 #[derive(Debug, Clone, Default)]
@@ -65,6 +66,8 @@ pub struct WarpOrUnwrapSolConfig {
     pub wrap_and_unwrap_sol: bool,
     #[serde(default)]
     pub compute_unit_price_micro_lamports: u64,
+    #[serde(default = "super::default_true")]
+    pub skip_user_accounts_rpc_calls: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -120,6 +123,10 @@ pub struct BotConfig {
     #[serde(default = "super::default_request_timeout_ms")]
     pub request_timeout_ms: u64,
     #[serde(default)]
+    pub swap_request_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub landing_timeout_ms: Option<u64>,
+    #[serde(default)]
     pub auto_restart_minutes: u64,
     #[serde(default)]
     pub get_block_hash_by_grpc: bool,
@@ -157,7 +164,7 @@ pub struct BlindStrategyConfig {
 pub struct BlindBaseMintConfig {
     #[serde(default)]
     pub mint: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_trade_size_range")]
     pub trade_size_range: Vec<u64>,
     #[serde(default)]
     pub trade_range_count: Option<u32>,
@@ -173,6 +180,39 @@ pub struct BlindBaseMintConfig {
     pub route_types: Vec<String>,
     #[serde(default)]
     pub three_hop_mints: Vec<String>,
+}
+
+fn deserialize_trade_size_range<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum RawValue {
+        Number(u64),
+        String(String),
+    }
+
+    let raw = Vec::<RawValue>::deserialize(deserializer)?;
+    let mut values = Vec::with_capacity(raw.len());
+    for entry in raw {
+        match entry {
+            RawValue::Number(value) => values.push(value),
+            RawValue::String(text) => {
+                let normalized = text.replace('_', "").trim().to_string();
+                if normalized.is_empty() {
+                    continue;
+                }
+                let parsed = normalized.parse::<u64>().map_err(|err| {
+                    D::Error::custom(format!(
+                        "invalid trade size `{text}`: failed to parse u64 ({err})"
+                    ))
+                })?;
+                values.push(parsed);
+            }
+        }
+    }
+    Ok(values)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -506,6 +546,12 @@ pub struct LanderSettings {
     pub temporal: Option<LanderEndpointConfig>,
     #[serde(default)]
     pub astralane: Option<LanderEndpointConfig>,
+    #[serde(default)]
+    pub skip_preflight: Option<bool>,
+    #[serde(default)]
+    pub max_retries: Option<usize>,
+    #[serde(default)]
+    pub min_context_slot: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

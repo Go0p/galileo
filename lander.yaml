@@ -11,6 +11,12 @@ lander:
     - 3000
     - 4000
 
+  skip_preflight: true
+  # 设置为 null 以使用默认重试策略
+  max_retries: 3
+  # 设置最小上下文 slot，默认不限制
+  min_context_slot: 0
+
   jito:
     endpoints:
       - ""

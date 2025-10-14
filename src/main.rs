@@ -1,4 +1,12 @@
-use std::{collections::BTreeSet, env, fs, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeSet,
+    env, fs,
+    net::IpAddr,
+    path::PathBuf,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Result, anyhow};
 use clap::{Args, Parser, Subcommand};
@@ -13,7 +21,10 @@ mod lander;
 mod monitoring;
 mod strategy;
 
-use api::{ComputeUnitPriceMicroLamports, JupiterApiClient, QuoteRequest, SwapInstructionsRequest};
+use api::{
+    ComputeUnitPriceMicroLamports, JupiterApiClient, QuoteRequest, SwapInstructionsRequest,
+    SwapInstructionsResponse,
+};
 use config::{
     AppConfig, BotConfig, ConfigError, GlobalConfig, IntermediumConfig, JupiterConfig,
     LaunchOverrides, RequestParamsConfig, YellowstoneConfig, load_config,
@@ -24,7 +35,7 @@ use engine::{
     TipConfig, TransactionBuilder,
 };
 use jupiter::{BinaryStatus, JupiterBinaryManager, JupiterError};
-use lander::LanderFactory;
+use lander::{Deadline, LanderFactory};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use strategy::{BlindStrategy, Strategy, StrategyEvent};
@@ -49,6 +60,9 @@ enum Command {
     /// Jupiter 二进制管理相关命令
     #[command(subcommand)]
     Jupiter(JupiterCmd),
+    /// Lander 工具
+    #[command(subcommand)]
+    Lander(LanderCmd),
     /// 请求 Jupiter API 报价
     Quote(QuoteCmd),
     #[command(name = "swap-instructions")]
@@ -110,6 +124,37 @@ struct InitCmd {
     force: bool,
 }
 
+#[derive(Subcommand, Debug)]
+enum LanderCmd {
+    /// 使用指定落地器直接发送交易
+    #[command(name = "send")]
+    Send(LanderSendArgs),
+}
+
+#[derive(Args, Debug)]
+struct LanderSendArgs {
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "包含 SwapInstructionsResponse 的 JSON 文件"
+    )]
+    instructions: PathBuf,
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "优先测试的落地器列表，逗号分隔；默认为配置文件中的 enable_landers"
+    )]
+    landers: Vec<String>,
+    #[arg(
+        long,
+        default_value_t = 5_000u64,
+        help = "提交截止时间（毫秒），默认 5000"
+    )]
+    deadline_ms: u64,
+    #[arg(long, default_value_t = 0u64, help = "为交易附加的小费（lamports）")]
+    tip_lamports: u64,
+}
+
 async fn run() -> Result<()> {
     let cli = Cli::parse();
     let config = load_configuration(cli.config.clone())?;
@@ -124,18 +169,40 @@ async fn run() -> Result<()> {
     let launch_overrides =
         build_launch_overrides(&config.galileo.request_params, &config.galileo.intermedium);
     let base_url = resolve_jupiter_base_url(&config.galileo.bot, &jupiter_cfg);
-
+    let bypass_proxy = should_bypass_proxy(&base_url);
+    if bypass_proxy {
+        info!(
+            target: "jupiter",
+            base_url = %base_url,
+            "Jupiter API 请求绕过 HTTP 代理"
+        );
+    }
+    let mut api_http_builder =
+        reqwest::Client::builder().user_agent(crate::jupiter::updater::USER_AGENT);
+    if bypass_proxy {
+        api_http_builder = api_http_builder.no_proxy();
+    }
+    let api_http_client = api_http_builder.build()?;
     let manager = JupiterBinaryManager::new(
         jupiter_cfg,
         launch_overrides,
         config.galileo.bot.disable_local_binary,
         config.galileo.bot.show_jupiter_logs,
     )?;
-    let api_client = JupiterApiClient::new(manager.client.clone(), base_url, &config.galileo.bot);
+    let api_client = JupiterApiClient::new(api_http_client, base_url, &config.galileo.bot);
 
     match cli.command {
         Command::Jupiter(cmd) => {
             handle_jupiter_cmd(cmd, &manager).await?;
+        }
+        Command::Lander(cmd) => {
+            handle_lander_cmd(
+                cmd,
+                &config,
+                &config.lander.lander,
+                resolve_instruction_memo(&config.galileo.global.instruction),
+            )
+            .await?;
         }
         Command::Quote(args) => {
             ensure_running(&manager).await?;
@@ -213,7 +280,12 @@ async fn run() -> Result<()> {
             let scheduler_delay = resolve_blind_scheduler_delay(blind_config);
             let quote_config =
                 build_blind_quote_config(blind_config, &config.galileo.request_params);
-            let landing_timeout = default_landing_timeout();
+            tracing::debug!(
+                target: "engine::config",
+                dex_whitelist = ?quote_config.dex_whitelist,
+                "盲发策略 DEX 白名单"
+            );
+            let landing_timeout = resolve_landing_timeout(&config.galileo.bot);
             let builder_config =
                 BuilderConfig::new(resolve_instruction_memo(&config.galileo.global.instruction));
             let request_defaults = config.galileo.request_params.clone();
@@ -333,24 +405,6 @@ fn parse_key_val(s: &str) -> std::result::Result<(String, String), String> {
 }
 
 fn apply_request_defaults_to_quote(request: &mut QuoteRequest, params: &RequestParamsConfig) {
-    if request.dexes.is_none() && !params.included_dexes.is_empty() {
-        let dexes = params.included_dexes.join(",");
-        request.dexes = Some(dexes.clone());
-        request
-            .extra_query_params
-            .entry("onlyDexes".to_string())
-            .or_insert(dexes);
-    }
-
-    if request.excluded_dexes.is_none() && !params.excluded_dexes.is_empty() {
-        let dexes = params.excluded_dexes.join(",");
-        request.excluded_dexes = Some(dexes.clone());
-        request
-            .extra_query_params
-            .entry("excludeDexes".to_string())
-            .or_insert(dexes);
-    }
-
     if !request.only_direct_routes.unwrap_or(false) && params.only_direct_routes {
         request.only_direct_routes = Some(true);
     }
@@ -369,7 +423,38 @@ fn resolve_jupiter_base_url(_bot: &BotConfig, jupiter: &JupiterConfig) -> String
         }
     }
 
-    format!("http://{}:{}", jupiter.core.host, jupiter.core.port)
+    let host = sanitize_jupiter_host(&jupiter.core.host);
+    format!("http://{}:{}", host, jupiter.core.port)
+}
+
+fn sanitize_jupiter_host(host: &str) -> String {
+    let trimmed = host.trim();
+    if trimmed.is_empty() {
+        return "127.0.0.1".to_string();
+    }
+    if let Ok(ip) = trimmed.parse::<IpAddr>() {
+        if ip.is_unspecified() {
+            return match ip {
+                IpAddr::V4(_) => "127.0.0.1".to_string(),
+                IpAddr::V6(_) => "::1".to_string(),
+            };
+        }
+    }
+    trimmed.to_string()
+}
+
+fn should_bypass_proxy(base_url: &str) -> bool {
+    if let Ok(url) = reqwest::Url::parse(base_url) {
+        if let Some(host) = url.host_str() {
+            if host.eq_ignore_ascii_case("localhost") {
+                return true;
+            }
+            if let Ok(ip) = host.parse::<IpAddr>() {
+                return ip.is_loopback() || ip.is_unspecified();
+            }
+        }
+    }
+    false
 }
 
 async fn drive_engine<S>(engine: StrategyEngine<S>) -> EngineResult<()>
@@ -383,6 +468,69 @@ where
             Ok(())
         }
     }
+}
+
+async fn handle_lander_cmd(
+    cmd: LanderCmd,
+    config: &AppConfig,
+    lander_settings: &config::LanderSettings,
+    memo: Option<String>,
+) -> Result<()> {
+    match cmd {
+        LanderCmd::Send(args) => {
+            let rpc_client = resolve_rpc_client(&config.galileo.global)?;
+            let identity = EngineIdentity::from_wallet(&config.galileo.global.wallet)
+                .map_err(|err| anyhow!(err))?;
+
+            let builder_config = BuilderConfig::new(memo);
+            let builder = TransactionBuilder::new(rpc_client.clone(), builder_config);
+
+            let submission_client = reqwest::Client::builder().build()?;
+            let lander_factory = LanderFactory::new(rpc_client.clone(), submission_client);
+
+            let preferred: Vec<String> = if !args.landers.is_empty() {
+                args.landers.clone()
+            } else {
+                config.galileo.blind_strategy.enable_landers.clone()
+            };
+            let default_landers = ["rpc"];
+            let lander_stack = lander_factory
+                .build_stack(lander_settings, preferred.as_slice(), &default_landers, 0)
+                .map_err(|err| anyhow!(err))?;
+
+            let raw = tokio::fs::read_to_string(&args.instructions).await?;
+            let value: serde_json::Value = serde_json::from_str(&raw)?;
+            let instructions = SwapInstructionsResponse::try_from(value)
+                .map_err(|err| anyhow!("解析 Swap 指令失败: {err}"))?;
+
+            let prepared = builder
+                .build(&identity, &instructions, args.tip_lamports)
+                .await
+                .map_err(|err| anyhow!(err))?;
+
+            let deadline = Deadline::from_instant(
+                Instant::now() + Duration::from_millis(args.deadline_ms.max(1)),
+            );
+            let receipt = lander_stack
+                .submit(&prepared, deadline, "lander-test")
+                .await
+                .map_err(|err| anyhow!(err))?;
+
+            info!(
+                target: "lander::cli",
+                lander = receipt.lander,
+                endpoint = %receipt.endpoint,
+                slot = receipt.slot,
+                blockhash = %receipt.blockhash,
+                signature = receipt.signature.as_deref().unwrap_or("")
+            );
+            if let Some(signature) = receipt.signature {
+                println!("{signature}");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn build_blind_trade_pairs(
@@ -428,7 +576,7 @@ fn build_blind_trade_pairs(
             if intermediate == base_mint {
                 continue;
             }
-            pairs_set.insert((intermediate.clone(), base_mint.to_string()));
+            pairs_set.insert((base_mint.to_string(), intermediate.clone()));
         }
     }
 
@@ -563,7 +711,7 @@ fn build_blind_quote_config(
     };
 
     QuoteConfig {
-        slippage_bps: 50,
+        slippage_bps: 0,
         only_direct_routes,
         restrict_intermediate_tokens: request_defaults.restrict_intermediate_tokens,
         quote_max_accounts: None,
@@ -571,8 +719,9 @@ fn build_blind_quote_config(
     }
 }
 
-fn default_landing_timeout() -> Duration {
-    Duration::from_secs(2)
+fn resolve_landing_timeout(bot: &config::BotConfig) -> Duration {
+    let ms = bot.landing_timeout_ms.unwrap_or(2_000).max(1);
+    Duration::from_millis(ms)
 }
 
 fn resolve_instruction_memo(instruction: &config::InstructionConfig) -> Option<String> {

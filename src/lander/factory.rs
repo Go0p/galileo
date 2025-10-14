@@ -72,7 +72,12 @@ impl LanderFactory {
 
     fn instantiate(&self, settings: &LanderSettings, name: &str) -> Option<LanderVariant> {
         match name {
-            "rpc" => Some(LanderVariant::Rpc(RpcLander::new(self.rpc_client.clone()))),
+            "rpc" => Some(LanderVariant::Rpc(RpcLander::new(
+                self.rpc_client.clone(),
+                settings.skip_preflight,
+                settings.max_retries,
+                settings.min_context_slot,
+            ))),
             "jito" => settings.jito.as_ref().and_then(|cfg| {
                 let endpoints: Vec<String> = cfg
                     .endpoints

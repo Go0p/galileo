@@ -97,7 +97,7 @@ impl LanderStack {
         let total_passes = self.max_retries.saturating_add(1);
         let mut last_err = None;
 
-        for pass in 0..total_passes {
+        for _pass in 0..total_passes {
             for lander in &self.landers {
                 if deadline.expired() {
                     let err = LanderError::fatal("deadline expired before submission");
@@ -109,28 +109,22 @@ impl LanderStack {
                 match lander.submit(prepared, deadline).await {
                     Ok(receipt) => {
                         events::lander_success(strategy, attempt_idx, &receipt);
-                        info!(
-                            target: "lander::stack",
-                            lander = lander.name(),
-                            attempt = attempt_idx,
-                            pass,
-                            slot = receipt.slot,
-                            blockhash = %receipt.blockhash,
-                            signature = receipt.signature.as_deref().unwrap_or_default(),
-                            "lander submission succeeded"
-                        );
+                        if let Some(signature) = receipt.signature.as_deref() {
+                            info!(target: "lander::stack", signature, "lander submission succeeded");
+                        } else {
+                            info!(target: "lander::stack", "lander submission succeeded");
+                        }
                         return Ok(receipt);
                     }
                     Err(err) => {
+                        let tx_signature = prepared
+                            .transaction
+                            .signatures
+                            .get(0)
+                            .map(|sig| sig.to_string())
+                            .unwrap_or_default();
                         events::lander_failure(strategy, lander.name(), attempt_idx, &err);
-                        warn!(
-                            target: "lander::stack",
-                            lander = lander.name(),
-                            attempt = attempt_idx,
-                            pass,
-                            error = %err,
-                            "lander submission failed"
-                        );
+                        warn!(target: "lander::stack", tx_signature, "lander submission failed");
                         last_err = Some(err);
                     }
                 }

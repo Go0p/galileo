@@ -20,7 +20,7 @@ pub use types::{ExecutionPlan, QuoteTask, StrategyTick, SwapOpportunity};
 
 use std::time::{Duration, Instant};
 
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::lander::{Deadline, LanderStack};
 use crate::monitoring::events;
@@ -231,6 +231,12 @@ where
 
         let deadline = Deadline::from_instant(deadline);
 
+        let tx_signature = prepared
+            .transaction
+            .signatures
+            .get(0)
+            .map(|sig| sig.to_string());
+
         match self
             .landers
             .submit(&prepared, deadline, strategy_name)
@@ -238,8 +244,21 @@ where
         {
             Ok(_) => Ok(()),
             Err(err) => {
-                warn!(target: "engine::lander", error = %err, "落地失败");
-                Err(EngineError::Landing(err.to_string()))
+                debug!(
+                    target: "engine::lander",
+                    error = %err,
+                    tx_signature = tx_signature.as_deref().unwrap_or(""),
+                    "lander submission detail"
+                );
+                warn!(
+                    target: "engine::lander",
+                    tx_signature = tx_signature.as_deref().unwrap_or(""),
+                    "落地失败"
+                );
+                let message = tx_signature
+                    .map(|sig| format!("交易 {sig} 落地失败"))
+                    .unwrap_or_else(|| "交易落地失败".to_string());
+                Err(EngineError::Landing(message))
             }
         }
     }

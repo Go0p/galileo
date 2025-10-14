@@ -197,14 +197,13 @@ pub fn lander_success(strategy: &str, attempt: usize, receipt: &LanderReceipt) {
     }
 }
 
-pub fn lander_failure(strategy: &str, name: &str, attempt: usize, err: &LanderError) {
+pub fn lander_failure(strategy: &str, name: &str, attempt: usize, _err: &LanderError) {
     warn!(
         target: "monitoring::lander",
         event = "failure",
         strategy,
         lander = name,
         attempt,
-        error = %err,
         "lander submission failed"
     );
 

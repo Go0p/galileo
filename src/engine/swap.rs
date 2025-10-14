@@ -28,8 +28,7 @@ impl SwapInstructionFetcher {
             SwapInstructionsRequest::new(opportunity.merged_quote.clone(), identity.pubkey);
         request.config.wrap_and_unwrap_sol = identity.wrap_and_unwrap_sol();
         request.config.use_shared_accounts = Some(identity.use_shared_accounts());
-        request.config.skip_user_accounts_rpc_calls =
-            identity.skip_user_accounts_rpc_calls().unwrap_or(true);
+        request.config.skip_user_accounts_rpc_calls = identity.skip_user_accounts_rpc_calls();
         if let Some(fee) = identity.fee_account() {
             match solana_sdk::pubkey::Pubkey::from_str(fee) {
                 Ok(pubkey) => request.config.fee_account = Some(pubkey),

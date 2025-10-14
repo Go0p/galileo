@@ -96,11 +96,7 @@ impl QuoteExecutor {
 
         if !config.dex_whitelist.is_empty() {
             let dexes = config.dex_whitelist.join(",");
-            request.dexes = Some(dexes.clone());
-            request
-                .extra_query_params
-                .entry("onlyDexes".to_string())
-                .or_insert(dexes);
+            request.dexes = Some(dexes);
         }
 
         self.apply_defaults(&mut request);
@@ -108,24 +104,6 @@ impl QuoteExecutor {
     }
 
     fn apply_defaults(&self, request: &mut QuoteRequest) {
-        if request.dexes.is_none() && !self.defaults.included_dexes.is_empty() {
-            let dexes = self.defaults.included_dexes.join(",");
-            request.dexes = Some(dexes.clone());
-            request
-                .extra_query_params
-                .entry("onlyDexes".to_string())
-                .or_insert(dexes);
-        }
-
-        if request.excluded_dexes.is_none() && !self.defaults.excluded_dexes.is_empty() {
-            let dexes = self.defaults.excluded_dexes.join(",");
-            request.excluded_dexes = Some(dexes.clone());
-            request
-                .extra_query_params
-                .entry("excludeDexes".to_string())
-                .or_insert(dexes);
-        }
-
         if !request.only_direct_routes.unwrap_or(false) && self.defaults.only_direct_routes {
             request.only_direct_routes = Some(true);
         }

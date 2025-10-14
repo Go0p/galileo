@@ -17,7 +17,7 @@ pub struct EngineIdentity {
     wrap_and_unwrap_sol: bool,
     use_shared_accounts: bool,
     compute_unit_price_micro_lamports: Option<u64>,
-    skip_user_accounts_rpc_calls: Option<bool>,
+    skip_user_accounts_rpc_calls: bool,
     pub signer: Arc<Keypair>,
 }
 
@@ -68,7 +68,8 @@ impl EngineIdentity {
             };
 
         let use_shared_accounts = parse_env_bool("GALILEO_USE_SHARED_ACCOUNTS")?.unwrap_or(false);
-        let skip_user_accounts_rpc_calls = parse_env_bool("GALILEO_SKIP_USER_ACCOUNTS_RPC_CALLS")?;
+        let skip_user_accounts_rpc_calls = parse_env_bool("GALILEO_SKIP_USER_ACCOUNTS_RPC_CALLS")?
+            .unwrap_or(wallet.warp_or_unwrap_sol.skip_user_accounts_rpc_calls);
 
         Ok(Self {
             pubkey,
@@ -97,7 +98,7 @@ impl EngineIdentity {
         self.compute_unit_price_micro_lamports
     }
 
-    pub fn skip_user_accounts_rpc_calls(&self) -> Option<bool> {
+    pub fn skip_user_accounts_rpc_calls(&self) -> bool {
         self.skip_user_accounts_rpc_calls
     }
 }

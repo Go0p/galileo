@@ -155,6 +155,7 @@ impl Default for cfg::WarpOrUnwrapSolConfig {
         Self {
             wrap_and_unwrap_sol: false,
             compute_unit_price_micro_lamports: 0,
+            skip_user_accounts_rpc_calls: true,
         }
     }
 }
@@ -207,6 +208,8 @@ impl Default for cfg::BotConfig {
             disable_local_binary: false,
             disable_running: false,
             request_timeout_ms: default_request_timeout_ms(),
+            swap_request_timeout_ms: None,
+            landing_timeout_ms: None,
             auto_restart_minutes: 30,
             get_block_hash_by_grpc: true,
             enable_simulation: false,
@@ -357,6 +360,9 @@ impl Default for cfg::LanderSettings {
             staked: None,
             temporal: None,
             astralane: None,
+            skip_preflight: None,
+            max_retries: None,
+            min_context_slot: None,
         }
     }
 }
