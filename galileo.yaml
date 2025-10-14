@@ -1,14 +1,14 @@
 global:
   # rpc url
-  rpc_url: "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
+  rpc_url: "http://127.0.0.1:8899"
   # yellowstone grpc url
-  yellowstone_grpc_url: "http://185.26.10.237:10000"
+  yellowstone_grpc_url: ""
   # yellowstone grpc token
   yellowstone_grpc_token: ""
 
   wallet:
     # 套利钱包的私钥
-    private_key: ""
+    private_key: "4UAq4yDGtaHpMr9J5r9rJ3wj27gaEabWQ8zUfdpqsWoudFqfiBgnm9nRRHAMyWQ1tgM5XFsdFwGNFRNJronfbEKt"
     # 钱包允许的最小余额, s 为 SOL，l 为 lamports
     min_sol_balance: "1s"
 
@@ -105,13 +105,13 @@ flashloan:
 
 # 盲发策略
 blind_strategy:
-  enable: false
+  enable: true
   memo: ""
   # 只允许交易这些 dex
   enable_dexs: []
   enable_landers: []
   base_mints:
-    - mint: ""
+    - mint: "So11111111111111111111111111111111111111112"
       trade_size_range:
         - 10
         - 100

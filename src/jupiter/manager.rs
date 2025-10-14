@@ -8,7 +8,7 @@ use futures::StreamExt;
 use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
 use serde_json::Value;
 use tokio::{fs, net::TcpStream, process::Command};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::error::JupiterError;
 use super::process::{shutdown_process, spawn_process};
@@ -221,6 +221,40 @@ impl JupiterBinaryManager {
             }
         }
 
+        let retry_limit = self
+            .config
+            .health_check
+            .as_ref()
+            .map(|cfg| cfg.retry_count.max(1))
+            .unwrap_or(1);
+
+        for attempt in 1..=retry_limit {
+            if attempt > 1 {
+                info!(
+                    target: "jupiter",
+                    attempt,
+                    retry_limit,
+                    "健康检查失败，尝试重新启动 Jupiter 二进制"
+                );
+            }
+
+            match self.start_attempt(&install).await {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    let is_health_error = matches!(err, JupiterError::HealthCheck(_));
+                    let last_attempt = attempt == retry_limit;
+                    if is_health_error && !last_attempt {
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
+
+        unreachable!("start retry loop exited unexpectedly");
+    }
+
+    async fn start_attempt(&self, install: &BinaryInstall) -> Result<(), JupiterError> {
         self.transition(BinaryStatus::Starting).await;
 
         let market_cache_override = self
@@ -244,7 +278,7 @@ impl JupiterBinaryManager {
 
         let process = spawn_process(
             &self.config,
-            &install,
+            install,
             &effective_args,
             self.show_jupiter_logs,
         )
@@ -260,7 +294,7 @@ impl JupiterBinaryManager {
         }
 
         match pid {
-            Some(pid) => info!(
+            Some(pid) => debug!(
                 target: "jupiter",
                 version = %install.version,
                 path = %install.path.display(),
@@ -281,12 +315,31 @@ impl JupiterBinaryManager {
 
         if let Some(health) = &self.config.health_check {
             if let Err(err) = self.wait_for_health(health).await {
-                self.transition(BinaryStatus::Failed).await;
+                self.cleanup_after_start_failure().await;
                 return Err(err);
             }
         }
 
         Ok(())
+    }
+
+    async fn cleanup_after_start_failure(&self) {
+        let process = {
+            let mut state = self.state.lock().await;
+            state.process.take()
+        };
+
+        if let Some(process) = process {
+            if let Err(err) = shutdown_process(process).await {
+                warn!(
+                    target: "jupiter",
+                    error = %err,
+                    "健康检查失败后关闭 Jupiter 进程失败"
+                );
+            }
+        }
+
+        self.transition(BinaryStatus::Failed).await;
     }
 
     pub async fn stop(&self) -> Result<(), JupiterError> {

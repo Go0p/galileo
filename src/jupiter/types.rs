@@ -6,6 +6,7 @@ use std::time::{Instant, SystemTime};
 use tokio::process::Child;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tracing::warn;
 
 use crate::config::{JupiterConfig, LaunchOverrides};
 
@@ -53,6 +54,30 @@ impl fmt::Debug for ProcessHandle {
                 &self.stderr_task.as_ref().map(|h| !h.is_finished()),
             )
             .finish()
+    }
+}
+
+impl Drop for ProcessHandle {
+    fn drop(&mut self) {
+        match self.child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                if let Err(err) = self.child.start_kill() {
+                    warn!(
+                        target: "jupiter",
+                        error = %err,
+                        "在 ProcessHandle drop 时发送终止信号失败"
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(
+                    target: "jupiter",
+                    error = %err,
+                    "ProcessHandle drop 时查询子进程状态失败"
+                );
+            }
+        }
     }
 }
 

@@ -477,6 +477,8 @@ pub struct HealthCheckConfig {
     pub interval_secs: u64,
     #[serde(default = "super::default_health_check_max_wait_secs")]
     pub max_wait_secs: u64,
+    #[serde(default = "super::default_health_check_retry_count")]
+    pub retry_count: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]

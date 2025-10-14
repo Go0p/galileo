@@ -109,6 +109,10 @@ pub(crate) fn default_health_check_max_wait_secs() -> u64 {
     120
 }
 
+pub(crate) fn default_health_check_retry_count() -> u32 {
+    3
+}
+
 impl Default for cfg::GalileoConfig {
     fn default() -> Self {
         Self {

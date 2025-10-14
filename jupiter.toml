@@ -19,7 +19,7 @@ proxy= "http://192.168.3.3:2080"
 # 关键运行参数。实际运行时仍可在 `galileo.yaml` 的 `jupiter.launch` 段覆盖。
 # 主 RPC，用于订阅账户、抓取市场与报价数据。建议配置为低延迟、稳定的节点。
 # 不填时，默认使用 galileo.yaml 中的 global.rpc_url。
-rpc_url = ""
+rpc_url = "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
 # 辅助rpc，部分耗时操作可分摊到副本节点。
 secondary_rpc_urls = []
 # HTTP 服务监听地址；`0.0.0.0` 支持外部访问，改为 `127.0.0.1` 则仅限本机。
@@ -56,7 +56,7 @@ expose_quote_and_simulate = true
 # 若接入 Yellowstone Geyser，则填写对应的 gRPC 入口；否则可删除本段。
 # Yellowstone gRPC 服务地址（支持 https://host:port 格式）。
 # 不填时，默认使用 galileo.yaml 中的 bot.yellowstone_grpc_url。 
-endpoint = ""
+endpoint = "http://185.26.10.237:10000"
 # Yellowstone 的认证 token（如需）。
 # 不填时，默认使用 galileo.yaml 中的 bot.yellowstone_grpc_token。
 x_token = ""
@@ -85,7 +85,7 @@ graceful_shutdown_timeout_ms = 5000
 [jupiter.environment]
 # 追加给 `jupiter-swap-api` 的环境变量。
 # 默认日志级别，可改为 `debug`/`trace` 以便排查。
-RUST_LOG = "warn"
+RUST_LOG = "info"
 
 [jupiter.health_check]
 # Jupiter 启动后的健康检查，轮询 WebServer 端口是否可用。
@@ -93,3 +93,5 @@ RUST_LOG = "warn"
 interval_secs = 15
 # 等待端口就绪的最长时间（秒），超时将视为启动失败。
 max_wait_secs = 300
+# 重试次数，不成功 bot 则直接退出
+retry_count = 3

@@ -22,7 +22,6 @@ pub async fn spawn_process(
     } else {
         command.stdout(Stdio::null()).stderr(Stdio::null());
     }
-    command.kill_on_drop(false);
 
     if !config.environment.contains_key("RUST_LOG") {
         command.env("RUST_LOG", "info");
