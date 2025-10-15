@@ -38,7 +38,10 @@ use jupiter::{BinaryStatus, JupiterBinaryManager, JupiterError};
 use lander::{Deadline, LanderFactory};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
-use strategy::{BlindStrategy, Strategy, StrategyEvent};
+use strategy::{
+    BlindStrategy, CopyStrategy, CopySwapParams, Strategy, StrategyEvent,
+    compute_associated_token_address, usdc_mint, wsol_mint,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "galileo", version, about = "Jupiter 自托管调度机器人")]
@@ -244,14 +247,19 @@ async fn run() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&instructions.raw)?);
         }
         Command::Strategy | Command::StrategyDryRun => {
+            let dry_run =
+                matches!(cli.command, Command::StrategyDryRun) || config.galileo.bot.dry_run;
+
+            if config.galileo.copy_strategy.enable {
+                run_copy_strategy(&config, dry_run).await?;
+                return Ok(());
+            }
+
             let blind_config = &config.galileo.blind_strategy;
             if !blind_config.enable {
                 warn!(target: "strategy", "盲发策略未启用，直接退出");
                 return Ok(());
             }
-
-            let dry_run =
-                matches!(cli.command, Command::StrategyDryRun) || config.galileo.bot.dry_run;
 
             if !manager.disable_local_binary {
                 match manager.start(false).await {
@@ -333,6 +341,151 @@ async fn run() -> Result<()> {
         Command::Init(args) => {
             init_configs(args)?;
         }
+    }
+
+    Ok(())
+}
+
+async fn run_copy_strategy(config: &AppConfig, dry_run: bool) -> Result<()> {
+    use tokio::time::sleep;
+
+    let copy_cfg = &config.galileo.copy_strategy;
+    let mut plans = build_copy_plan_states(copy_cfg).map_err(|err| anyhow!(err))?;
+
+    let rpc_client = resolve_rpc_client(&config.galileo.global)?;
+    let identity =
+        EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
+
+    let wsol_mint = wsol_mint();
+    let usdc_mint = usdc_mint();
+    let wsol_ata = compute_associated_token_address(&identity.pubkey, &wsol_mint);
+    let usdc_ata = compute_associated_token_address(&identity.pubkey, &usdc_mint);
+
+    let compute_unit_limit = 450_000u32;
+    let compute_unit_price_micro_lamports =
+        resolve_priority_fee_micro_lamports(&config.lander.lander, compute_unit_limit);
+    let strategy = CopyStrategy::new(
+        identity.pubkey,
+        wsol_ata,
+        usdc_ata,
+        compute_unit_limit,
+        compute_unit_price_micro_lamports,
+    );
+
+    let submission_client = reqwest::Client::builder().build()?;
+    let lander_factory = LanderFactory::new(rpc_client.clone(), submission_client.clone());
+    let default_landers = ["rpc"];
+    let lander_stack = lander_factory
+        .build_stack(
+            &config.lander.lander,
+            &copy_cfg.enable_landers,
+            &default_landers,
+            0,
+        )
+        .map_err(|err| anyhow!(err))?;
+
+    if lander_stack.is_empty() {
+        return Err(anyhow!("未配置可用的落地器"));
+    }
+
+    let builder_config =
+        BuilderConfig::new(resolve_instruction_memo(&config.galileo.global.instruction));
+    let tx_builder = TransactionBuilder::new(rpc_client.clone(), builder_config);
+    let landing_timeout = resolve_landing_timeout(&config.galileo.bot);
+
+    let mut idx = 0usize;
+    loop {
+        if plans.is_empty() {
+            warn!(target: "strategy::copy", "没有可执行的交易规模，退出");
+            break;
+        }
+        if idx >= plans.len() {
+            idx = 0;
+        }
+
+        let wait_duration = {
+            let plan = &plans[idx];
+            if Instant::now() < plan.next_ready_at {
+                plan.next_ready_at - Instant::now()
+            } else {
+                Duration::ZERO
+            }
+        };
+        if !wait_duration.is_zero() {
+            sleep(wait_duration).await;
+        }
+
+        let (amount_in, reverse_amount, process_delay, sending_cooldown) = {
+            let plan = &plans[idx];
+            (
+                plan.amount_in,
+                plan.reverse_amount,
+                plan.process_delay,
+                plan.sending_cooldown,
+            )
+        };
+
+        if dry_run {
+            info!(
+                target: "strategy::copy",
+                amount_in,
+                reverse_amount,
+                "dry-run：仅构建 copy 策略交易，不发送"
+            );
+        } else {
+            let response = strategy.build_swap_instructions(CopySwapParams {
+                amount_in,
+                reverse_amount,
+            });
+            match tx_builder
+                .build(&identity, &response, 0)
+                .await
+                .map_err(|err| anyhow!(err))
+            {
+                Ok(prepared) => {
+                    let tx_signature = prepared
+                        .transaction
+                        .signatures
+                        .get(0)
+                        .map(|sig| sig.to_string())
+                        .unwrap_or_default();
+                    let deadline = Deadline::from_instant(Instant::now() + landing_timeout);
+                    match lander_stack.submit(&prepared, deadline, "copy").await {
+                        Ok(receipt) => {
+                            info!(
+                                target: "strategy::copy",
+                                slot = receipt.slot,
+                                signature = receipt.signature.as_deref().unwrap_or(&tx_signature),
+                                "copy 策略 transaction 已发送"
+                            );
+                        }
+                        Err(err) => {
+                            let summary = err.to_string();
+                            let short = summary.lines().next().unwrap_or_else(|| summary.as_str());
+                            warn!(
+                                target: "strategy::copy",
+                                signature = %tx_signature,
+                                error = %short,
+                                "copy 策略落地失败"
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    let summary = err.to_string();
+                    let short = summary.lines().next().unwrap_or_else(|| summary.as_str());
+                    warn!(
+                        target: "strategy::copy",
+                        error = %short,
+                        "构建 copy 策略交易失败"
+                    );
+                }
+            }
+        }
+
+        plans[idx].next_ready_at = Instant::now() + sending_cooldown;
+        sleep(process_delay).await;
+        idx = (idx + 1) % plans.len();
     }
 
     Ok(())
@@ -717,6 +870,94 @@ fn build_blind_quote_config(
         quote_max_accounts: None,
         dex_whitelist: config.enable_dexs.clone(),
     }
+}
+
+struct CopyPlanState {
+    amount_in: u64,
+    reverse_amount: u64,
+    process_delay: Duration,
+    sending_cooldown: Duration,
+    next_ready_at: Instant,
+}
+
+fn build_copy_plan_states(config: &config::CopyStrategyConfig) -> EngineResult<Vec<CopyPlanState>> {
+    let mut plans = Vec::new();
+    for base in &config.base_mints {
+        let reverse_amount = base.reverse_amount.unwrap_or(200_000_000_000);
+        let process_delay = Duration::from_millis(base.process_delay.unwrap_or(1_000).max(1));
+        let sending_cooldown = Duration::from_millis(base.sending_cooldown.unwrap_or(1_000).max(1));
+        for amount in generate_amounts_for_copy(base) {
+            plans.push(CopyPlanState {
+                amount_in: amount,
+                reverse_amount,
+                process_delay,
+                sending_cooldown,
+                next_ready_at: Instant::now(),
+            });
+        }
+    }
+
+    if plans.is_empty() {
+        return Err(EngineError::InvalidConfig(
+            "copy_strategy 未配置有效的交易规模".into(),
+        ));
+    }
+
+    Ok(plans)
+}
+
+fn generate_amounts_for_copy(base: &config::CopyBaseMintConfig) -> Vec<u64> {
+    if base.trade_size_range.is_empty() {
+        return Vec::new();
+    }
+
+    let mut values: BTreeSet<u64> = base.trade_size_range.iter().copied().collect();
+    if base.trade_size_range.len() >= 2 {
+        if let Some(count) = base.trade_range_count {
+            if count >= 2 {
+                let mut sorted = base.trade_size_range.clone();
+                sorted.sort_unstable();
+                let min = sorted.first().copied().unwrap_or(0);
+                let max = sorted.last().copied().unwrap_or(min);
+                let strategy = base
+                    .trade_range_strategy
+                    .as_deref()
+                    .map(|s| s.to_ascii_lowercase())
+                    .unwrap_or_else(|| "linear".to_string());
+                for amount in generate_amounts(min, max, count, &strategy) {
+                    values.insert(amount);
+                }
+            }
+        }
+    }
+
+    values.into_iter().collect()
+}
+
+fn resolve_priority_fee_micro_lamports(
+    lander: &config::LanderSettings,
+    compute_unit_limit: u32,
+) -> u64 {
+    const DEFAULT_PRICE: u64 = 413;
+    if compute_unit_limit == 0 {
+        return DEFAULT_PRICE;
+    }
+
+    let priority_lamports = if let Some(fixed) = lander.fixed_priority_fee {
+        Some(fixed)
+    } else if let Some(&value) = lander.random_priority_fee_range.first() {
+        Some(value)
+    } else {
+        None
+    };
+
+    priority_lamports
+        .and_then(|fee| {
+            fee.checked_mul(1_000_000)
+                .map(|micro| micro / u64::from(compute_unit_limit.max(1)))
+        })
+        .map(|price| price.max(1))
+        .unwrap_or(DEFAULT_PRICE)
 }
 
 fn resolve_landing_timeout(bot: &config::BotConfig) -> Duration {

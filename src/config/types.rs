@@ -31,6 +31,8 @@ pub struct GalileoConfig {
     #[serde(default)]
     pub blind_strategy: BlindStrategyConfig,
     #[serde(default)]
+    pub copy_strategy: CopyStrategyConfig,
+    #[serde(default)]
     pub back_run_strategy: BackRunStrategyConfig,
 }
 
@@ -180,6 +182,40 @@ pub struct BlindBaseMintConfig {
     pub route_types: Vec<String>,
     #[serde(default)]
     pub three_hop_mints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CopyStrategyConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub template_tx: String,
+    #[serde(default)]
+    pub memo: String,
+    #[serde(default)]
+    pub enable_dexs: Vec<String>,
+    #[serde(default)]
+    pub enable_landers: Vec<String>,
+    #[serde(default)]
+    pub base_mints: Vec<CopyBaseMintConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CopyBaseMintConfig {
+    #[serde(default)]
+    pub mint: String,
+    #[serde(default, deserialize_with = "deserialize_trade_size_range")]
+    pub trade_size_range: Vec<u64>,
+    #[serde(default)]
+    pub trade_range_count: Option<u32>,
+    #[serde(default)]
+    pub trade_range_strategy: Option<String>,
+    #[serde(default)]
+    pub process_delay: Option<u64>,
+    #[serde(default)]
+    pub sending_cooldown: Option<u64>,
+    #[serde(default)]
+    pub reverse_amount: Option<u64>,
 }
 
 fn deserialize_trade_size_range<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>

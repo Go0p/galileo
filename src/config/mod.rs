@@ -122,6 +122,7 @@ impl Default for cfg::GalileoConfig {
             bot: cfg::BotConfig::default(),
             flashloan: cfg::FlashloanConfig::default(),
             blind_strategy: cfg::BlindStrategyConfig::default(),
+            copy_strategy: cfg::CopyStrategyConfig::default(),
             back_run_strategy: cfg::BackRunStrategyConfig::default(),
         }
     }
@@ -230,6 +231,19 @@ impl Default for cfg::BlindStrategyConfig {
     fn default() -> Self {
         Self {
             enable: false,
+            memo: String::new(),
+            enable_dexs: Vec::new(),
+            enable_landers: Vec::new(),
+            base_mints: Vec::new(),
+        }
+    }
+}
+
+impl Default for cfg::CopyStrategyConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            template_tx: String::new(),
             memo: String::new(),
             enable_dexs: Vec::new(),
             enable_landers: Vec::new(),

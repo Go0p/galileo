@@ -24,7 +24,7 @@ global:
 
   # 日志级别
   logging:
-    level: "debug"
+    level: "info"
     json: false
 
 request_params:
@@ -87,7 +87,7 @@ bot:
     enable: true
     listen: "0.0.0.0:9898"
   # 设置为 true 时，不会在本地启动 Jupiter API。当你想在同一台机器上运行多个机器人时，这很有用。
-  disable_local_binary: false
+  disable_local_binary: true
   # 是否禁止启动机器人
   disable_running: false
   # request timeout ms
@@ -111,7 +111,7 @@ flashloan:
 
 # 盲发策略
 blind_strategy:
-  enable: true
+  enable: false
   memo: ""
   # 只允许交易这些 dex
   enable_dexs: [
@@ -229,7 +229,7 @@ back_run_strategy:
 
 
 copy_strategy:
-  enable: false
+  enable: true
   # 模板交易
   template_tx: "McsDQgdGPs5kXFb8MXcVVng4J9v71v7ytv8LiiDKYHryTnxQYw6ZwN9V2Pv7seXso88a6HTnsQfgD83Pb5QWDQi"
   memo: ""
