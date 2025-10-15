@@ -10,6 +10,7 @@ use time::{UtcOffset, macros::format_description};
 use tracing::error;
 use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::{EnvFilter, fmt};
+use url::Url;
 
 use crate::config::{
     AppConfig, BotConfig, ConfigError, GlobalConfig, IntermediumConfig, JupiterConfig,
@@ -145,6 +146,44 @@ pub fn should_bypass_proxy(base_url: &str) -> bool {
         }
     }
     false
+}
+
+pub fn resolve_titan_ws_endpoint(global: &GlobalConfig) -> Result<Option<Url>> {
+    let jwt = match global
+        .titan_jwt
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        Some(token) => token,
+        None => return Ok(None),
+    };
+
+    let base = std::env::var("TITAN_WS_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "wss://api.titan.exchange/api/v1/ws".to_string());
+
+    let mut url =
+        Url::parse(&base).map_err(|err| anyhow!("Titan WebSocket 地址无效 {base}: {err}"))?;
+
+    let mut params: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    params.retain(|(key, _)| key != "auth");
+    params.push(("auth".to_string(), jwt.to_string()));
+
+    {
+        let mut serializer = url.query_pairs_mut();
+        serializer.clear();
+        for (key, value) in params {
+            serializer.append_pair(&key, &value);
+        }
+    }
+
+    Ok(Some(url))
 }
 
 pub fn build_launch_overrides(

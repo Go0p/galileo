@@ -140,6 +140,8 @@ impl AccountPrechecker {
             ));
         }
 
+        summary.created_accounts = missing_atas.len();
+
         let (marginfi_plan, flashloan_preparation) = if flashloan_enabled {
             self.prepare_marginfi_plan(identity, &mut instructions)
                 .await?
@@ -148,11 +150,13 @@ impl AccountPrechecker {
         };
 
         if instructions.is_empty() {
-            info!(
-                target: "engine::precheck",
-                processed = summary.processed_mints,
-                "所有关联账户已存在，预检查无新增"
-            );
+            if summary.processed_mints > 0 {
+                info!(
+                    target: "engine::precheck",
+                    processed = summary.processed_mints,
+                    "所有关联账户已存在，预检查无新增"
+                );
+            }
             if let Some(prep) = &flashloan_preparation {
                 info!(
                     target: "engine::precheck",
@@ -167,13 +171,14 @@ impl AccountPrechecker {
         self.submit_creation_transactions(identity, &instructions, marginfi_plan.as_ref())
             .await?;
 
-        summary.created_accounts = missing_atas.len();
-        info!(
-            target: "engine::precheck",
-            created = summary.created_accounts,
-            processed = summary.processed_mints,
-            "账户预检完成，已补齐缺失的关联账户"
-        );
+        if summary.created_accounts > 0 {
+            info!(
+                target: "engine::precheck",
+                created = summary.created_accounts,
+                processed = summary.processed_mints,
+                "账户预检完成，已补齐缺失的关联账户"
+            );
+        }
 
         if let Some(prep) = &flashloan_preparation {
             info!(

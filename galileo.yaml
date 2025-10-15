@@ -6,6 +6,9 @@ global:
   # yellowstone grpc token
   yellowstone_grpc_token: ""
 
+  # Titan websocket JWT，用于 Titan WS 认证（留空则禁用 Titan）
+  titan_jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjA1NDk1ODYsImV4cCI6MTc2MDU1MDQ4Niwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.NHO41aWnQxr8A_pPsSCC6MXvsj2XdR9sDoJkHU2ADVQ"
+
   wallet:
     # 套利钱包的私钥
     private_key: "4UAq4yDGtaHpMr9J5r9rJ3wj27gaEabWQ8zUfdpqsWoudFqfiBgnm9nRRHAMyWQ1tgM5XFsdFwGNFRNJronfbEKt"
@@ -79,6 +82,8 @@ intermedium:
   disable_mints: []
 
 bot:
+  # 套利引擎，可选 jupiter / dflow / titan
+  arb_engine: titan
   # 是否测试模式
   dry_run: false
   # 是否启用 prometheus

@@ -4,6 +4,7 @@ use tracing::{info, warn};
 
 use crate::engine::{QuoteTask, SwapOpportunity};
 use crate::lander::{LanderError, LanderReceipt};
+use crate::titan::{TitanLeg, TitanQuoteSignal};
 use solana_sdk::pubkey::Pubkey;
 
 use super::metrics::prometheus_enabled;
@@ -67,6 +68,97 @@ pub fn flashloan_account_precheck(strategy: &str, account: &Pubkey, created: boo
             1,
             "strategy" => strategy.to_string(),
             "result" => created_label.to_string()
+        );
+    }
+}
+
+pub fn titan_quote_signal(strategy: &str, signal: &TitanQuoteSignal) {
+    let provider_count = signal.quotes.quotes.len();
+    let (best_provider, best_out_amount, best_in_amount) = match signal.quotes.swap_mode {
+        crate::titan::types::SwapMode::ExactIn => signal
+            .quotes
+            .quotes
+            .iter()
+            .max_by_key(|(_, route)| route.out_amount)
+            .map(|(provider, route)| (provider.as_str(), route.out_amount, route.in_amount))
+            .unwrap_or(("none", 0, 0)),
+        crate::titan::types::SwapMode::ExactOut => signal
+            .quotes
+            .quotes
+            .iter()
+            .min_by_key(|(_, route)| route.in_amount)
+            .map(|(provider, route)| (provider.as_str(), route.out_amount, route.in_amount))
+            .unwrap_or(("none", 0, 0)),
+    };
+
+    info!(
+        target: "monitoring::titan",
+        event = "update",
+        strategy,
+        input_mint = %signal.base_pair.input_mint,
+        output_mint = %signal.base_pair.output_mint,
+        amount = signal.amount,
+        seq = signal.seq,
+        leg = match signal.leg {
+            TitanLeg::Forward => "forward",
+            TitanLeg::Reverse => "reverse",
+        },
+        provider_count,
+        best_provider,
+        best_out_amount,
+        best_in_amount,
+        swap_mode = match signal.quotes.swap_mode {
+            crate::titan::types::SwapMode::ExactIn => "exact_in",
+            crate::titan::types::SwapMode::ExactOut => "exact_out",
+        },
+        "Titan quote stream update"
+    );
+
+    if prometheus_enabled() {
+        let pair_label = format!(
+            "{}-{}",
+            signal.base_pair.input_mint, signal.base_pair.output_mint
+        );
+        let mode_label = match signal.quotes.swap_mode {
+            crate::titan::types::SwapMode::ExactIn => "exact_in",
+            crate::titan::types::SwapMode::ExactOut => "exact_out",
+        };
+        let leg_label = match signal.leg {
+            TitanLeg::Forward => "forward",
+            TitanLeg::Reverse => "reverse",
+        };
+        counter!(
+            "galileo_titan_quote_signal_total",
+            1,
+            "strategy" => strategy.to_string(),
+            "pair" => pair_label.clone(),
+            "mode" => mode_label.to_string(),
+            "leg" => leg_label.to_string(),
+            "best_provider" => best_provider.to_string()
+        );
+        histogram!(
+            "galileo_titan_provider_count",
+            provider_count as f64,
+            "strategy" => strategy.to_string(),
+            "pair" => pair_label.clone(),
+            "mode" => mode_label.to_string(),
+            "leg" => leg_label.to_string()
+        );
+        histogram!(
+            "galileo_titan_best_out_amount",
+            best_out_amount as f64,
+            "strategy" => strategy.to_string(),
+            "pair" => pair_label.clone(),
+            "mode" => mode_label.to_string(),
+            "leg" => leg_label.to_string()
+        );
+        histogram!(
+            "galileo_titan_best_in_amount",
+            best_in_amount as f64,
+            "strategy" => strategy.to_string(),
+            "pair" => pair_label,
+            "mode" => mode_label.to_string(),
+            "leg" => leg_label.to_string()
         );
     }
 }

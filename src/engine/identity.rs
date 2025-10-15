@@ -67,7 +67,7 @@ impl EngineIdentity {
                 }
             };
 
-        let use_shared_accounts = parse_env_bool("GALILEO_USE_SHARED_ACCOUNTS")?.unwrap_or(false);
+        let use_shared_accounts = false;
         let skip_user_accounts_rpc_calls = parse_env_bool("GALILEO_SKIP_USER_ACCOUNTS_RPC_CALLS")?
             .unwrap_or(wallet.warp_or_unwrap_sol.skip_user_accounts_rpc_calls);
 
@@ -100,6 +100,10 @@ impl EngineIdentity {
 
     pub fn skip_user_accounts_rpc_calls(&self) -> bool {
         self.skip_user_accounts_rpc_calls
+    }
+
+    pub fn set_skip_user_accounts_rpc_calls(&mut self, value: bool) {
+        self.skip_user_accounts_rpc_calls = value;
     }
 }
 

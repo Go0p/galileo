@@ -146,6 +146,7 @@ impl Default for cfg::GlobalConfig {
             rpc_url: None,
             yellowstone_grpc_url: None,
             yellowstone_grpc_token: None,
+            titan_jwt: None,
             wallet: cfg::WalletConfig::default(),
             instruction: cfg::InstructionConfig::default(),
             logging: cfg::LoggingConfig::default(),
@@ -201,6 +202,7 @@ impl Default for cfg::RequestParamsConfig {
             only_direct_routes: false,
             restrict_intermediate_tokens: true,
             skip_user_accounts_rpc_calls: false,
+            use_shared_accounts: None,
             dynamic_compute_unit_limit: true,
             wrap_and_unwrap_sol: None,
         }
@@ -222,6 +224,7 @@ impl Default for cfg::IntermediumConfig {
 impl Default for cfg::BotConfig {
     fn default() -> Self {
         Self {
+            arb_engine: cfg::ArbEngine::Jupiter,
             disable_local_binary: false,
             disable_running: false,
             request_timeout_ms: default_request_timeout_ms(),

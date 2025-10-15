@@ -1,13 +1,16 @@
 use std::collections::BTreeSet;
+use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use tracing::{info, warn};
 
 use crate::api::JupiterApiClient;
-use crate::cli::context::{resolve_instruction_memo, resolve_rpc_client};
+use crate::cli::context::{
+    resolve_instruction_memo, resolve_rpc_client, resolve_titan_ws_endpoint,
+};
 use crate::config;
-use crate::config::{AppConfig, IntermediumConfig, RequestParamsConfig};
+use crate::config::{AppConfig, ArbEngine, IntermediumConfig, RequestParamsConfig};
 use crate::engine::{
     AccountPrechecker, BuilderConfig, EngineError, EngineIdentity, EngineResult, EngineSettings,
     ProfitConfig, ProfitEvaluator, QuoteConfig, QuoteExecutor, Scheduler, StrategyEngine,
@@ -21,6 +24,8 @@ use crate::strategy::{
     BlindStrategy, CopyStrategy, CopySwapParams, Strategy, StrategyEvent,
     compute_associated_token_address, usdc_mint, wsol_mint,
 };
+use crate::titan::{TitanStreamConfig, spawn_quote_streams};
+use solana_sdk::pubkey::Pubkey;
 
 /// 控制策略以正式模式还是 dry-run 模式运行。
 pub enum StrategyMode {
@@ -36,39 +41,67 @@ pub async fn run_strategy(
     mode: StrategyMode,
 ) -> Result<()> {
     let dry_run = matches!(mode, StrategyMode::DryRun) || config.galileo.bot.dry_run;
-
-    if config.galileo.copy_strategy.enable {
-        run_copy_strategy(config, dry_run).await?;
-        return Ok(());
+    match config.galileo.bot.arb_engine {
+        ArbEngine::Jupiter => {
+            run_blind_engine(config, manager, api_client, dry_run, ArbEngine::Jupiter).await
+        }
+        ArbEngine::Titan => {
+            run_blind_engine(config, manager, api_client, dry_run, ArbEngine::Titan).await
+        }
+        ArbEngine::Dflow => {
+            if !config.galileo.copy_strategy.enable {
+                return Err(anyhow!("arb_engine=dflow 时必须启用 copy_strategy 配置"));
+            }
+            run_copy_strategy(config, dry_run).await
+        }
     }
+}
 
+async fn run_blind_engine(
+    config: &AppConfig,
+    manager: &JupiterBinaryManager,
+    api_client: &JupiterApiClient,
+    dry_run: bool,
+    engine: ArbEngine,
+) -> Result<()> {
     let blind_config = &config.galileo.blind_strategy;
     if !blind_config.enable {
         warn!(target: "strategy", "盲发策略未启用，直接退出");
         return Ok(());
     }
 
-    if !manager.disable_local_binary {
+    let mut jupiter_started = false;
+    if matches!(engine, ArbEngine::Jupiter) && !manager.disable_local_binary {
         match manager.start(false).await {
             Ok(()) => {
                 info!(target: "strategy", "已启动本地 Jupiter 二进制");
+                jupiter_started = true;
             }
             Err(JupiterError::AlreadyRunning) => {
                 info!(target: "strategy", "本地 Jupiter 二进制已在运行");
+                jupiter_started = true;
             }
             Err(err) => return Err(err.into()),
         }
-    } else {
+    } else if matches!(engine, ArbEngine::Jupiter) {
         info!(
             target: "strategy",
             "已禁用本地 Jupiter 二进制，将使用远端 API"
         );
+    } else {
+        info!(
+            target: "strategy",
+            arb_engine = ?engine,
+            "跳过启动 Jupiter 二进制"
+        );
     }
 
     let rpc_client = resolve_rpc_client(&config.galileo.global)?;
-    let identity =
+    let mut identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
-
+    identity.set_skip_user_accounts_rpc_calls(
+        config.galileo.request_params.skip_user_accounts_rpc_calls,
+    );
     let trade_pairs = build_blind_trade_pairs(blind_config, &config.galileo.intermedium)?;
     let trade_amounts = build_blind_trade_amounts(blind_config)?;
     let profit_config = build_blind_profit_config(blind_config);
@@ -80,6 +113,7 @@ pub async fn run_strategy(
         "盲发策略 DEX 白名单"
     );
     let landing_timeout = resolve_landing_timeout(&config.galileo.bot);
+
     let builder_config =
         BuilderConfig::new(resolve_instruction_memo(&config.galileo.global.instruction));
     let request_defaults = config.galileo.request_params.clone();
@@ -125,6 +159,40 @@ pub async fn run_strategy(
     }
     let flashloan = flashloan_manager.try_into_enabled();
 
+    let titan_stream = if matches!(engine, ArbEngine::Titan) {
+        if let Some(endpoint) = resolve_titan_ws_endpoint(&config.galileo.global)? {
+            let titan_stream_user =
+                Pubkey::from_str("Titan11111111111111111111111111111111111111")
+                    .expect("valid Titan placeholder pubkey");
+            let titan_config = TitanStreamConfig {
+                endpoint,
+                user_pubkey: titan_stream_user,
+                trade_pairs: &trade_pairs,
+                trade_amounts: &trade_amounts,
+                quote: &quote_config,
+                strategy_label: "blind",
+            };
+            match spawn_quote_streams(titan_config).await {
+                Ok(stream) => {
+                    info!(
+                        target: "strategy",
+                        "Titan quote stream enabled for blind strategy"
+                    );
+                    Some(stream)
+                }
+                Err(err) => return Err(anyhow!(err)),
+            }
+        } else {
+            warn!(
+                target: "strategy",
+                "Titan quote stream未启用：缺少 titan_jwt"
+            );
+            None
+        }
+    } else {
+        None
+    };
+
     let lander_factory = LanderFactory::new(rpc_client.clone(), submission_client.clone());
     let default_landers = ["rpc"];
 
@@ -137,7 +205,7 @@ pub async fn run_strategy(
         )
         .map_err(|err| anyhow!(err))?;
 
-    let engine = StrategyEngine::new(
+    let strategy_engine = StrategyEngine::new(
         BlindStrategy::new(),
         lander_stack,
         identity,
@@ -152,10 +220,13 @@ pub async fn run_strategy(
             .with_dry_run(dry_run),
         trade_pairs,
         trade_amounts,
+        titan_stream,
     );
-    drive_engine(engine).await.map_err(|err| anyhow!(err))?;
+    drive_engine(strategy_engine)
+        .await
+        .map_err(|err| anyhow!(err))?;
 
-    if !manager.disable_local_binary {
+    if jupiter_started {
         if let Err(err) = manager.stop().await {
             warn!(
                 target: "strategy",
@@ -175,8 +246,11 @@ async fn run_copy_strategy(config: &AppConfig, dry_run: bool) -> Result<()> {
     let mut plans = build_copy_plan_states(copy_cfg).map_err(|err| anyhow!(err))?;
 
     let rpc_client = resolve_rpc_client(&config.galileo.global)?;
-    let identity =
+    let mut identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
+    identity.set_skip_user_accounts_rpc_calls(
+        config.galileo.request_params.skip_user_accounts_rpc_calls,
+    );
 
     let wsol_mint = wsol_mint();
     let usdc_mint = usdc_mint();

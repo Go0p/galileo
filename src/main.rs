@@ -9,6 +9,7 @@ mod jupiter;
 mod lander;
 mod monitoring;
 mod strategy;
+mod titan;
 mod tools;
 
 #[cfg(any(

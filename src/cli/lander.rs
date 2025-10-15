@@ -31,8 +31,11 @@ async fn send_transaction(
     memo: Option<String>,
 ) -> Result<()> {
     let rpc_client = resolve_rpc_client(&config.galileo.global)?;
-    let identity =
+    let mut identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
+    identity.set_skip_user_accounts_rpc_calls(
+        config.galileo.request_params.skip_user_accounts_rpc_calls,
+    );
 
     let builder_config = BuilderConfig::new(memo);
     let builder = TransactionBuilder::new(rpc_client.clone(), builder_config);

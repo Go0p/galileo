@@ -45,6 +45,8 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub yellowstone_grpc_token: Option<String>,
     #[serde(default)]
+    pub titan_jwt: Option<String>,
+    #[serde(default)]
     pub wallet: WalletConfig,
     #[serde(default)]
     pub instruction: InstructionConfig,
@@ -127,6 +129,8 @@ pub struct RequestParamsConfig {
     pub restrict_intermediate_tokens: bool,
     #[serde(default)]
     pub skip_user_accounts_rpc_calls: bool,
+    #[serde(default)]
+    pub use_shared_accounts: Option<bool>,
     #[serde(default = "super::default_true")]
     pub dynamic_compute_unit_limit: bool,
     #[serde(default)]
@@ -147,8 +151,24 @@ pub struct IntermediumConfig {
     pub disable_mints: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ArbEngine {
+    Jupiter,
+    Dflow,
+    Titan,
+}
+
+impl Default for ArbEngine {
+    fn default() -> Self {
+        Self::Jupiter
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct BotConfig {
+    #[serde(default)]
+    pub arb_engine: ArbEngine,
     #[serde(default)]
     pub disable_local_binary: bool,
     #[serde(default)]

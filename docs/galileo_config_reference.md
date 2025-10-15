@@ -5,12 +5,14 @@
 ## 网络与监听
 - `rpc_url` → `[bot].rpc_url`（策略运行时访问主链 RPC）
 - `yellowstone_grpc_url`/`yellowstone_grpc_token` → `[bot].yellowstone_grpc_url` / `[bot].yellowstone_grpc_token`
+- `titan_jwt` → `[galileo.global].titan_jwt`（填入 Titan 提供的 JWT，留空则关闭 Titan WS）
 - `jupiter_api_url` → `[bot].jupiter_api_url`（禁用本地 Jupiter 时指向在线 API）
 - `jupiter_local_port` → `[jupiter.launch].port`
 - `jup_bind_local_host` → `[jupiter.launch].host`
 - `jupiter_disable_local` → `[jupiter.launch].disable_local_binary`
 - `auto_restart` → `[jupiter.process].auto_restart_minutes`
 - `max_retries`（如有）→ `[jupiter.process].max_restart_attempts`
+- `arb_engine` → `[galileo.bot].arb_engine`（`jupiter` / `dflow` / `titan`）
 
 ## 市场与代币
 - `jupiter_market_mode` → `[jupiter.launch].market_mode`

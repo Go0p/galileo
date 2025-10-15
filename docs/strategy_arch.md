@@ -225,9 +225,19 @@ pub struct StrategyEngine<S: Strategy> {
   - `galileo_accounts_precheck_created_bucket{strategy}`
   - `galileo_accounts_precheck_skipped_bucket{strategy}`
   - `galileo_flashloan_precheck_total{strategy, result}`
+  - `galileo_titan_quote_signal_total{strategy, pair, mode, leg, best_provider}`
+  - `galileo_titan_provider_count_bucket{strategy, pair, mode, leg}`
+  - `galileo_titan_best_out_amount_bucket{strategy, pair, mode, leg}`
+  - `galileo_titan_best_in_amount_bucket{strategy, pair, mode, leg}`
 
 - **抓取与看板**：
   1. 在 Prometheus `scrape_configs` 中新增 job 指向 galileo 监听端口；Jupiter 端口（默认 `18081`）也保持抓取。
   2. Grafana 可基于上述指标构建“机会发现/成功率、Quote 延迟、Lander 成功率”等看板。结合 Hotpath 报告可快速定位瓶颈。
 
 - **性能注意事项**：仅在配置中启用 Prometheus 时才会初始化 exporter 并真正上报指标；默认关闭时，`metrics` 调用会落入空实现，不影响主套利流程。
+
+## 12. Titan 引擎概览
+
+- `arb_engine = "titan"` 时，机器人将仅依赖 Titan WS 报价，按交易对/金额订阅正向 `ExactIn` 与反向 `ExactOut` 双腿流。
+- 流水会在内存中聚合 Titan 的 `SwapRoute`，自动挑选最佳正反腿路由并评估毛利、tip 与阈值；满足条件后直接将 Titan 返回的指令拼成交易序列，串联现有的 flashloan 与落地逻辑。
+- Titan 指令按原始顺序下发：前置 ComputeBudget 指令会提前抽离，其余保持“正向 → 反向”执行顺序；ALT 地址会自动汇总后交给交易构建器。
