@@ -49,6 +49,8 @@ metrics = "0.21"
 metrics-exporter-prometheus = "0.13"
 url = "2.5"
 num-bigint = "0.4"
+rmp-serde = "1.3"
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots", "connect"] }
 
 [features]
 default = []

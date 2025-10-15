@@ -9,13 +9,14 @@ use crate::cli::context::{resolve_instruction_memo, resolve_rpc_client};
 use crate::config;
 use crate::config::{AppConfig, IntermediumConfig, RequestParamsConfig};
 use crate::engine::{
-    BuilderConfig, EngineError, EngineIdentity, EngineResult, EngineSettings, ProfitConfig,
-    ProfitEvaluator, QuoteConfig, QuoteExecutor, Scheduler, StrategyEngine, SwapInstructionFetcher,
-    TipConfig, TransactionBuilder,
+    AccountPrechecker, BuilderConfig, EngineError, EngineIdentity, EngineResult, EngineSettings,
+    ProfitConfig, ProfitEvaluator, QuoteConfig, QuoteExecutor, Scheduler, StrategyEngine,
+    SwapInstructionFetcher, TipConfig, TransactionBuilder,
 };
 use crate::flashloan::FlashloanManager;
 use crate::jupiter::{JupiterBinaryManager, JupiterError};
 use crate::lander::{Deadline, LanderFactory};
+use crate::monitoring::events;
 use crate::strategy::{
     BlindStrategy, CopyStrategy, CopySwapParams, Strategy, StrategyEvent,
     compute_associated_token_address, usdc_mint, wsol_mint,
@@ -84,13 +85,43 @@ pub async fn run_strategy(
     let request_defaults = config.galileo.request_params.clone();
     let submission_client = reqwest::Client::builder().build()?;
 
+    let prechecker = AccountPrechecker::new(rpc_client.clone());
+    let (summary, flashloan_precheck) = prechecker
+        .ensure_accounts(&identity, &trade_pairs, config.galileo.flashloan.enable)
+        .await
+        .map_err(|err| anyhow!(err))?;
+    let skipped = summary.total_mints.saturating_sub(summary.processed_mints);
+    events::accounts_precheck(
+        "blind",
+        summary.total_mints,
+        summary.created_accounts,
+        skipped,
+    );
+
+    if identity.skip_user_accounts_rpc_calls() {
+        info!(
+            target: "strategy",
+            "skip_user_accounts_rpc_calls 仅作用于 swap-instructions 请求，账户预检查仍已执行"
+        );
+    }
+
+    if let Some(prep) = &flashloan_precheck {
+        events::flashloan_account_precheck("blind", &prep.account, prep.created);
+    }
+
     let mut flashloan_manager =
         FlashloanManager::new(&config.galileo.flashloan, rpc_client.clone());
-    if flashloan_manager.is_enabled() {
-        flashloan_manager
+    let mut flashloan_precheck = flashloan_precheck;
+    if let Some(prep) = flashloan_precheck.clone() {
+        flashloan_manager.adopt_preparation(prep);
+    } else if flashloan_manager.is_enabled() {
+        flashloan_precheck = flashloan_manager
             .prepare(&identity)
             .await
             .map_err(|err| anyhow!(err))?;
+        if let Some(prep) = &flashloan_precheck {
+            events::flashloan_account_precheck("blind", &prep.account, prep.created);
+        }
     }
     let flashloan = flashloan_manager.try_into_enabled();
 

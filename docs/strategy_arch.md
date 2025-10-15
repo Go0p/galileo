@@ -220,6 +220,11 @@ pub struct StrategyEngine<S: Strategy> {
   - `galileo_transaction_built_total{strategy}`
   - `galileo_lander_attempt_total{strategy, lander}`
   - `galileo_lander_success_total{strategy, lander}`、`galileo_lander_failure_total{strategy, lander}`
+  - `galileo_accounts_precheck_total{strategy}`
+  - `galileo_accounts_precheck_mints_bucket{strategy}`
+  - `galileo_accounts_precheck_created_bucket{strategy}`
+  - `galileo_accounts_precheck_skipped_bucket{strategy}`
+  - `galileo_flashloan_precheck_total{strategy, result}`
 
 - **抓取与看板**：
   1. 在 Prometheus `scrape_configs` 中新增 job 指向 galileo 监听端口；Jupiter 端口（默认 `18081`）也保持抓取。

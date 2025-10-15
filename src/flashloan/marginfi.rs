@@ -12,7 +12,7 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 use solana_sdk::sysvar;
 use solana_sdk::transaction::Transaction;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::engine::EngineIdentity;
 use crate::strategy::compute_associated_token_address;
@@ -68,6 +68,10 @@ pub struct MarginfiFlashloan {
 impl MarginfiFlashloan {
     pub fn new(account: Pubkey) -> Self {
         Self { account }
+    }
+
+    pub fn account(&self) -> Pubkey {
+        self.account
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
@@ -158,12 +162,34 @@ impl MarginfiFlashloan {
     }
 }
 
-pub(super) async fn ensure_marginfi_account(
+#[derive(Debug, Clone)]
+pub struct MarginfiAccountEnsure {
+    pub account: Pubkey,
+    pub created: bool,
+}
+
+pub async fn ensure_marginfi_account(
     rpc: &Arc<RpcClient>,
     identity: &EngineIdentity,
-) -> FlashloanResult<Pubkey> {
-    if let Some(existing) = find_marginfi_account_by_authority(rpc, &identity.pubkey).await? {
-        return Ok(existing);
+) -> FlashloanResult<MarginfiAccountEnsure> {
+    let existing = match find_marginfi_account_by_authority(rpc, &identity.pubkey).await {
+        Ok(value) => value,
+        Err(FlashloanError::Rpc(err)) => {
+            warn!(
+                target: "flashloan::marginfi",
+                error = %err,
+                "查询 marginfi account 失败，将直接尝试创建"
+            );
+            None
+        }
+        Err(other) => return Err(other),
+    };
+
+    if let Some(account) = existing {
+        return Ok(MarginfiAccountEnsure {
+            account,
+            created: false,
+        });
     }
 
     let account_keypair = Keypair::new();
@@ -189,10 +215,13 @@ pub(super) async fn ensure_marginfi_account(
         "已创建 Marginfi account"
     );
 
-    Ok(account_keypair.pubkey())
+    Ok(MarginfiAccountEnsure {
+        account: account_keypair.pubkey(),
+        created: true,
+    })
 }
 
-async fn find_marginfi_account_by_authority(
+pub async fn find_marginfi_account_by_authority(
     rpc: &Arc<RpcClient>,
     authority: &Pubkey,
 ) -> FlashloanResult<Option<Pubkey>> {
@@ -223,7 +252,7 @@ async fn find_marginfi_account_by_authority(
     Ok(accounts.into_iter().map(|(pubkey, _)| pubkey).next())
 }
 
-fn build_initialize_instruction(
+pub fn build_initialize_instruction(
     marginfi_account: Pubkey,
     authority: &Pubkey,
 ) -> FlashloanResult<Instruction> {

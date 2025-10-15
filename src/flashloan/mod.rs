@@ -20,9 +20,10 @@ use crate::engine::{EngineError, EngineIdentity, SwapOpportunity};
 use crate::strategy::compute_associated_token_address;
 
 pub use error::{FlashloanError, FlashloanResult};
-pub use marginfi::MarginfiFlashloan;
-
-use marginfi::ensure_marginfi_account;
+pub use marginfi::{
+    MarginfiAccountEnsure, MarginfiFlashloan, build_initialize_instruction,
+    ensure_marginfi_account, find_marginfi_account_by_authority,
+};
 
 const BALANCE_CACHE_TTL: Duration = Duration::from_millis(500);
 
@@ -38,6 +39,12 @@ pub struct FlashloanManager {
 struct BalanceCacheEntry {
     amount: u64,
     fetched_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+pub struct FlashloanPreparation {
+    pub account: Pubkey,
+    pub created: bool,
 }
 
 impl FlashloanManager {
@@ -59,13 +66,29 @@ impl FlashloanManager {
         if self.enabled { Some(self) } else { None }
     }
 
-    pub async fn prepare(&mut self, identity: &EngineIdentity) -> FlashloanResult<()> {
-        if !self.enabled || self.marginfi.is_some() {
-            return Ok(());
+    pub fn adopt_preparation(&mut self, prep: FlashloanPreparation) {
+        if self.enabled {
+            self.marginfi = Some(MarginfiFlashloan::new(prep.account));
         }
-        let account = ensure_marginfi_account(&self.rpc, identity).await?;
+    }
+
+    pub async fn prepare(
+        &mut self,
+        identity: &EngineIdentity,
+    ) -> FlashloanResult<Option<FlashloanPreparation>> {
+        if !self.enabled {
+            return Ok(None);
+        }
+        if let Some(existing) = &self.marginfi {
+            return Ok(Some(FlashloanPreparation {
+                account: existing.account(),
+                created: false,
+            }));
+        }
+        let MarginfiAccountEnsure { account, created } =
+            ensure_marginfi_account(&self.rpc, identity).await?;
         self.marginfi = Some(MarginfiFlashloan::new(account));
-        Ok(())
+        Ok(Some(FlashloanPreparation { account, created }))
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]

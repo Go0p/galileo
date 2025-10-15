@@ -9,6 +9,68 @@ use solana_sdk::pubkey::Pubkey;
 use super::metrics::prometheus_enabled;
 use metrics::{counter, histogram};
 
+pub fn accounts_precheck(
+    strategy: &str,
+    total_mints: usize,
+    created_accounts: usize,
+    skipped_mints: usize,
+) {
+    info!(
+        target: "monitoring::accounts",
+        event = "precheck",
+        strategy,
+        total_mints,
+        created_accounts,
+        skipped_mints,
+        "token account precheck finished"
+    );
+
+    if prometheus_enabled() {
+        let strategy_label = strategy.to_string();
+        counter!(
+            "galileo_accounts_precheck_total",
+            1,
+            "strategy" => strategy_label.clone()
+        );
+        histogram!(
+            "galileo_accounts_precheck_mints",
+            total_mints as f64,
+            "strategy" => strategy_label.clone()
+        );
+        histogram!(
+            "galileo_accounts_precheck_created",
+            created_accounts as f64,
+            "strategy" => strategy_label.clone()
+        );
+        histogram!(
+            "galileo_accounts_precheck_skipped",
+            skipped_mints as f64,
+            "strategy" => strategy_label
+        );
+    }
+}
+
+pub fn flashloan_account_precheck(strategy: &str, account: &Pubkey, created: bool) {
+    info!(
+        target: "monitoring::accounts",
+        event = "flashloan_precheck",
+        strategy,
+        account = %account,
+        created,
+        "flashloan account precheck finished"
+    );
+
+    if prometheus_enabled() {
+        let created_label = if created { "created" } else { "exists" };
+        counter!(
+            "galileo_flashloan_precheck_total",
+            1,
+            "strategy" => strategy.to_string(),
+            "result" => created_label.to_string()
+        );
+    }
+}
+
 pub fn quote_start(strategy: &str, task: &QuoteTask) {
     info!(
         target: "monitoring::quote",
