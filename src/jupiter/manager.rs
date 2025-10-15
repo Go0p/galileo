@@ -687,17 +687,42 @@ impl JupiterBinaryManager {
                     } else {
                         interval_secs.min(remaining_secs)
                     };
-                    warn!(
-                        target: "jupiter",
-                        host = %host,
-                        port,
-                        attempts,
-                        elapsed_ms = elapsed_now.as_millis() as u64,
-                        remaining_secs,
-                        next_retry_secs,
-                        error = %err,
-                        "健康检查连接失败，将在下一个轮询间隔重试"
-                    );
+                    let elapsed_ms = elapsed_now.as_millis() as u64;
+                    if remaining_secs == 0 {
+                        warn!(
+                            target: "jupiter",
+                            host = %host,
+                            port,
+                            attempts,
+                            elapsed_ms,
+                            error = %err,
+                            "健康检查超时，即将放弃等待 Jupiter 端口"
+                        );
+                    } else if attempts == 1 {
+                        info!(
+                            target: "jupiter",
+                            host = %host,
+                            port,
+                            attempts,
+                            elapsed_ms,
+                            remaining_secs,
+                            next_retry_secs,
+                            error = %err,
+                            "健康检查暂未通过，等待端口就绪"
+                        );
+                    } else {
+                        debug!(
+                            target: "jupiter",
+                            host = %host,
+                            port,
+                            attempts,
+                            elapsed_ms,
+                            remaining_secs,
+                            next_retry_secs,
+                            error = %err,
+                            "健康检查仍未通过，继续轮询"
+                        );
+                    }
                 }
                 Err(_) => {
                     let elapsed_now = start.elapsed();
@@ -708,16 +733,39 @@ impl JupiterBinaryManager {
                     } else {
                         interval_secs.min(remaining_secs)
                     };
-                    warn!(
-                        target: "jupiter",
-                        host = %host,
-                        port,
-                        attempts,
-                        elapsed_ms = elapsed_now.as_millis() as u64,
-                        remaining_secs,
-                        next_retry_secs,
-                        "健康检查连接尝试超时，将在下一个轮询间隔重试"
-                    );
+                    let elapsed_ms = elapsed_now.as_millis() as u64;
+                    if remaining_secs == 0 {
+                        warn!(
+                            target: "jupiter",
+                            host = %host,
+                            port,
+                            attempts,
+                            elapsed_ms,
+                            "健康检查超时，即将放弃等待 Jupiter 端口"
+                        );
+                    } else if attempts == 1 {
+                        info!(
+                            target: "jupiter",
+                            host = %host,
+                            port,
+                            attempts,
+                            elapsed_ms,
+                            remaining_secs,
+                            next_retry_secs,
+                            "健康检查首次探测未通过，等待下一次重试"
+                        );
+                    } else {
+                        debug!(
+                            target: "jupiter",
+                            host = %host,
+                            port,
+                            attempts,
+                            elapsed_ms,
+                            remaining_secs,
+                            next_retry_secs,
+                            "健康检查仍在等待端口就绪"
+                        );
+                    }
                 }
             }
 

@@ -31,6 +31,9 @@
 - `.jupiter_running`/`kill-process.sh` 中的重启机制 → `[jupiter.process]`，后续由 `JupiterBinaryManager` 统一调度；可通过 `auto_restart_minutes` + `max_restart_attempts` 控制重启频率与次数
 - `jupiter-api.log` 的日志级别 → `[jupiter.environment].RUST_LOG`
 - `--metrics-port`/`--enable-markets --enable-tokens` 已纳入 `effective_args`，默认开启 Prometheus 指标与市集加载检查。
+- 日志输出策略 → `[galileo.global.logging]`：
+  - `profile`：`lean`（默认）只保留关键信息，`verbose` 打开调试细节。
+  - `slow_quote_warn_ms` / `slow_swap_warn_ms`：配置慢请求阈值，超限时会额外落 Warn 日志并计入指标。
 
 ## 上链器与小费
 上链器（Jito、Staked、Temporal、Astralane 等）以及优先费、tip 策略已拆分到独立的 `lander.yaml`，程序会在 `galileo.yaml` 所在目录或 `config/` 目录中自动加载该文件，可直接复制模板并按需扩展字段。
@@ -67,6 +70,12 @@ jupiter:
 - `BLIND_QUOTE_STRATEGY.*.min_quote_profit` → `blind_strategy.base_mints[*].min_quote_profit`
 - `BACKRUN_STRATEGY.base_mints` → `back_run_strategy.base_mints`
 - `BACKRUN_STRATEGY.*.trade_configs` → `back_run_strategy.base_mints[*].trade_configs`
+
+## 闪电贷
+- `flashloan.enable`：全局开关，置为 `true` 后会自动确保 Marginfi account 并在需要时注入闪电贷指令。
+- `flashloan.prefer_wallet_balance`：启用后先检查钱包余额，如果交易规模在余额范围内就直接走自有资金，超出部分才触发闪电贷。
+
+Marginfi 的账户创建、Bank 映射、借款规模等均内置处理：首次启动会根据钱包自动创建 Marginfi account，后续复用；借款金额默认等于策略的交易规模。
 
 ## 后续建议
 1. 根据环境补全 RPC、Yellowstone、Jito 等敏感信息。

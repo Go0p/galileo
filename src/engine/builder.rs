@@ -52,6 +52,28 @@ impl TransactionBuilder {
         instructions: &SwapInstructionsResponse,
         tip_lamports: u64,
     ) -> EngineResult<PreparedTransaction> {
+        self.build_internal(identity, instructions, None, tip_lamports)
+            .await
+    }
+
+    pub async fn build_with_sequence(
+        &self,
+        identity: &EngineIdentity,
+        instructions: &SwapInstructionsResponse,
+        sequence: Vec<Instruction>,
+        tip_lamports: u64,
+    ) -> EngineResult<PreparedTransaction> {
+        self.build_internal(identity, instructions, Some(sequence), tip_lamports)
+            .await
+    }
+
+    async fn build_internal(
+        &self,
+        identity: &EngineIdentity,
+        instructions: &SwapInstructionsResponse,
+        override_sequence: Option<Vec<Instruction>>,
+        tip_lamports: u64,
+    ) -> EngineResult<PreparedTransaction> {
         let lookup_accounts = self
             .load_lookup_tables(&instructions.address_lookup_table_addresses)
             .await?;
@@ -64,17 +86,10 @@ impl TransactionBuilder {
 
         let slot = self.rpc.get_slot().await.map_err(EngineError::Rpc)?;
 
-        let mut ix = Vec::<Instruction>::new();
-        ix.extend(instructions.compute_budget_instructions.clone());
-        if let Some(token_ledger) = instructions.token_ledger_instruction.clone() {
-            ix.push(token_ledger);
-        }
-        ix.extend(instructions.setup_instructions.clone());
-        ix.push(instructions.swap_instruction.clone());
-        ix.extend(instructions.other_instructions.clone());
-        if let Some(cleanup) = instructions.cleanup_instruction.clone() {
-            ix.push(cleanup);
-        }
+        let mut ix = match override_sequence {
+            Some(sequence) => sequence,
+            None => instructions.flatten_instructions(),
+        };
 
         if let Some(memo) = &self.config.memo {
             ix.push(build_memo_instruction(memo));

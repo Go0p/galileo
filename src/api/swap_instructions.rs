@@ -177,6 +177,32 @@ impl SwapInstructionsResponse {
             simulation_error: value.simulation_error,
         }
     }
+
+    pub fn flatten_instructions(&self) -> Vec<Instruction> {
+        let mut capacity = self.compute_budget_instructions.len()
+            + self.setup_instructions.len()
+            + self.other_instructions.len()
+            + 2; // swap + cleanup or token ledger
+        if self.token_ledger_instruction.is_some() {
+            capacity += 1;
+        }
+        if self.cleanup_instruction.is_some() {
+            capacity += 1;
+        }
+
+        let mut instructions = Vec::with_capacity(capacity);
+        instructions.extend(self.compute_budget_instructions.iter().cloned());
+        if let Some(ledger) = &self.token_ledger_instruction {
+            instructions.push(ledger.clone());
+        }
+        instructions.extend(self.setup_instructions.iter().cloned());
+        instructions.push(self.swap_instruction.clone());
+        instructions.extend(self.other_instructions.iter().cloned());
+        if let Some(cleanup) = &self.cleanup_instruction {
+            instructions.push(cleanup.clone());
+        }
+        instructions
+    }
 }
 
 #[allow(dead_code)]

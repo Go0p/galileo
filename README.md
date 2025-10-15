@@ -49,6 +49,7 @@ https://github.com/ValidatorsDAO/solana-stream/blob/main/crate/solana-stream-sdk
 常用 CLI 入口：
 - `galileo strategy`：根据配置运行套利循环，必要时会自动拉起本地 Jupiter。
 - `galileo jupiter start|stop|restart|status|update`：管理本地 Jupiter 二进制（当 `disable_local_binary = false` 且使用本地 URL 时生效）。
+- `galileo tools dflow-probe --template copy_tx/template_tx.json`：离线比对 DFlow 动态路由指令的编码输出。
 - Jupiter 启动参数解释可参考 `docs/jupiter_cli_options.md`，或使用 `galileo jupiter help` 查看 CLI。
 
 

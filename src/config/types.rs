@@ -78,12 +78,41 @@ pub struct InstructionConfig {
     pub memo: String,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LoggingProfile {
+    Lean,
+    Verbose,
+}
+
+impl Default for LoggingProfile {
+    fn default() -> Self {
+        Self::Lean
+    }
+}
+
+impl LoggingProfile {
+    pub fn is_verbose(self) -> bool {
+        matches!(self, Self::Verbose)
+    }
+
+    pub fn is_lean(self) -> bool {
+        matches!(self, Self::Lean)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct LoggingConfig {
     #[serde(default = "super::default_logging_level")]
     pub level: String,
     #[serde(default)]
     pub json: bool,
+    #[serde(default = "super::default_logging_profile")]
+    pub profile: LoggingProfile,
+    #[serde(default = "super::default_slow_quote_warn_ms")]
+    pub slow_quote_warn_ms: u64,
+    #[serde(default = "super::default_slow_swap_warn_ms")]
+    pub slow_swap_warn_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -100,6 +129,8 @@ pub struct RequestParamsConfig {
     pub skip_user_accounts_rpc_calls: bool,
     #[serde(default = "super::default_true")]
     pub dynamic_compute_unit_limit: bool,
+    #[serde(default)]
+    pub wrap_and_unwrap_sol: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -146,6 +177,8 @@ pub struct BotConfig {
 pub struct FlashloanConfig {
     #[serde(default)]
     pub enable: bool,
+    #[serde(default)]
+    pub prefer_wallet_balance: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

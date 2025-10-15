@@ -1,9 +1,10 @@
-use std::fs;
+use std::{fs, path::Path};
 
+use anyhow::{Context, Result, bail};
 use bincode;
 use borsh::{BorshDeserialize, BorshSerialize, to_vec};
 use serde::{Deserialize, Serialize};
-use serde_json;
+use serde_json::Value;
 
 #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Debug)]
 struct SwapParams {
@@ -52,31 +53,49 @@ struct OrchestratorFlags {
     flags: u8,
 }
 
-fn main() {
-    let path = "copy_tx/template_tx.json";
-    let data = fs::read_to_string(path).expect("read template");
-    let json: serde_json::Value = serde_json::from_str(&data).expect("parse json");
-    let first = json["result"]["transaction"]["message"]["instructions"][2]["data"]
+pub fn run(template_path: &Path, instruction_index: usize) -> Result<()> {
+    let data = fs::read_to_string(template_path)
+        .with_context(|| format!("读取样本交易文件失败: {}", template_path.display()))?;
+
+    let json: Value = serde_json::from_str(&data).context("样本交易 JSON 解析失败")?;
+    let instructions = json["result"]["transaction"]["message"]["instructions"]
+        .as_array()
+        .context("样本交易缺少 instructions 数组")?;
+
+    let instruction = instructions.get(instruction_index).with_context(|| {
+        format!(
+            "instruction index {} 超出范围（总计 {}）",
+            instruction_index,
+            instructions.len()
+        )
+    })?;
+
+    let encoded = instruction["data"]
         .as_str()
-        .expect("data str");
-    let raw = decode_base58(first).expect("decode base58");
+        .context("instruction 缺少 base58 编码 data 字段")?;
+
+    let raw = decode_base58(encoded)?;
     println!("total bytes: {}", raw.len());
     if raw.len() <= 8 {
-        panic!("not enough data");
+        bail!("样本数据长度不足，无法跳过前 8 字节 discriminant");
     }
     let (_disc, rest) = raw.split_at(8);
     println!("expected len: {}", rest.len());
 
     let params = build_sample_params();
-    compare("borsh", &to_vec(&params).expect("encode"), rest);
+    let borsh_encoded = to_vec(&params).context("Borsh 编码失败")?;
+    report_diff("borsh", &borsh_encoded, rest);
+
     let bincode_encoded = bincode::serde::encode_to_vec(
         &params,
         bincode::config::standard()
             .with_fixed_int_encoding()
             .with_little_endian(),
     )
-    .expect("bincode encode");
-    compare("bincode", &bincode_encoded, rest);
+    .context("Bincode 编码失败")?;
+    report_diff("bincode", &bincode_encoded, rest);
+
+    Ok(())
 }
 
 fn build_sample_params() -> SwapParams {
@@ -107,13 +126,13 @@ fn build_sample_params() -> SwapParams {
     }
 }
 
-fn compare(label: &str, encoded: &[u8], expected: &[u8]) {
-    println!("{} len {}", label, encoded.len());
+fn report_diff(label: &str, encoded: &[u8], expected: &[u8]) {
+    println!("{label} len {}", encoded.len());
     if encoded == expected {
-        println!("{} matches exactly", label);
+        println!("{label} matches exactly");
         return;
     }
-    println!("{} differs", label);
+    println!("{label} differs");
     for (idx, (a, b)) in encoded.iter().zip(expected.iter()).enumerate() {
         if a != b {
             println!("{label} diff at {idx}: {:#04x} vs {:#04x}", a, b);
@@ -121,15 +140,14 @@ fn compare(label: &str, encoded: &[u8], expected: &[u8]) {
     }
     if encoded.len() != expected.len() {
         println!(
-            "{} length differs {} vs {}",
-            label,
+            "{label} length differs {} vs {}",
             encoded.len(),
             expected.len()
         );
     }
 }
 
-fn decode_base58(data: &str) -> Result<Vec<u8>, String> {
+fn decode_base58(data: &str) -> Result<Vec<u8>> {
     const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     let mut num = num_bigint::BigUint::from(0u32);
     let base = num_bigint::BigUint::from(58u32);
@@ -137,10 +155,11 @@ fn decode_base58(data: &str) -> Result<Vec<u8>, String> {
         let value = ALPHABET
             .iter()
             .position(|&ch| ch == byte)
-            .ok_or_else(|| format!("invalid base58 char: {}", byte as char))?;
+            .with_context(|| format!("无效的 base58 字符: {}", byte as char))?;
         let v = num_bigint::BigUint::from(value as u32);
         num = num * &base + v;
     }
+
     let mut out = num.to_bytes_be();
     for byte in data.bytes() {
         if byte == b'1' {

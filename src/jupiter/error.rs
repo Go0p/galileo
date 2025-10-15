@@ -30,10 +30,11 @@ pub enum JupiterError {
     ExtractionFailed(String),
     #[error("health check failed: {0}")]
     HealthCheck(String),
-    #[error("API request to {endpoint} failed with status {status}")]
+    #[error("API request to {endpoint} failed with status {status}: {body}")]
     ApiStatus {
         endpoint: String,
         status: reqwest::StatusCode,
+        body: String,
     },
     #[error("unexpected response schema: {0}")]
     Schema(String),

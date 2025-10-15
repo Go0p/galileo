@@ -33,7 +33,8 @@ tokio = { version = "1.39", features = ["macros", "rt-multi-thread", "process", 
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json", "time"] }
+time = { version = "0.3", features = ["macros"] }
 which = "8.0.0"
 walkdir = "2.5"
 zip = { version = "6.0.0", default-features = false, features = ["deflate"] }

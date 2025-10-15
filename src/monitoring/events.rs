@@ -4,6 +4,7 @@ use tracing::{info, warn};
 
 use crate::engine::{QuoteTask, SwapOpportunity};
 use crate::lander::{LanderError, LanderReceipt};
+use solana_sdk::pubkey::Pubkey;
 
 use super::metrics::prometheus_enabled;
 use metrics::{counter, histogram};
@@ -122,6 +123,49 @@ pub fn swap_fetched(
             "galileo_swap_prioritization_fee_lamports",
             prioritization_fee as f64,
             "strategy" => strategy.to_string()
+        );
+    }
+}
+
+pub fn flashloan_applied(
+    strategy: &str,
+    protocol: &str,
+    mint: &Pubkey,
+    borrow_amount: u64,
+    inner_instruction_count: usize,
+) {
+    info!(
+        target: "monitoring::flashloan",
+        event = "applied",
+        strategy,
+        protocol,
+        mint = %mint,
+        borrow_amount,
+        inner_instruction_count,
+        "flashloan applied"
+    );
+
+    if prometheus_enabled() {
+        counter!(
+            "galileo_flashloan_applied_total",
+            1,
+            "strategy" => strategy.to_string(),
+            "protocol" => protocol.to_string(),
+            "mint" => mint.to_string()
+        );
+        histogram!(
+            "galileo_flashloan_amount_lamports",
+            borrow_amount as f64,
+            "strategy" => strategy.to_string(),
+            "protocol" => protocol.to_string(),
+            "mint" => mint.to_string()
+        );
+        histogram!(
+            "galileo_flashloan_inner_instruction_count",
+            inner_instruction_count as f64,
+            "strategy" => strategy.to_string(),
+            "protocol" => protocol.to_string(),
+            "mint" => mint.to_string()
         );
     }
 }

@@ -90,21 +90,49 @@ impl Drop for LatencyGuard {
 
 fn log_latency(level: Level, operation: &str, elapsed: Duration, metadata: &LatencyMetadata) {
     let elapsed_us = elapsed.as_micros();
+    let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
+    let elapsed_ms_display = format!("{elapsed_ms:.3}");
+    let metadata_summary = if metadata.fields().is_empty() {
+        None
+    } else {
+        Some(
+            metadata
+                .fields()
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    };
+
+    macro_rules! log_event {
+        ($macro:ident) => {
+            if let Some(ref metadata) = metadata_summary {
+                tracing::$macro!(
+                    target: "latency",
+                    %operation,
+                    elapsed_us,
+                    elapsed_ms = %elapsed_ms_display,
+                    metadata = %metadata,
+                    "耗时统计"
+                );
+            } else {
+                tracing::$macro!(
+                    target: "latency",
+                    %operation,
+                    elapsed_us,
+                    elapsed_ms = %elapsed_ms_display,
+                    "耗时统计"
+                );
+            }
+        };
+    }
+
     match level {
-        Level::ERROR => {
-            tracing::error!(target: "latency", %operation, elapsed_us, metadata = ?metadata.fields())
-        }
-        Level::WARN => {
-            tracing::warn!(target: "latency", %operation, elapsed_us, metadata = ?metadata.fields())
-        }
-        Level::INFO => {
-            tracing::info!(target: "latency", %operation, elapsed_us, metadata = ?metadata.fields())
-        }
-        Level::DEBUG => {
-            tracing::debug!(target: "latency", %operation, elapsed_us, metadata = ?metadata.fields())
-        }
-        Level::TRACE => {
-            tracing::trace!(target: "latency", %operation, elapsed_us, metadata = ?metadata.fields())
-        }
+        Level::ERROR => log_event!(error),
+        Level::WARN => log_event!(warn),
+        Level::INFO => log_event!(info),
+        Level::DEBUG => log_event!(debug),
+        Level::TRACE => log_event!(trace),
     }
 }

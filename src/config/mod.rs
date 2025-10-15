@@ -17,6 +17,18 @@ pub(crate) fn default_logging_level() -> String {
     "info".to_string()
 }
 
+pub(crate) fn default_logging_profile() -> cfg::LoggingProfile {
+    cfg::LoggingProfile::Lean
+}
+
+pub(crate) fn default_slow_quote_warn_ms() -> u64 {
+    25
+}
+
+pub(crate) fn default_slow_swap_warn_ms() -> u64 {
+    200
+}
+
 pub(crate) fn default_max_tokens_limit() -> u32 {
     20
 }
@@ -174,6 +186,9 @@ impl Default for cfg::LoggingConfig {
         Self {
             level: default_logging_level(),
             json: false,
+            profile: default_logging_profile(),
+            slow_quote_warn_ms: default_slow_quote_warn_ms(),
+            slow_swap_warn_ms: default_slow_swap_warn_ms(),
         }
     }
 }
@@ -187,6 +202,7 @@ impl Default for cfg::RequestParamsConfig {
             restrict_intermediate_tokens: true,
             skip_user_accounts_rpc_calls: false,
             dynamic_compute_unit_limit: true,
+            wrap_and_unwrap_sol: None,
         }
     }
 }
@@ -223,7 +239,10 @@ impl Default for cfg::BotConfig {
 
 impl Default for cfg::FlashloanConfig {
     fn default() -> Self {
-        Self { enable: false }
+        Self {
+            enable: false,
+            prefer_wallet_balance: false,
+        }
     }
 }
 

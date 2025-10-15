@@ -24,7 +24,7 @@ global:
 
   # 日志级别
   logging:
-    level: "info"
+    level: "debug"
     json: false
 
 request_params:
@@ -61,8 +61,7 @@ request_params:
   # 我们建议启用此功能以正确估计计算单元并减少所需的优先费用或有更高的机会被纳入区块
   dynamic_compute_unit_limit: true
   # /swap-instructions 接口的参数 wrapAndUnwrapSol
-
-  wrap_and_nwrap_sol: false
+  wrap_and_unwrap_sol: false
 
 # 机器人会尝试找到盈利路线，具体方法是：获取给定交易规模的 base_mint 到 intermediate_mints 的报价，
 # 然后再获取 intermediate_mints 到 base_mint 的另一个报价，
@@ -87,7 +86,7 @@ bot:
     enable: true
     listen: "0.0.0.0:9898"
   # 设置为 true 时，不会在本地启动 Jupiter API。当你想在同一台机器上运行多个机器人时，这很有用。
-  disable_local_binary: true
+  disable_local_binary: false
   # 是否禁止启动机器人
   disable_running: false
   # request timeout ms
@@ -106,17 +105,19 @@ bot:
 flashloan:
   # 是否启用 flash 贷款
   enable: false
+  # 优先使用钱包余额；若交易规模在余额内，则跳过闪电贷
+  prefer_wallet_balance: true
 
 # lander 相关配置已移至独立的 lander.yaml
 
 # 盲发策略
 blind_strategy:
-  enable: false
+  enable: true
   memo: ""
   # 只允许交易这些 dex
   enable_dexs: [
-      "Perps",
-      "SolFi"
+      # "Perps",
+      # "SolFi"
   ]
   enable_landers: []
   base_mints:
@@ -229,7 +230,7 @@ back_run_strategy:
 
 
 copy_strategy:
-  enable: true
+  enable: false
   # 模板交易
   template_tx: "McsDQgdGPs5kXFb8MXcVVng4J9v71v7ytv8LiiDKYHryTnxQYw6ZwN9V2Pv7seXso88a6HTnsQfgD83Pb5QWDQi"
   memo: ""

@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, trace, warn};
 
+use crate::flashloan::{FlashloanManager, FlashloanOutcome};
 use crate::lander::{Deadline, LanderStack};
 use crate::monitoring::events;
 use crate::strategy::types::TradePair;
@@ -68,6 +69,7 @@ where
     swap_fetcher: SwapInstructionFetcher,
     tx_builder: TransactionBuilder,
     scheduler: Scheduler,
+    flashloan: Option<FlashloanManager>,
     settings: EngineSettings,
     trade_pairs: Vec<TradePair>,
     trade_amounts: Vec<u64>,
@@ -87,6 +89,7 @@ where
         swap_fetcher: SwapInstructionFetcher,
         tx_builder: TransactionBuilder,
         scheduler: Scheduler,
+        flashloan: Option<FlashloanManager>,
         settings: EngineSettings,
         trade_pairs: Vec<TradePair>,
         trade_amounts: Vec<u64>,
@@ -100,6 +103,7 @@ where
             swap_fetcher,
             tx_builder,
             scheduler,
+            flashloan,
             settings,
             trade_pairs,
             trade_amounts,
@@ -206,9 +210,38 @@ where
             instructions.prioritization_fee_lamports,
         );
 
+        let FlashloanOutcome {
+            instructions: final_instructions,
+            metadata: flashloan_meta,
+        } = match &self.flashloan {
+            Some(manager) => manager
+                .assemble(&self.identity, &opportunity, &instructions)
+                .await
+                .map_err(EngineError::from)?,
+            None => FlashloanOutcome {
+                instructions: instructions.flatten_instructions(),
+                metadata: None,
+            },
+        };
+
+        if let Some(meta) = &flashloan_meta {
+            events::flashloan_applied(
+                strategy_name,
+                meta.protocol.as_str(),
+                &meta.mint,
+                meta.borrow_amount,
+                meta.inner_instruction_count,
+            );
+        }
+
         let prepared = self
             .tx_builder
-            .build(&self.identity, &instructions, opportunity.tip_lamports)
+            .build_with_sequence(
+                &self.identity,
+                &instructions,
+                final_instructions,
+                opportunity.tip_lamports,
+            )
             .await?;
         events::transaction_built(
             strategy_name,

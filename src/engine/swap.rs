@@ -6,15 +6,20 @@ use super::error::{EngineError, EngineResult};
 use super::identity::EngineIdentity;
 use super::types::SwapOpportunity;
 use crate::api::{ComputeUnitPriceMicroLamports, JupiterApiClient, SwapInstructionsRequest};
+use crate::config::RequestParamsConfig;
 
 #[derive(Clone)]
 pub struct SwapInstructionFetcher {
     client: JupiterApiClient,
+    request_defaults: RequestParamsConfig,
 }
 
 impl SwapInstructionFetcher {
-    pub fn new(client: JupiterApiClient) -> Self {
-        Self { client }
+    pub fn new(client: JupiterApiClient, request_defaults: RequestParamsConfig) -> Self {
+        Self {
+            client,
+            request_defaults,
+        }
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
@@ -26,7 +31,12 @@ impl SwapInstructionFetcher {
     ) -> EngineResult<crate::api::SwapInstructionsResponse> {
         let mut request =
             SwapInstructionsRequest::new(opportunity.merged_quote.clone(), identity.pubkey);
-        request.config.wrap_and_unwrap_sol = identity.wrap_and_unwrap_sol();
+
+        let wrap_and_unwrap = self
+            .request_defaults
+            .wrap_and_unwrap_sol
+            .unwrap_or_else(|| identity.wrap_and_unwrap_sol());
+        request.config.wrap_and_unwrap_sol = wrap_and_unwrap;
         request.config.use_shared_accounts = Some(identity.use_shared_accounts());
         request.config.skip_user_accounts_rpc_calls = identity.skip_user_accounts_rpc_calls();
         if let Some(fee) = identity.fee_account() {
