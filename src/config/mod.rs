@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 pub mod loader;
 pub mod types;
+pub mod wallet;
 
 pub use loader::*;
 pub use types::*;
@@ -175,6 +176,8 @@ impl Default for cfg::TitanEngineConfig {
             jwt: None,
             providers: vec!["Titan".to_string()],
             reverse_slippage_bps: Some(5),
+            interval_ms: None,
+            num_quotes: None,
         }
     }
 }

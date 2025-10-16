@@ -100,6 +100,10 @@ pub struct TitanEngineConfig {
     pub providers: Vec<String>,
     #[serde(default)]
     pub reverse_slippage_bps: Option<u16>,
+    #[serde(default)]
+    pub interval_ms: Option<u64>,
+    #[serde(default)]
+    pub num_quotes: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]

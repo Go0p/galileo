@@ -5,7 +5,9 @@ use serde::de::DeserializeOwned;
 
 use thiserror::Error;
 
+use super::wallet::{encrypted_wallet_path, process_wallet, sanitize_config_file};
 use super::{AppConfig, GalileoConfig, JupiterConfig, LanderConfig};
+use tracing::{info, warn};
 
 pub const DEFAULT_CONFIG_PATHS: &[&str] = &["galileo.yaml", "config/galileo.yaml"];
 pub const DEFAULT_LANDER_PATHS: &[&str] = &["lander.yaml", "config/lander.yaml"];
@@ -31,7 +33,31 @@ pub fn load_config(path: Option<PathBuf>) -> Result<AppConfig, ConfigError> {
             .collect::<Vec<PathBuf>>(),
     };
 
-    let (galileo, galileo_dir) = load_first_available_yaml::<GalileoConfig>(&candidate_paths)?;
+    let (mut galileo, galileo_dir) = load_first_available_yaml::<GalileoConfig>(&candidate_paths)?;
+    let galileo_path = first_existing_path(&candidate_paths);
+    let enc_path = encrypted_wallet_path(galileo_path.as_deref());
+    let original_private_key = galileo.global.wallet.private_key.clone();
+
+    let wallet_result = process_wallet(&mut galileo.global.wallet, &enc_path)?;
+    if wallet_result.sanitized_config {
+        info!(
+            target: "config",
+            encrypted = %enc_path.display(),
+            "检测到配置中的私钥，已写入 AES 加密后的 wallet.enc"
+        );
+        if let Some(config_path) = galileo_path.as_ref() {
+            let trimmed = original_private_key.trim();
+            if !trimmed.is_empty() {
+                if let Err(err) = sanitize_config_file(config_path, trimmed) {
+                    warn!(
+                        target: "config",
+                        path = %config_path.display(),
+                        "无法自动清除配置文件中的明文私钥: {err}"
+                    );
+                }
+            }
+        }
+    }
 
     let mut lander_candidates = Vec::new();
     if let Some(dir) = galileo_dir.as_ref() {
@@ -53,6 +79,16 @@ pub fn load_config(path: Option<PathBuf>) -> Result<AppConfig, ConfigError> {
         galileo,
         lander,
         jupiter,
+    })
+}
+
+fn first_existing_path(paths: &[PathBuf]) -> Option<PathBuf> {
+    paths.iter().find_map(|path| {
+        if path.exists() {
+            Some(path.clone())
+        } else {
+            None
+        }
     })
 }
 

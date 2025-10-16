@@ -108,7 +108,7 @@ async fn run_blind_engine(
     let profit_config = build_blind_profit_config(blind_config);
     let scheduler_delay = resolve_blind_scheduler_delay(blind_config);
     let quote_config = build_blind_quote_config(blind_config, &config.galileo.request_params);
-    tracing::debug!(
+    tracing::info!(
         target: "engine::config",
         dex_whitelist = ?quote_config.dex_whitelist,
         "盲发策略 DEX 白名单"
@@ -186,6 +186,8 @@ async fn run_blind_engine(
                 strategy_label: "blind",
                 providers: &titan_settings.providers,
                 reverse_slippage_bps: titan_settings.reverse_slippage_bps,
+                update_interval_ms: titan_settings.interval_ms,
+                update_num_quotes: titan_settings.num_quotes,
             };
             match spawn_quote_streams(titan_config).await {
                 Ok(stream) => {

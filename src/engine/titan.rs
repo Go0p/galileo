@@ -4,6 +4,7 @@ use std::str::FromStr;
 use serde_json::{Value, json};
 use solana_sdk::instruction::{AccountMeta as SolAccountMeta, Instruction as SolInstruction};
 use solana_sdk::pubkey::Pubkey;
+use tracing::debug;
 
 use crate::api::{SwapInstructionsResponse, swap_instructions::PrioritizationType};
 use crate::config::LanderSettings;
@@ -104,6 +105,21 @@ impl TitanPairQuotes {
 
         let forward_pick = select_forward(forward)?;
         let reverse_pick = select_reverse(reverse)?;
+
+        let forward_out = forward_pick.route.out_amount;
+        let reverse_in = reverse_pick.route.in_amount;
+        if forward_out < reverse_in {
+            debug!(
+                target: "engine::titan",
+                input_mint = %base_pair.input_mint,
+                intermediate_mint = %base_pair.output_mint,
+                amount,
+                forward_out,
+                reverse_in,
+                "忽略 Titan 报价：逆向 ExactOut 需求超过正向可兑换金额"
+            );
+            return None;
+        }
 
         Some(TitanOpportunity {
             base_pair,

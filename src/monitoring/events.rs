@@ -30,24 +30,24 @@ pub fn accounts_precheck(
         let strategy_label = strategy.to_string();
         counter!(
             "galileo_accounts_precheck_total",
-            1,
             "strategy" => strategy_label.clone()
-        );
+        )
+        .increment(1);
         histogram!(
             "galileo_accounts_precheck_mints",
-            total_mints as f64,
             "strategy" => strategy_label.clone()
-        );
+        )
+        .record(total_mints as f64);
         histogram!(
             "galileo_accounts_precheck_created",
-            created_accounts as f64,
             "strategy" => strategy_label.clone()
-        );
+        )
+        .record(created_accounts as f64);
         histogram!(
             "galileo_accounts_precheck_skipped",
-            skipped_mints as f64,
             "strategy" => strategy_label
-        );
+        )
+        .record(skipped_mints as f64);
     }
 }
 
@@ -65,10 +65,10 @@ pub fn flashloan_account_precheck(strategy: &str, account: &Pubkey, created: boo
         let created_label = if created { "created" } else { "exists" };
         counter!(
             "galileo_flashloan_precheck_total",
-            1,
             "strategy" => strategy.to_string(),
             "result" => created_label.to_string()
-        );
+        )
+        .increment(1);
     }
 }
 
@@ -129,37 +129,37 @@ pub fn titan_quote_signal(strategy: &str, signal: &TitanQuoteSignal) {
         };
         counter!(
             "galileo_titan_quote_signal_total",
-            1,
             "strategy" => strategy.to_string(),
             "pair" => pair_label.clone(),
             "mode" => mode_label.to_string(),
             "leg" => leg_label.to_string(),
             "best_provider" => best_provider.to_string()
-        );
+        )
+        .increment(1);
         histogram!(
             "galileo_titan_provider_count",
-            provider_count as f64,
             "strategy" => strategy.to_string(),
             "pair" => pair_label.clone(),
             "mode" => mode_label.to_string(),
             "leg" => leg_label.to_string()
-        );
+        )
+        .record(provider_count as f64);
         histogram!(
             "galileo_titan_best_out_amount",
-            best_out_amount as f64,
             "strategy" => strategy.to_string(),
             "pair" => pair_label.clone(),
             "mode" => mode_label.to_string(),
             "leg" => leg_label.to_string()
-        );
+        )
+        .record(best_out_amount as f64);
         histogram!(
             "galileo_titan_best_in_amount",
-            best_in_amount as f64,
             "strategy" => strategy.to_string(),
             "pair" => pair_label,
             "mode" => mode_label.to_string(),
             "leg" => leg_label.to_string()
-        );
+        )
+        .record(best_in_amount as f64);
     }
 }
 
@@ -208,16 +208,16 @@ pub fn quote_end(strategy: &str, task: &QuoteTask, success: bool, elapsed: Durat
         let result = if success { "success" } else { "empty" };
         counter!(
             "galileo_quote_total",
-            1,
             "strategy" => strategy.to_string(),
             "result" => result
-        );
+        )
+        .increment(1);
         histogram!(
             "galileo_quote_latency_ms",
-            latency_ms,
             "strategy" => strategy.to_string(),
             "result" => result
-        );
+        )
+        .record(latency_ms);
     }
 }
 
@@ -238,14 +238,14 @@ pub fn profit_detected(strategy: &str, opportunity: &SwapOpportunity) {
     if prometheus_enabled() {
         counter!(
             "galileo_opportunity_detected_total",
-            1,
             "strategy" => strategy.to_string()
-        );
+        )
+        .increment(1);
         histogram!(
             "galileo_opportunity_profit_lamports",
-            opportunity.profit_lamports as f64,
             "strategy" => strategy.to_string()
-        );
+        )
+        .record(opportunity.profit_lamports as f64);
     }
 }
 
@@ -270,14 +270,14 @@ pub fn swap_fetched(
     if prometheus_enabled() {
         histogram!(
             "galileo_swap_compute_unit_limit",
-            compute_unit_limit as f64,
             "strategy" => strategy.to_string()
-        );
+        )
+        .record(compute_unit_limit as f64);
         histogram!(
             "galileo_swap_prioritization_fee_lamports",
-            prioritization_fee as f64,
             "strategy" => strategy.to_string()
-        );
+        )
+        .record(prioritization_fee as f64);
     }
 }
 
@@ -302,25 +302,25 @@ pub fn flashloan_applied(
     if prometheus_enabled() {
         counter!(
             "galileo_flashloan_applied_total",
-            1,
             "strategy" => strategy.to_string(),
             "protocol" => protocol.to_string(),
             "mint" => mint.to_string()
-        );
+        )
+        .increment(1);
         histogram!(
             "galileo_flashloan_amount_lamports",
-            borrow_amount as f64,
             "strategy" => strategy.to_string(),
             "protocol" => protocol.to_string(),
             "mint" => mint.to_string()
-        );
+        )
+        .record(borrow_amount as f64);
         histogram!(
             "galileo_flashloan_inner_instruction_count",
-            inner_instruction_count as f64,
             "strategy" => strategy.to_string(),
             "protocol" => protocol.to_string(),
             "mint" => mint.to_string()
-        );
+        )
+        .record(inner_instruction_count as f64);
     }
 }
 
@@ -345,9 +345,9 @@ pub fn transaction_built(
     if prometheus_enabled() {
         counter!(
             "galileo_transaction_built_total",
-            1,
             "strategy" => strategy.to_string()
-        );
+        )
+        .increment(1);
     }
 }
 
@@ -363,11 +363,11 @@ pub fn lander_attempt(strategy: &str, name: &str, attempt: usize) {
 
     if prometheus_enabled() {
         counter!(
-                "galileo_lander_attempt_total",
-                1,
+            "galileo_lander_attempt_total",
             "strategy" => strategy.to_string(),
             "lander" => name.to_string()
-        );
+        )
+        .increment(1);
     }
 }
 
@@ -387,11 +387,11 @@ pub fn lander_success(strategy: &str, attempt: usize, receipt: &LanderReceipt) {
 
     if prometheus_enabled() {
         counter!(
-                "galileo_lander_success_total",
-                1,
+            "galileo_lander_success_total",
             "strategy" => strategy.to_string(),
             "lander" => receipt.lander
-        );
+        )
+        .increment(1);
     }
 }
 
@@ -407,10 +407,10 @@ pub fn lander_failure(strategy: &str, name: &str, attempt: usize, _err: &LanderE
 
     if prometheus_enabled() {
         counter!(
-                "galileo_lander_failure_total",
-                1,
+            "galileo_lander_failure_total",
             "strategy" => strategy.to_string(),
             "lander" => name.to_string()
-        );
+        )
+        .increment(1);
     }
 }

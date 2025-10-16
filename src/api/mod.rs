@@ -353,17 +353,17 @@ impl JupiterApiClient {
             .unwrap_or_else(|| "none".to_string());
         counter!(
             "galileo_jupiter_quote_requests_total",
-            1,
             "result" => result.clone(),
             "status" => status_label.clone()
-        );
+        )
+        .increment(1);
         if let Some(ms) = elapsed_ms {
             histogram!(
                 "galileo_jupiter_quote_latency_ms",
-                ms,
                 "result" => result,
                 "status" => status_label
-            );
+            )
+            .record(ms);
         }
     }
 
@@ -382,17 +382,17 @@ impl JupiterApiClient {
             .unwrap_or_else(|| "none".to_string());
         counter!(
             "galileo_jupiter_swap_requests_total",
-            1,
             "result" => result.clone(),
             "status" => status_label.clone()
-        );
+        )
+        .increment(1);
         if let Some(ms) = elapsed_ms {
             histogram!(
                 "galileo_jupiter_swap_latency_ms",
-                ms,
                 "result" => result,
                 "status" => status_label
-            );
+            )
+            .record(ms);
         }
     }
 

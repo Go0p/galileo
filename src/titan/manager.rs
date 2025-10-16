@@ -11,8 +11,8 @@ use crate::strategy::types::TradePair;
 use super::client::{QuoteStreamItem, TitanWsClient};
 use super::error::TitanError;
 use super::types::{
-    QuoteSwapStreamResponse, SwapMode as TitanSwapMode, SwapParams, SwapQuoteRequest, SwapQuotes,
-    TransactionParams,
+    QuoteSwapStreamResponse, QuoteUpdateParams, SwapMode as TitanSwapMode, SwapParams,
+    SwapQuoteRequest, SwapQuotes, TransactionParams,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -39,6 +39,8 @@ struct ReverseRequestContext {
     accounts_limit: Option<u16>,
     forward_slippage_bps: u16,
     reverse_slippage_bps: Option<u16>,
+    update_interval_ms: Option<u64>,
+    update_num_quotes: Option<u32>,
 }
 
 impl ReverseRequestContext {
@@ -75,6 +77,8 @@ impl ReverseRequestContext {
             accounts_limit,
             forward_slippage_bps: config.quote.slippage_bps,
             reverse_slippage_bps: config.reverse_slippage_bps,
+            update_interval_ms: config.update_interval_ms,
+            update_num_quotes: config.update_num_quotes,
         }
     }
 
@@ -93,6 +97,8 @@ pub struct TitanStreamConfig<'a> {
     pub strategy_label: &'a str,
     pub providers: &'a [String],
     pub reverse_slippage_bps: Option<u16>,
+    pub update_interval_ms: Option<u64>,
+    pub update_num_quotes: Option<u32>,
 }
 
 pub struct TitanQuoteStream {
@@ -465,10 +471,18 @@ fn build_request(
         "prepared Titan subscription"
     );
 
+    let update = match (config.update_interval_ms, config.update_num_quotes) {
+        (None, None) => None,
+        _ => Some(QuoteUpdateParams {
+            interval_ms: config.update_interval_ms,
+            num_quotes: config.update_num_quotes,
+        }),
+    };
+
     SwapQuoteRequest {
         swap,
         transaction,
-        update: None,
+        update,
     }
 }
 
@@ -521,8 +535,6 @@ async fn request_reverse_once(
     reverse_amount: u64,
     strategy: &str,
 ) -> Option<TitanQuoteSignal> {
-    const REVERSE_QUOTE_TIMEOUT: Duration = Duration::from_millis(400);
-
     if reverse_amount == 0 {
         return None;
     }
@@ -556,8 +568,8 @@ async fn request_reverse_once(
     let swap = SwapParams {
         input_mint,
         output_mint,
-        amount: reverse_amount,
-        swap_mode: Some(TitanSwapMode::ExactIn),
+        amount: base_amount,
+        swap_mode: Some(TitanSwapMode::ExactOut),
         slippage_bps: Some(context.effective_slippage()),
         dexes: context.dex_whitelist.clone(),
         exclude_dexes: None,
@@ -583,10 +595,18 @@ async fn request_reverse_once(
         output_account: None,
     };
 
+    let update = match (context.update_interval_ms, context.update_num_quotes) {
+        (None, None) => None,
+        _ => Some(QuoteUpdateParams {
+            interval_ms: context.update_interval_ms,
+            num_quotes: context.update_num_quotes,
+        }),
+    };
+
     let request = SwapQuoteRequest {
         swap,
         transaction,
-        update: None,
+        update,
     };
 
     let session = match client.subscribe_swap_quotes(request).await {
@@ -605,7 +625,11 @@ async fn request_reverse_once(
     let stream_id = session.stream_id;
     let mut receiver = session.receiver;
 
-    let item = match timeout(REVERSE_QUOTE_TIMEOUT, receiver.recv()).await {
+    let interval_hint_ms = context.update_interval_ms.unwrap_or(800);
+    let timeout_ms = interval_hint_ms.max(800).saturating_add(400);
+    let timeout_duration = Duration::from_millis(timeout_ms.min(10_000));
+
+    let item = match timeout(timeout_duration, receiver.recv()).await {
         Ok(Some(item)) => item,
         Ok(None) => {
             debug!(
