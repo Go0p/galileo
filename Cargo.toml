@@ -46,11 +46,11 @@ rust_decimal = { version = "1.35", features = ["serde"] }
 solana-account-decoder = "3.0.0"
 hotpath = { version = "0.4", optional = true }
 metrics = "0.21"
-metrics-exporter-prometheus = "0.13"
+metrics-exporter-prometheus = { version = "0.13", default-features = false, features = ["http-listener"] }
 url = "2.5"
 num-bigint = "0.4"
 rmp-serde = "1.3"
-tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots", "connect"] }
+tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-webpki-roots","connect"] }
 
 [features]
 default = []

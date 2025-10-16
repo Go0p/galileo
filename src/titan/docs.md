@@ -329,107 +329,91 @@ Parameters for requesting quotes for a swap.
 
 ```rust
 struct SwapQuoteRequest {
-  // Parameters for the swap.
+  // 交换请求的基础参数。
   swap: SwapParams,
-  // Parameters for transaction generation.
+  // 构造链上交易所需的参数。
   transaction: TransactionParams,
-  // Parameters for the stream of quote updates.
+  // 流式报价更新的参数。
   update: Option<QuoteUpdateParams>,
 }
 
 struct SwapParams {
-  /// Address of the input mint of the swap.
+  /// 交换输入代币的 Mint 地址。
   inputMint: Pubkey,
-  /// Address of the desired output token for the swap.
+  /// 希望换出的目标代币 Mint 地址。
   outputMint: Pubkey,
-  /// Raw number of tokens to swap, not scaled by decimals.
+  /// 原始交换数量，未按精度缩放。
   amount: u64,
-  /// Swap mode for how the amount should be interpreted.
+  /// 指定金额的解释方式。
   ///
-  /// Either ExactIn or ExactOut, defaults to ExactIn.
-  /// ExactOut is for supporting use cases where you need an exact output
-  /// token amount, like payments. In this case, slippage would be on the input
-  /// token. May not always be supported.
+  /// 可选 ExactIn 或 ExactOut，默认 ExactIn。
+  /// ExactOut 适用于必须拿到精确输出金额的场景（例如支付），此时滑点将作用在输入代币上。
+  /// 注意：并非所有流动性提供方都支持 ExactOut。
   swapMode: Option<SwapMode>,
-  /// Allowed slippage in basis points.
+  /// 允许的滑点，单位为基点。
   slippageBps: Option<u16>,
-  /// If set, constrain quotes to the given set of DEXes.
+  /// 若设置，仅在指定 DEX 列表内搜寻路线。
   ///
-  /// Note: setting both `dexes` and `exclude_dexes` may result in excluding all
-  /// dexes, resulting in no routes.
+  /// 注意：同时设置 `dexes` 与 `exclude_dexes` 可能导致过滤掉所有 DEX，进而拿不到报价。
   dexes: Option<Vec<String>>,
-  /// If set, exclude the following DEXes when determining routes.
+  /// 若设置，从路由选择中排除给定的 DEX。
   ///
-  /// Note: setting both `dexes` and `exclude_dexes` may result in excluding all
-  /// dexes, resulting in no routes.
+  /// 注意：同时设置 `dexes` 与 `exclude_dexes` 可能导致过滤掉所有 DEX，进而拿不到报价。
   excludeDexes: Option<Vec<String>>,
-  /// If set to true, only direct routes between the input and output mint will
-  /// be considered.
+  /// 若为 true，则仅考虑输入与输出之间的直连路线。
   onlyDirectRoutes: Option<bool>,
-  /// If set to true, only quotes with transactions that fit within the size
-  /// constraint are returned.
+  /// 若为 true，则仅返回满足指定交易体积上限的报价。
   addSizeConstraint: Option<bool>,
-  /// The size constraint to use when `addSizeConstraint` is set.
-  /// Default is set by the server, but is normally set to a value slightly less
-  /// than the maximum transaction size of 1232 to allow room for additional
-  /// instructions, such as compute budgets and fee accounts.
+  /// 当 `addSizeConstraint` 为 true 时使用的交易体积上限。
+  /// 服务端会有默认值，通常略小于最大 1232 字节，以便额外插入算力/费用等指令。
   sizeConstraint: Option<u32>,
-  /// If set, limit quotes to the given set of provider IDs.
+  /// 若设置，仅返回给定流动性提供方 ID 的报价。
   providers: Option<Vec<String>>,
-  /// If set, limit total number of accounts used by routes to the specified value.
+  /// 若设置，限制路线中账户总数的上限。
   ///
-  /// If not set, any number of accounts that still allows for an executable transaction is
-  /// allowed. As of writing, this is 256 accounts.
+  /// 未设置时，路线可使用任意数量的账户，只要仍能生成可执行交易。目前 Titan 允许的最大值为 256。
   ///
-  /// Available Since: v1.1
+  /// 自 v1.1 版本起可用。
   pub accountsLimitTotal: Option<u16>,
-  /// If set, limit total number of writable accounts used by routes to the specified value.
+  /// 若设置，限制路线中可写账户数量的上限。
   ///
-  /// If not set, any number of accounts that still allows for an executable transaction is
-  /// allowed. As of writing, this is 64 writable accounts.
+  /// 未设置时，可写账户数量无限制，只要可执行交易即可。目前 Titan 允许的最大值为 64。
   ///
-  /// Available Since: v1.1
+  /// 自 v1.1 版本起可用。
   pub accountsLimitWritable: Option<u16>,
 }
 
 struct TransactionParams {
-  /// Public key of the user requesting the swap, needed for transaction generation.
+  /// 发起交换的用户公钥，生成交易时必需。
   ///
-  /// NOTE: Setting this to a read-only system account will result in simulations
-  /// failing and no quotes being returned.
+  /// 注意：若填只读系统账户，模拟会失败，从而拿不到报价。
   userPublicKey: Pubkey,
-  /// If true, close the input token account as part of the transaction.
+  /// 若为 true，在交易中顺便关闭输入代币账户。
   closeInputTokenAccount: Option<bool>,
-  /// If true, an idempotent ATA will be added to the transactions, if supported
-  /// by the providers.
+  /// 若为 true，且提供方支持，会在交易中附加幂等 ATA。
   createOutputTokenAccount: Option<bool>,
-  /// The address of a token account for the output mint that will be used token
-  /// collect fees.
-  /// This account must already exist, or the user must add the ATA creation
-  /// instruction themselves.
+  /// 用于收取手续费的输出代币账户地址。
+  /// 该账户需已存在，或由调用方自行添加 ATA 创建指令。
   feeAccount: Option<Pubkey>,
-  /// Fee amount to take, in basis points.
+  /// 手续费比例，单位为基点。
   ///
-  /// If not specified, default fee for the requester is used.
+  /// 未设置时使用服务端为该请求方配置的默认费率。
   feeBps: Option<u16>,
-  /// Whether the fee should be taken in terms of the input mint.
-  /// Default is false, in which case the fee is taken in terms of the output mint.
+  /// 手续费是否以输入代币计价。默认以输出代币计价。
   feeFromInputMint: Option<bool>,
-  /// Address of the token account into which to place the output of the swap.
-  /// If not specified, the funds will be deposited into an ATA associated with the user's
-  /// wallet.
+  /// 交换输出的代币账户。
+  /// 未指定时默认打入用户钱包对应的 ATA。
   outputAccount: Option<Pubkey>,
 }
 
 struct QuoteUpdateParams {
-  /// How often the server should send updates for this quote request, in milliseconds.
+  /// 服务器推送本次报价更新的间隔，单位毫秒。
   ///
-  /// If not specified, the server default will be used.
+  /// 未设置时沿用服务端默认值。
   intervalMs: Option<u64>,
-  /// Maximum number of quotes per update the server should return. If more quotes are available,
-  /// the worst will be filtered out, based on amount in/out depending on swap mode.
+  /// 每次更新最多返回的报价数量，超出部分会按金额优先级裁剪。
   ///
-  /// If not specified, the server default will be used.
+  /// 未设置时沿用服务端默认值。
   numQuotes: Option<u32>,
 }
 ```
@@ -438,96 +422,83 @@ In TypeScript:
 
 ```typescript
 interface SwapQuoteRequest {
-  // Parameters for the swap.
+  // 交换请求的基础参数。
   swap: SwapParams;
-  // Parameters for transaction generation.
+  // 构造链上交易所需的参数。
   transaction: TransactionParams;
-  // Parameters for the stream of quote updates.
+  // 流式报价更新的参数。
   update?: QuoteUpdateParams;
 }
 
 interface SwapParams {
-  // Address of input mint for the swap.
+  // 交换输入代币的 Mint 地址。
   inputMint: Pubkey;
-  // Address of output mint of the swap.
+  // 目标输出代币的 Mint 地址。
   outputMint: Pubkey;
-  // Raw number of tokens to swap, not scaled by decimals.
-  // Whether this is in terms of the input or
-  // output depends on the value of swapMode.
+  // 原始交换数量，未按精度缩放；
+  // 它表示输入还是输出数量取决于 swapMode。
   amount: number;
-  // Whether amount is in terms of inputMint or outputMint.
-  // Defaults to ExactIn.
+  // 指定 amount 是输入还是输出金额，默认 ExactIn。
   swapMode?: SwapMode;
-  // Maximum allowed slippage, in basis points.
+  // 最大允许滑点，单位为基点。
   slippageBps?: number;
-  // If set, constrain quotes to the given set of DEXes.
+  // 若设置，仅在指定 DEX 列表内搜寻路线。
   dexes?: string[];
-  // If set, exclude the following DEXes when determining routes.
+  // 若设置，从路由选择中排除这些 DEX。
   excludeDexes?: string[];
-  // If true, only direct routes between the input and output mint will be considered.
+  // 若为 true，仅考虑输入输出之间的直连路线。
   onlyDirectRoutes?: boolean;
-  // If set to true, will request that quote providers restrict their quotes token
-  // transactions that will fit within the size constraint.
+  // 若为 true，请求提供方只返回满足体积上限的路线。
   addSizeConstraint?: boolean;
-  // The size constraint to use when `addSizeConstraint` is set.
-  // Default is set by the server, but is normally set to a value slightly less
-  // than the maximum transaction size of 1232 to allow room for additional
-  // instructions, such as compute budgets and fee accounts.
+  // `addSizeConstraint` 启用时所用的体积上限。
+  // 服务端通常默认为略低于 1232 字节，方便额外插入算力/手续费指令。
   sizeConstraint?: number;
-  // If set, limit quotes to the given set of provider IDs.
+  // 若设置，仅返回指定提供方的报价。
   providers?: string[];
-  // If set, limit total number of accounts used by routes to the specified value.
+  // 若设置，限制路线可使用的账户总数上限。
   //
-  // If not set, any number of accounts that still allows for an executable transaction is
-  // allowed. As of writing, this is 256 accounts.
+  // 未设置时只要交易可执行即可，目前上限为 256。
   //
-  // Available Since: v1.1
+  // v1.1 起可用。
   accountsLimitTotal?: number;
-  // If set, limit total number of writable accounts used by routes to the specified value.
+  // 若设置，限制路线可写账户数量上限。
   //
-  // If not set, any number of accounts that still allows for an executable transaction is
-  // allowed. As of writing, this is 64 writable accounts.
+  // 未设置时只要交易可执行即可，目前上限为 64。
   //
-  // Available Since: v1.1
+  // v1.1 起可用。
   accountsLimitWritable?: number;
 }
 
 interface TransactionParams {
-  // Public key of the user requesting the swap, needed for transaction generation.
+  // 发起交换的用户公钥，生成交易时必需。
   //
-  // NOTE: Setting this to a read-only system account will result in simulations
-  // failing and no quotes being returned.
+  // 注意：若为只读系统账户，模拟会失败，无法返回报价。
   userPublicKey: Pubkey;
-  // If true, close the input token account as part of the transaction.
+  // 若为 true，将在交易中关闭输入代币账户。
   closeInputTokenAccount?: boolean;
-  // If true, an idempotent ATA will be added to the transactions, if supported
-  // by the providers.
+  // 若为 true，且提供方支持，会附加幂等 ATA。
   createOutputTokenAccount?: boolean;
-  // The address of a token account for the output mint that will be used
-  // to collect fees.
-  // This account must already exist, or the user must add the ATA creation
-  // instruction themselves.
+  // 收取手续费的输出代币账户。
+  // 账户需已存在，或由调用方自行添加 ATA 指令。
   feeAccount?: Pubkey;
-  // Fee amount to take, in basis points.
+  // 手续费比例，单位为基点。
   //
-  // If not specified, default fee for the requester is used.
+  // 未设置时使用默认费率。
   feeBps?: number;
-  // Whether the fee should be taken in terms of the input mint.
-  // Default is false, in which case the fee is taken in terms of the output mint.
+  // 手续费是否以输入代币计价，默认使用输出代币。
   feeFromInputMint?: boolean;
-  // Address of the token account into which to place the output of the swap.
-  // If not specified, the funds will be deposited into an ATA associated with the user's
-  // wallet.
+  // 交换输出写入的代币账户。
+  // 未指定时默认写入用户钱包对应 ATA。
   outputAccount?: Pubkey;
 }
 
 interface QuoteUpdateParams {
-  // How often the server should send updates for this quote request, in milliseconds.
+  // 服务端推送报价更新的间隔，单位毫秒。
   //
-  // If not specified, the server default will be used.
+  // 未设置时使用默认值。
   intervalMs?: number;
-  // Maximum number of quotes to return.
-  numQuotes: Option<u32>;
+  // 每次更新最多返回的报价数量。
+  numQuotes?: number;
 }
 ```
 
@@ -1044,57 +1015,54 @@ struct PlatformFee {
 }
 
 struct SwapRoute {
-  /// How many input tokens are expected to go through this route.
+  /// 此路线预期投入的输入代币数量。
   inAmount: u64,
-  /// How many output tokens are expected to come out of this route.
+  /// 此路线预期产出的输出代币数量。
   outAmount: u64,
-  /// Amount of slippage incurred, in basis points.
+  /// 报价对应的滑点大小，单位为基点。
   slippageBps: u16,
-  /// Platform fee information, if such a fee is charged by the provider.
+  /// 若提供方额外收取平台费，包含相关信息。
   platformFee: Option<PlatformFee>,
-  /// Topologically ordered DAG containing the steps that comprise this route.
+  /// 以拓扑顺序组织的路线步骤 DAG。
   steps: Vec<RoutePlanStep>,
-  /// Instructions needed to execute the route.
-  /// May not be provided if a full transaction is provided instead.
+  /// 执行该路线所需的指令集合。
+  /// 若返回完整交易，则可能不会单独给出指令。
   instructions: Vec<Instruction>,
-  /// Address lookup tables necessary to load.
+  /// 执行前需加载的地址查找表。
   addressLookupTables: Vec<Pubkey>,
-  /// Context slot for the route provided.
+  /// 报价使用的链上上下文 slot。
   contextSlot: Option<u64>,
-  /// Amount of time taken to generate the quote in nanoseconds, if known.
+  /// 生成该报价耗时（纳秒），若已知。
   timeTakenNs: Option<u64>,
-  /// If this route expires, the time at which it expires, as a millisecond UNIX
-  /// timestamp.
+  /// 若路线会过期，该字段给出毫秒级 Unix 时间戳。
   expiresAtMs: Option<u64>,
-  /// If this route expires by slot, the last slot at which the route is valid.
+  /// 若通过 slot 控制有效期，该字段表示最后有效 slot。
   expiresAfterSlot: Option<u64>,
-  /// The number of compute units this transaction is expected to consume, if known.
+  /// 预估需要的计算单元数量，若已知。
   computeUnits: Option<u64>,
-  /// Recommended number of compute units to use for the budget for this route, if known.
-  /// The number of compute units used by a route can fluctuate based on changes on-chain,
-  /// so the server will recommend a higher limit that should allow the transaction to execute
-  /// in the vast majority of cases.
+  /// 建议设置的计算单元上限，若已知。
+  /// 实际消耗会随链上状态变化，因此服务端会推荐更安全的上限。
   computeUnitsSafe: Option<u64>,
-  /// Transaction for the user to sign, if instructions are not provided.
+  /// 若未提供指令，可能直接返回已封装的交易字节。
   transaction: Option<Vec<u8>>,
-  /// Provider-specific reference ID for this quote.
+  /// 提供方返回的引用 ID。
   ///
-  /// Mainly provided by RFQ-based providers such as Pyth Express Relay and Hashflow.
+  /// 主要用于 Pyth Express Relay、Hashflow 等 RFQ 型提供方。
   reference_id: Option<String>,
 }
 
 struct SwapQuotes {
-  /// Unique identifier for the quote.
+  /// 本次报价的唯一标识符。
   id: String,
-  /// Address of the input mint for this quote.
+  /// 报价使用的输入代币 Mint。
   inputMint: Pubkey,
-  /// Address of the output mint for this quote.
+  /// 报价使用的输出代币 Mint。
   outputMint: Pubkey,
-  /// What swap mode was used for the quotes.
+  /// 报价时采用的交换模式。
   swapMode: SwapMode,
-  /// Amount used for the quotes.
+  /// 报价使用的金额。
   amount: u64,
-  /// A mapping of a provider identifier to their quoted route.
+  /// 提供方标识到路线详情的映射。
   quotes: HashMap<String, SwapRoute>,
 }
 ```
@@ -1136,56 +1104,53 @@ interface PlatformFee {
 }
 
 interface SwapRoute {
-  // How many input tokens are expected to go through this route.
+  // 此路线预期投入的输入代币数量。
   inAmount: number;
-  // How many output tokens are expected to come out of this route.
+  // 此路线预期产出的输出代币数量。
   outAmount: number;
-  // Amount of slippage encurred, in basis points.
+  // 报价对应的滑点大小，单位为基点。
   slippageBps: number;
-  // Platform fee information; if such a fee is charged by the provider.
+  // 若存在平台费，包含其信息。
   platformFee?: PlatformFee;
-  // Topologically ordered DAG containing the steps that comprise this route.
+  // 以拓扑顺序组织的路线步骤 DAG。
   steps: RoutePlanStep[];
-  // Instructions needed to execute the route.
+  // 执行该路线所需的指令；若返回完整交易字节可能不再提供。
   instructions: Instruction[];
-  // Address lookup tables necessary to load.
+  // 执行前需加载的地址查找表。
   addressLookupTables: Pubkey[];
-  // Context slot for the route provided.
+  // 报价使用的链上上下文 slot。
   contextSlot?: number;
-  // Amount of time taken to generate the quote in nanoseconds; if known.
+  // 生成报价的耗时（纳秒），若已知。
   timeTaken?: number;
-  // If this route expires by time, the time at which it expires,
-  // as a millisecond UNIX timestamp.
+  // 若路线按时间过期，给出毫秒级 Unix 时间戳。
   expiresAtMs?: number;
-  // If this route expires by slot, the last slot at which the route is valid.
+  // 若路线按 slot 过期，给出最后有效 slot。
   expiresAfterSlot?: number;
-  // The number of compute units this transaction is expected to consume, if known.
+  // 预估消耗的计算单元数量，若已知。
   computeUnits?: number;
-  // Recommended number of compute units to use for the budget for this route, if known.
-  // The number of compute units used by a route can fluctuate based on changes on-chain,
-  // so the server will recommend a higher limit that should allow the transaction to execute
-  // in the vast majority of cases.
+  // 建议设置的计算单元上限，若已知。
+  // 链上状态会导致实际消耗波动，推荐值更易保证执行成功。
   computeUnitsSafe?: number;
-  // Transaction for the user to sign, if instructions not provided.
+  // 若未提供指令，可能直接返回已签名所需的交易字节。
   transaction?: Uint8Array;
-  // Provider-specific reference ID for this quote.
+  // 提供方返回的引用 ID。
   //
-  // Mainly provided by RFQ-based providers such as Pyth Express Relay and Hashflow.
+  // 常见于 Pyth Express Relay、Hashflow 等 RFQ 型提供方。
   referenceId?: string;
 }
 
 interface SwapQuotes {
-  // Unique Quote identifier.
+  // 本次报价的唯一标识符。
   id: string;
-  // Address of the input mint for this quote.
+  // 报价使用的输入代币 Mint。
   inputMint: Uint8Array;
-  // Address of the output mint for this quote.
+  // 报价使用的输出代币 Mint。
   outputMint: Uint8Array;
-  // What swap mode was used for the quotes.
+  // 报价时采用的交换模式。
   swapMode: SwapMode;
-  // Amount used for the quotes.
+  // 报价使用的金额。
   amount: number;
-  // A mapping of a provider identifier to their quoted route.
+  // 提供方标识到路线详情的映射。
   quotes: { [key: string]: SwapRoute };
 }
 ```

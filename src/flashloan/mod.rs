@@ -15,7 +15,7 @@ use solana_sdk::pubkey::Pubkey;
 use tokio::sync::Mutex;
 
 use crate::api::SwapInstructionsResponse;
-use crate::config::FlashloanConfig;
+use crate::config::FlashloanMarginfiConfig;
 use crate::engine::{EngineError, EngineIdentity, SwapOpportunity};
 use crate::strategy::compute_associated_token_address;
 
@@ -23,6 +23,7 @@ pub use error::{FlashloanError, FlashloanResult};
 pub use marginfi::{
     MarginfiAccountEnsure, MarginfiFlashloan, build_initialize_instruction,
     ensure_marginfi_account, find_marginfi_account_by_authority,
+    marginfi_account_matches_authority,
 };
 
 const BALANCE_CACHE_TTL: Duration = Duration::from_millis(500);
@@ -31,6 +32,7 @@ pub struct FlashloanManager {
     rpc: Arc<RpcClient>,
     enabled: bool,
     prefer_wallet_balance: bool,
+    configured_marginfi: Option<Pubkey>,
     marginfi: Option<MarginfiFlashloan>,
     balance_cache: Mutex<HashMap<Pubkey, BalanceCacheEntry>>,
 }
@@ -48,12 +50,17 @@ pub struct FlashloanPreparation {
 }
 
 impl FlashloanManager {
-    pub fn new(cfg: &FlashloanConfig, rpc: Arc<RpcClient>) -> Self {
+    pub fn new(
+        cfg: &FlashloanMarginfiConfig,
+        rpc: Arc<RpcClient>,
+        marginfi_account: Option<Pubkey>,
+    ) -> Self {
         Self {
             rpc,
             enabled: cfg.enable,
             prefer_wallet_balance: cfg.prefer_wallet_balance,
-            marginfi: None,
+            configured_marginfi: marginfi_account,
+            marginfi: marginfi_account.map(MarginfiFlashloan::new),
             balance_cache: Mutex::new(HashMap::new()),
         }
     }
@@ -86,7 +93,7 @@ impl FlashloanManager {
             }));
         }
         let MarginfiAccountEnsure { account, created } =
-            ensure_marginfi_account(&self.rpc, identity).await?;
+            ensure_marginfi_account(&self.rpc, identity, self.configured_marginfi).await?;
         self.marginfi = Some(MarginfiFlashloan::new(account));
         Ok(Some(FlashloanPreparation { account, created }))
     }
@@ -218,6 +225,7 @@ impl fmt::Debug for FlashloanManager {
         f.debug_struct("FlashloanManager")
             .field("enabled", &self.enabled)
             .field("prefer_wallet_balance", &self.prefer_wallet_balance)
+            .field("configured_marginfi", &self.configured_marginfi)
             .field("has_marginfi", &self.marginfi.is_some())
             .finish()
     }

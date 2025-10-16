@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
@@ -10,7 +11,7 @@ use crate::cli::context::{
     resolve_instruction_memo, resolve_rpc_client, resolve_titan_ws_endpoint,
 };
 use crate::config;
-use crate::config::{AppConfig, ArbEngine, IntermediumConfig, RequestParamsConfig};
+use crate::config::{AppConfig, IntermediumConfig, RequestParamsConfig};
 use crate::engine::{
     AccountPrechecker, BuilderConfig, EngineError, EngineIdentity, EngineResult, EngineSettings,
     ProfitConfig, ProfitEvaluator, QuoteConfig, QuoteExecutor, Scheduler, StrategyEngine,
@@ -41,19 +42,17 @@ pub async fn run_strategy(
     mode: StrategyMode,
 ) -> Result<()> {
     let dry_run = matches!(mode, StrategyMode::DryRun) || config.galileo.bot.dry_run;
-    match config.galileo.bot.arb_engine {
-        ArbEngine::Jupiter => {
-            run_blind_engine(config, manager, api_client, dry_run, ArbEngine::Jupiter).await
+    let blind_enabled = config.galileo.blind_strategy.enable;
+    let copy_enabled = config.galileo.copy_strategy.enable;
+
+    match (blind_enabled, copy_enabled) {
+        (true, false) => run_blind_engine(config, manager, api_client, dry_run).await,
+        (false, true) => run_copy_strategy(config, dry_run).await,
+        (false, false) => {
+            warn!(target: "strategy", "未启用任何策略，直接退出");
+            Ok(())
         }
-        ArbEngine::Titan => {
-            run_blind_engine(config, manager, api_client, dry_run, ArbEngine::Titan).await
-        }
-        ArbEngine::Dflow => {
-            if !config.galileo.copy_strategy.enable {
-                return Err(anyhow!("arb_engine=dflow 时必须启用 copy_strategy 配置"));
-            }
-            run_copy_strategy(config, dry_run).await
-        }
+        (true, true) => Err(anyhow!("暂不支持同时启用 blind_strategy 与 copy_strategy")),
     }
 }
 
@@ -62,16 +61,19 @@ async fn run_blind_engine(
     manager: &JupiterBinaryManager,
     api_client: &JupiterApiClient,
     dry_run: bool,
-    engine: ArbEngine,
 ) -> Result<()> {
     let blind_config = &config.galileo.blind_strategy;
+    let titan_settings = &config.galileo.engine.titan;
+
     if !blind_config.enable {
         warn!(target: "strategy", "盲发策略未启用，直接退出");
         return Ok(());
     }
 
     let mut jupiter_started = false;
-    if matches!(engine, ArbEngine::Jupiter) && !manager.disable_local_binary {
+    let use_jupiter_binary = !titan_settings.enable;
+
+    if use_jupiter_binary && !manager.disable_local_binary {
         match manager.start(false).await {
             Ok(()) => {
                 info!(target: "strategy", "已启动本地 Jupiter 二进制");
@@ -83,7 +85,7 @@ async fn run_blind_engine(
             }
             Err(err) => return Err(err.into()),
         }
-    } else if matches!(engine, ArbEngine::Jupiter) {
+    } else if use_jupiter_binary {
         info!(
             target: "strategy",
             "已禁用本地 Jupiter 二进制，将使用远端 API"
@@ -91,8 +93,7 @@ async fn run_blind_engine(
     } else {
         info!(
             target: "strategy",
-            arb_engine = ?engine,
-            "跳过启动 Jupiter 二进制"
+            "Titan engine 启用，跳过启动 Jupiter 二进制"
         );
     }
 
@@ -119,9 +120,16 @@ async fn run_blind_engine(
     let request_defaults = config.galileo.request_params.clone();
     let submission_client = reqwest::Client::builder().build()?;
 
-    let prechecker = AccountPrechecker::new(rpc_client.clone());
+    let marginfi_cfg = &config.galileo.flashloan.marginfi;
+    let configured_marginfi = parse_marginfi_account(marginfi_cfg)?;
+
+    let prechecker = AccountPrechecker::new(rpc_client.clone(), configured_marginfi);
     let (summary, flashloan_precheck) = prechecker
-        .ensure_accounts(&identity, &trade_pairs, config.galileo.flashloan.enable)
+        .ensure_accounts(
+            &identity,
+            &trade_pairs,
+            config.galileo.flashloan.marginfi.enable,
+        )
         .await
         .map_err(|err| anyhow!(err))?;
     let skipped = summary.total_mints.saturating_sub(summary.processed_mints);
@@ -144,7 +152,7 @@ async fn run_blind_engine(
     }
 
     let mut flashloan_manager =
-        FlashloanManager::new(&config.galileo.flashloan, rpc_client.clone());
+        FlashloanManager::new(marginfi_cfg, rpc_client.clone(), configured_marginfi);
     let mut flashloan_precheck = flashloan_precheck;
     if let Some(prep) = flashloan_precheck.clone() {
         flashloan_manager.adopt_preparation(prep);
@@ -159,11 +167,16 @@ async fn run_blind_engine(
     }
     let flashloan = flashloan_manager.try_into_enabled();
 
-    let titan_stream = if matches!(engine, ArbEngine::Titan) {
-        if let Some(endpoint) = resolve_titan_ws_endpoint(&config.galileo.global)? {
-            let titan_stream_user =
-                Pubkey::from_str("Titan11111111111111111111111111111111111111")
-                    .expect("valid Titan placeholder pubkey");
+    let titan_stream = if titan_settings.enable {
+        if let Some(endpoint) = resolve_titan_ws_endpoint(titan_settings)? {
+            let pubkey_str = titan_settings
+                .default_pubkey
+                .as_deref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .unwrap_or("Titan11111111111111111111111111111111111111");
+            let titan_stream_user = Pubkey::from_str(pubkey_str)
+                .map_err(|err| anyhow!("Titan default_pubkey 无效 {pubkey_str}: {err}"))?;
             let titan_config = TitanStreamConfig {
                 endpoint,
                 user_pubkey: titan_stream_user,
@@ -171,6 +184,8 @@ async fn run_blind_engine(
                 trade_amounts: &trade_amounts,
                 quote: &quote_config,
                 strategy_label: "blind",
+                providers: &titan_settings.providers,
+                reverse_slippage_bps: titan_settings.reverse_slippage_bps,
             };
             match spawn_quote_streams(titan_config).await {
                 Ok(stream) => {
@@ -185,7 +200,7 @@ async fn run_blind_engine(
         } else {
             warn!(
                 target: "strategy",
-                "Titan quote stream未启用：缺少 titan_jwt"
+                "Titan quote stream 未启用：缺少 jwt 或 ws_url 配置"
             );
             None
         }
@@ -205,6 +220,9 @@ async fn run_blind_engine(
         )
         .map_err(|err| anyhow!(err))?;
 
+    let lander_settings = Arc::new(config.lander.lander.clone());
+    let compute_unit_price_override = identity.compute_unit_price_override();
+
     let strategy_engine = StrategyEngine::new(
         BlindStrategy::new(),
         lander_stack,
@@ -215,9 +233,10 @@ async fn run_blind_engine(
         TransactionBuilder::new(rpc_client.clone(), builder_config),
         Scheduler::new(scheduler_delay),
         flashloan,
-        EngineSettings::new(quote_config)
+        EngineSettings::new(quote_config, lander_settings)
             .with_landing_timeout(landing_timeout)
-            .with_dry_run(dry_run),
+            .with_dry_run(dry_run)
+            .with_compute_unit_price_override(compute_unit_price_override),
         trade_pairs,
         trade_amounts,
         titan_stream,
@@ -258,8 +277,10 @@ async fn run_copy_strategy(config: &AppConfig, dry_run: bool) -> Result<()> {
     let usdc_ata = compute_associated_token_address(&identity.pubkey, &usdc_mint);
 
     let compute_unit_limit = 450_000u32;
-    let compute_unit_price_micro_lamports =
-        resolve_priority_fee_micro_lamports(&config.lander.lander, compute_unit_limit);
+    let compute_unit_price_micro_lamports = crate::lander::compute_priority_fee_micro_lamports(
+        &config.lander.lander,
+        compute_unit_limit,
+    );
     let strategy = CopyStrategy::new(
         identity.pubkey,
         wsol_ata,
@@ -652,33 +673,16 @@ fn generate_amounts(min: u64, max: u64, count: u32, strategy: &str) -> Vec<u64> 
     }
 }
 
-fn resolve_priority_fee_micro_lamports(
-    lander: &config::LanderSettings,
-    compute_unit_limit: u32,
-) -> u64 {
-    const DEFAULT_PRICE: u64 = 413;
-    if compute_unit_limit == 0 {
-        return DEFAULT_PRICE;
-    }
-
-    let priority_lamports = if let Some(fixed) = lander.fixed_priority_fee {
-        Some(fixed)
-    } else if let Some(&value) = lander.random_priority_fee_range.first() {
-        Some(value)
-    } else {
-        None
-    };
-
-    priority_lamports
-        .and_then(|fee| {
-            fee.checked_mul(1_000_000)
-                .map(|micro| micro / u64::from(compute_unit_limit.max(1)))
-        })
-        .map(|price| price.max(1))
-        .unwrap_or(DEFAULT_PRICE)
-}
-
 fn resolve_landing_timeout(bot: &config::BotConfig) -> Duration {
     let ms = bot.landing_timeout_ms.unwrap_or(2_000).max(1);
     Duration::from_millis(ms)
+}
+
+fn parse_marginfi_account(cfg: &config::FlashloanMarginfiConfig) -> Result<Option<Pubkey>> {
+    match cfg.marginfi_account.as_deref().map(str::trim) {
+        Some("") | None => Ok(None),
+        Some(value) => Pubkey::from_str(value)
+            .map(Some)
+            .map_err(|err| anyhow!("flashloan.marginfi.marginfi_account 无效: {err}")),
+    }
 }

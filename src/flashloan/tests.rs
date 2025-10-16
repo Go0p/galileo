@@ -7,7 +7,7 @@ use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 
-use crate::config::{FlashloanConfig, WalletConfig, WarpOrUnwrapSolConfig};
+use crate::config::{FlashloanMarginfiConfig, WalletConfig, WarpOrUnwrapSolConfig};
 use crate::engine::{EngineIdentity, SwapOpportunity};
 use crate::strategy::types::TradePair;
 
@@ -72,12 +72,13 @@ fn sample_opportunity() -> SwapOpportunity {
 async fn marginfi_wraps_instructions() {
     let identity = make_identity();
     let marginfi_account = Keypair::new().pubkey();
-    let config = FlashloanConfig {
+    let config = FlashloanMarginfiConfig {
         enable: true,
         prefer_wallet_balance: false,
+        marginfi_account: None,
     };
     let rpc = Arc::new(RpcClient::new_mock("mock://marginfi".to_string()));
-    let mut manager = FlashloanManager::new(&config, rpc);
+    let mut manager = FlashloanManager::new(&config, rpc, None);
     manager.marginfi = Some(MarginfiFlashloan::new(marginfi_account));
     assert!(manager.is_enabled());
 
@@ -112,12 +113,13 @@ async fn disabled_flashloan_passthrough() {
     let identity = make_identity();
     let response = sample_swap_response();
     let opportunity = sample_opportunity();
-    let config = FlashloanConfig {
+    let config = FlashloanMarginfiConfig {
         enable: false,
         prefer_wallet_balance: false,
+        marginfi_account: None,
     };
     let rpc = Arc::new(RpcClient::new_mock("mock://marginfi".to_string()));
-    let manager = FlashloanManager::new(&config, rpc);
+    let manager = FlashloanManager::new(&config, rpc, None);
     assert!(!manager.is_enabled());
     let outcome = manager
         .assemble(&identity, &opportunity, &response)

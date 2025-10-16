@@ -21,6 +21,8 @@ pub struct GalileoConfig {
     #[serde(default)]
     pub global: GlobalConfig,
     #[serde(default)]
+    pub engine: EngineConfig,
+    #[serde(default)]
     pub request_params: RequestParamsConfig,
     #[serde(default)]
     pub intermedium: IntermediumConfig,
@@ -44,8 +46,6 @@ pub struct GlobalConfig {
     pub yellowstone_grpc_url: Option<String>,
     #[serde(default)]
     pub yellowstone_grpc_token: Option<String>,
-    #[serde(default)]
-    pub titan_jwt: Option<String>,
     #[serde(default)]
     pub wallet: WalletConfig,
     #[serde(default)]
@@ -78,6 +78,28 @@ pub struct WarpOrUnwrapSolConfig {
 pub struct InstructionConfig {
     #[serde(default)]
     pub memo: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EngineConfig {
+    #[serde(default)]
+    pub titan: TitanEngineConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TitanEngineConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub ws_url: Option<String>,
+    #[serde(default)]
+    pub default_pubkey: Option<String>,
+    #[serde(default)]
+    pub jwt: Option<String>,
+    #[serde(default)]
+    pub providers: Vec<String>,
+    #[serde(default)]
+    pub reverse_slippage_bps: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -115,6 +137,8 @@ pub struct LoggingConfig {
     pub slow_quote_warn_ms: u64,
     #[serde(default = "super::default_slow_swap_warn_ms")]
     pub slow_swap_warn_ms: u64,
+    #[serde(default = "super::default_timezone_offset_hours")]
+    pub timezone_offset_hours: i8,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -151,24 +175,8 @@ pub struct IntermediumConfig {
     pub disable_mints: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ArbEngine {
-    Jupiter,
-    Dflow,
-    Titan,
-}
-
-impl Default for ArbEngine {
-    fn default() -> Self {
-        Self::Jupiter
-    }
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct BotConfig {
-    #[serde(default)]
-    pub arb_engine: ArbEngine,
     #[serde(default)]
     pub disable_local_binary: bool,
     #[serde(default)]
@@ -196,9 +204,17 @@ pub struct BotConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct FlashloanConfig {
     #[serde(default)]
+    pub marginfi: FlashloanMarginfiConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct FlashloanMarginfiConfig {
+    #[serde(default)]
     pub enable: bool,
     #[serde(default)]
     pub prefer_wallet_balance: bool,
+    #[serde(default)]
+    pub marginfi_account: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

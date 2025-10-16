@@ -14,7 +14,7 @@ use tracing::{info, warn};
 use super::{EngineError, EngineIdentity, EngineResult};
 use crate::flashloan::{
     FlashloanError, FlashloanPreparation, build_initialize_instruction,
-    find_marginfi_account_by_authority,
+    find_marginfi_account_by_authority, marginfi_account_matches_authority,
 };
 use crate::strategy::types::TradePair;
 
@@ -96,11 +96,15 @@ pub struct PrecheckSummary {
 
 pub struct AccountPrechecker {
     rpc: Arc<RpcClient>,
+    marginfi_account: Option<Pubkey>,
 }
 
 impl AccountPrechecker {
-    pub fn new(rpc: Arc<RpcClient>) -> Self {
-        Self { rpc }
+    pub fn new(rpc: Arc<RpcClient>, marginfi_account: Option<Pubkey>) -> Self {
+        Self {
+            rpc,
+            marginfi_account,
+        }
     }
 
     /// 确保套利所需的所有账户均已就绪：用户 ATA 与 Marginfi 闪电贷账户。
@@ -327,6 +331,27 @@ impl AccountPrechecker {
         identity: &EngineIdentity,
         instructions: &mut Vec<Instruction>,
     ) -> EngineResult<(Option<MarginfiCreationPlan>, Option<FlashloanPreparation>)> {
+        if let Some(configured) = self.marginfi_account {
+            let account = self
+                .rpc
+                .get_account(&configured)
+                .await
+                .map_err(EngineError::Rpc)?;
+            if marginfi_account_matches_authority(&account, &identity.pubkey) {
+                return Ok((
+                    None,
+                    Some(FlashloanPreparation {
+                        account: configured,
+                        created: false,
+                    }),
+                ));
+            } else {
+                return Err(EngineError::InvalidConfig(format!(
+                    "配置的 flashloan.marginfi.marginfi_account ({configured}) 不属于当前钱包"
+                )));
+            }
+        }
+
         let lookup = find_marginfi_account_by_authority(&self.rpc, &identity.pubkey).await;
         match lookup {
             Ok(Some(account)) => Ok((

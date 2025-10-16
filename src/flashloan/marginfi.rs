@@ -2,17 +2,18 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use once_cell::sync::Lazy;
-use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
+use solana_account_decoder::UiAccountEncoding;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
 use solana_client::rpc_filter::{Memcmp, RpcFilterType};
 use solana_commitment_config::CommitmentConfig;
+use solana_sdk::account::Account;
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 use solana_sdk::sysvar;
 use solana_sdk::transaction::Transaction;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::engine::EngineIdentity;
 use crate::strategy::compute_associated_token_address;
@@ -34,6 +35,10 @@ const BEGIN_DISCRIMINATOR: [u8; 8] = [14, 131, 33, 220, 81, 186, 180, 107];
 const END_DISCRIMINATOR: [u8; 8] = [105, 124, 201, 106, 153, 2, 8, 156];
 const BORROW_DISCRIMINATOR: [u8; 8] = [4, 126, 116, 53, 48, 5, 212, 31];
 const REPAY_DISCRIMINATOR: [u8; 8] = [79, 209, 172, 177, 222, 51, 173, 151];
+const PUBKEY_BYTES: usize = 32;
+const GROUP_OFFSET: usize = 8;
+const AUTHORITY_OFFSET: usize = GROUP_OFFSET + PUBKEY_BYTES;
+const ACCOUNT_HEADER_MIN_LEN: usize = AUTHORITY_OFFSET + PUBKEY_BYTES;
 
 #[derive(Debug, Clone)]
 struct MarginfiAsset {
@@ -171,7 +176,25 @@ pub struct MarginfiAccountEnsure {
 pub async fn ensure_marginfi_account(
     rpc: &Arc<RpcClient>,
     identity: &EngineIdentity,
+    configured: Option<Pubkey>,
 ) -> FlashloanResult<MarginfiAccountEnsure> {
+    if let Some(account) = configured {
+        let fetched = rpc
+            .get_account(&account)
+            .await
+            .map_err(FlashloanError::Rpc)?;
+        if marginfi_account_matches_authority(&fetched, &identity.pubkey) {
+            return Ok(MarginfiAccountEnsure {
+                account,
+                created: false,
+            });
+        } else {
+            return Err(FlashloanError::InvalidConfigDetail(format!(
+                "配置的 marginfi_account 不属于当前钱包: {account}"
+            )));
+        }
+    }
+
     let existing = match find_marginfi_account_by_authority(rpc, &identity.pubkey).await {
         Ok(value) => value,
         Err(FlashloanError::Rpc(err)) => {
@@ -225,19 +248,16 @@ pub async fn find_marginfi_account_by_authority(
     rpc: &Arc<RpcClient>,
     authority: &Pubkey,
 ) -> FlashloanResult<Option<Pubkey>> {
-    let filters = vec![
-        RpcFilterType::Memcmp(Memcmp::new_raw_bytes(8, GROUP_ID.to_bytes().to_vec())),
-        RpcFilterType::Memcmp(Memcmp::new_raw_bytes(40, authority.to_bytes().to_vec())),
-    ];
+    let filters = vec![RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+        GROUP_OFFSET,
+        GROUP_ID.to_bytes().to_vec(),
+    ))];
 
     let config = RpcProgramAccountsConfig {
         filters: Some(filters),
         account_config: RpcAccountInfoConfig {
-            encoding: Some(UiAccountEncoding::Base64Zstd),
-            data_slice: Some(UiDataSliceConfig {
-                offset: 0,
-                length: 0,
-            }),
+            encoding: Some(UiAccountEncoding::Base64),
+            data_slice: None,
             commitment: Some(CommitmentConfig::processed()),
             min_context_slot: None,
         },
@@ -249,7 +269,36 @@ pub async fn find_marginfi_account_by_authority(
         .get_program_accounts_with_config(&*PROGRAM_ID, config)
         .await?;
 
-    Ok(accounts.into_iter().map(|(pubkey, _)| pubkey).next())
+    for (pubkey, account) in accounts {
+        if marginfi_account_matches_authority(&account, authority) {
+            debug!(
+                target: "flashloan::marginfi",
+                account = %pubkey,
+                "检测到已存在的 marginfi account"
+            );
+            return Ok(Some(pubkey));
+        }
+    }
+
+    Ok(None)
+}
+
+pub fn marginfi_account_matches_authority(account: &Account, authority: &Pubkey) -> bool {
+    if account.owner != *PROGRAM_ID || account.data.len() < ACCOUNT_HEADER_MIN_LEN {
+        return false;
+    }
+    extract_authority(&account.data)
+        .map(|pubkey| pubkey == *authority)
+        .unwrap_or(false)
+}
+
+fn extract_authority(data: &[u8]) -> Option<Pubkey> {
+    if data.len() < ACCOUNT_HEADER_MIN_LEN {
+        return None;
+    }
+    let mut bytes = [0u8; PUBKEY_BYTES];
+    bytes.copy_from_slice(&data[AUTHORITY_OFFSET..AUTHORITY_OFFSET + PUBKEY_BYTES]);
+    Some(Pubkey::new_from_array(bytes))
 }
 
 pub fn build_initialize_instruction(

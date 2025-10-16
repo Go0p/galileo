@@ -13,7 +13,6 @@ tasks:
     desc: "编译项目（release 模式）"
     cmds:
       - cargo build --release
-
   build:hotpath:
     desc: "编译项目（hotpath 模式）"
     cmds:

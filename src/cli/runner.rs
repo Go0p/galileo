@@ -32,11 +32,17 @@ pub async fn run() -> Result<()> {
     }
 
     let jupiter_cfg = resolve_jupiter_defaults(config.jupiter.clone(), &config.galileo.global)?;
+    let needs_jupiter = matches!(
+        cli.command,
+        Command::Jupiter(_) | Command::Quote(_) | Command::SwapInstructions(_)
+    ) || matches!(cli.command, Command::Strategy | Command::StrategyDryRun)
+        && !config.galileo.engine.titan.enable;
+
     let launch_overrides =
         build_launch_overrides(&config.galileo.request_params, &config.galileo.intermedium);
     let base_url = resolve_jupiter_base_url(&config.galileo.bot, &jupiter_cfg);
     let bypass_proxy = should_bypass_proxy(&base_url);
-    if bypass_proxy {
+    if needs_jupiter && bypass_proxy {
         info!(
             target: "jupiter",
             base_url = %base_url,
@@ -54,6 +60,7 @@ pub async fn run() -> Result<()> {
         launch_overrides,
         config.galileo.bot.disable_local_binary,
         config.galileo.bot.show_jupiter_logs,
+        needs_jupiter,
     )?;
     let api_client = JupiterApiClient::new(
         api_http_client,

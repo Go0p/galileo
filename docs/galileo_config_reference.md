@@ -5,14 +5,13 @@
 ## 网络与监听
 - `rpc_url` → `[bot].rpc_url`（策略运行时访问主链 RPC）
 - `yellowstone_grpc_url`/`yellowstone_grpc_token` → `[bot].yellowstone_grpc_url` / `[bot].yellowstone_grpc_token`
-- `titan_jwt` → `[galileo.global].titan_jwt`（填入 Titan 提供的 JWT，留空则关闭 Titan WS）
+- Titan WS 相关配置 → `[galileo.engine.titan]`（含 `enable` / `ws_url` / `default_pubkey` / `jwt` / `providers` / `reverse_slippage_bps`）
 - `jupiter_api_url` → `[bot].jupiter_api_url`（禁用本地 Jupiter 时指向在线 API）
 - `jupiter_local_port` → `[jupiter.launch].port`
 - `jup_bind_local_host` → `[jupiter.launch].host`
 - `jupiter_disable_local` → `[jupiter.launch].disable_local_binary`
 - `auto_restart` → `[jupiter.process].auto_restart_minutes`
 - `max_retries`（如有）→ `[jupiter.process].max_restart_attempts`
-- `arb_engine` → `[galileo.bot].arb_engine`（`jupiter` / `dflow` / `titan`）
 
 ## 市场与代币
 - `jupiter_market_mode` → `[jupiter.launch].market_mode`
@@ -36,6 +35,7 @@
 - 日志输出策略 → `[galileo.global.logging]`：
   - `profile`：`lean`（默认）只保留关键信息，`verbose` 打开调试细节。
   - `slow_quote_warn_ms` / `slow_swap_warn_ms`：配置慢请求阈值，超限时会额外落 Warn 日志并计入指标。
+  - `timezone_offset_hours`：日志时间的 UTC 偏移量（单位：小时），默认 `0`；例如填写 `8` 即输出为北京时间。
 
 ## 上链器与小费
 上链器（Jito、Staked、Temporal、Astralane 等）以及优先费、tip 策略已拆分到独立的 `lander.yaml`，程序会在 `galileo.yaml` 所在目录或 `config/` 目录中自动加载该文件，可直接复制模板并按需扩展字段。

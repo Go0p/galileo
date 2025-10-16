@@ -21,11 +21,13 @@ pub use scheduler::Scheduler;
 pub use swap::SwapInstructionFetcher;
 pub use types::{ExecutionPlan, QuoteTask, StrategyTick, SwapOpportunity};
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tracing::{debug, info, trace, warn};
 
 use crate::api::SwapInstructionsResponse;
+use crate::config::LanderSettings;
 use crate::flashloan::{FlashloanManager, FlashloanOutcome};
 use crate::lander::{Deadline, LanderStack};
 use crate::monitoring::events;
@@ -41,15 +43,17 @@ pub struct EngineSettings {
     pub quote: QuoteConfig,
     pub compute_unit_price_override: Option<u64>,
     pub dry_run: bool,
+    lander_settings: Arc<LanderSettings>,
 }
 
 impl EngineSettings {
-    pub fn new(quote: QuoteConfig) -> Self {
+    pub fn new(quote: QuoteConfig, lander_settings: Arc<LanderSettings>) -> Self {
         Self {
             landing_timeout: Duration::from_secs(2),
             quote,
             compute_unit_price_override: None,
             dry_run: false,
+            lander_settings,
         }
     }
 
@@ -61,6 +65,15 @@ impl EngineSettings {
     pub fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
+    }
+
+    pub fn with_compute_unit_price_override(mut self, value: Option<u64>) -> Self {
+        self.compute_unit_price_override = value;
+        self
+    }
+
+    pub fn lander_settings(&self) -> &LanderSettings {
+        &self.lander_settings
     }
 }
 
@@ -426,7 +439,12 @@ where
 
         events::profit_detected(self.strategy.name(), &swap_opportunity);
 
-        let Some(response) = titan::build_swap_instructions_response(&opportunity) else {
+        let Some(response) = titan::build_swap_instructions_response(
+            &opportunity,
+            &self.identity.pubkey,
+            self.settings.lander_settings(),
+            self.settings.compute_unit_price_override,
+        ) else {
             warn!(
                 target: "engine::titan",
                 input_mint = %opportunity.base_pair.input_mint,

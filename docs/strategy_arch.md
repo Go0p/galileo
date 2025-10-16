@@ -238,6 +238,5 @@ pub struct StrategyEngine<S: Strategy> {
 
 ## 12. Titan 引擎概览
 
-- `arb_engine = "titan"` 时，机器人将仅依赖 Titan WS 报价，按交易对/金额订阅正向 `ExactIn` 与反向 `ExactOut` 双腿流。
 - 流水会在内存中聚合 Titan 的 `SwapRoute`，自动挑选最佳正反腿路由并评估毛利、tip 与阈值；满足条件后直接将 Titan 返回的指令拼成交易序列，串联现有的 flashloan 与落地逻辑。
 - Titan 指令按原始顺序下发：前置 ComputeBudget 指令会提前抽离，其余保持“正向 → 反向”执行顺序；ALT 地址会自动汇总后交给交易构建器。

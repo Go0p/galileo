@@ -1,17 +1,19 @@
 global:
   # rpc url
-  rpc_url: "http://127.0.0.1:8899"
+  # rpc_url: "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
+  rpc_url: "https://mainnet.solana.validationcloud.io/v1/4YlOowpz6fTe6Jl31oWxYGSusOS12UzTxXkpdoC1I5A"
+  # rpc_url: "http://127.0.0.1:8899"
   # yellowstone grpc url
   yellowstone_grpc_url: ""
   # yellowstone grpc token
   yellowstone_grpc_token: ""
 
-  # Titan websocket JWT，用于 Titan WS 认证（留空则禁用 Titan）
-  titan_jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjA1NDk1ODYsImV4cCI6MTc2MDU1MDQ4Niwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.NHO41aWnQxr8A_pPsSCC6MXvsj2XdR9sDoJkHU2ADVQ"
-
   wallet:
-    # 套利钱包的私钥
-    private_key: "4UAq4yDGtaHpMr9J5r9rJ3wj27gaEabWQ8zUfdpqsWoudFqfiBgnm9nRRHAMyWQ1tgM5XFsdFwGNFRNJronfbEKt"
+    # 套利钱包的私钥 loss
+    # private_key: "4UAq4yDGtaHpMr9J5r9rJ3wj27gaEabWQ8zUfdpqsWoudFqfiBgnm9nRRHAMyWQ1tgM5XFsdFwGNFRNJronfbEKt"
+    # copy
+    private_key: "5nZhEDFQXG9GDURkRi7RmtzeZ7WywjW7MMmu7BdvHSG7WpmvxxfqomFkbHhEthMajrv31zRKxei2GdNawnnx2RF6"
+
     # 钱包允许的最小余额, s 为 SOL，l 为 lamports
     min_sol_balance: "1s"
 
@@ -27,8 +29,22 @@ global:
 
   # 日志级别
   logging:
-    level: "debug"
+    level: "info"
     json: false
+    # 日志输出的时区偏移（单位：小时）。示例：8 代表 UTC+8。
+    timezone_offset_hours: 8
+
+engine:
+  titan:
+    enable: true
+    ws_url: "wss://api.titan.exchange/api/v1/ws"
+    # Titan 目前要求使用内置账户发起报价，如需自定义可在拿到白名单后修改
+    default_pubkey: "Titan11111111111111111111111111111111111111"
+    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjA2MDcyMjYsImV4cCI6MTc2MDYwODEyNiwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.AEYnXRU8r6bjKFrsuzUkHSekhC-AmlmNtqJsa9xkQxU"
+    # Titan , Okx , Metis , Pyth
+    providers:
+      - "Titan"
+    reverse_slippage_bps: 0
 
 request_params:
   # 完整列表在 https://lite-api.jup.ag/swap/v1/program-id-to-label 。您可以在启动 jup api 时选择要包含哪个 Dex。
@@ -82,8 +98,6 @@ intermedium:
   disable_mints: []
 
 bot:
-  # 套利引擎，可选 jupiter / dflow / titan
-  arb_engine: titan
   # 是否测试模式
   dry_run: false
   # 是否启用 prometheus
@@ -108,10 +122,12 @@ bot:
   show_jupiter_logs: false
 
 flashloan:
-  # 是否启用 flash 贷款
-  enable: true
-  # 优先使用钱包余额；若交易规模在余额内，则跳过闪电贷
-  prefer_wallet_balance: true
+  marginfi:
+    # 是否启用 flash 贷款
+    enable: true
+    # 优先使用钱包余额；若交易规模在余额内，则跳过闪电贷
+    prefer_wallet_balance: true
+    marginfi_account: "AfXar5qXsgS5H2NYXcmcfZxrsxUFah7uUrpFcgxo91ZJ"
 
 # lander 相关配置已移至独立的 lander.yaml
 
@@ -121,17 +137,20 @@ blind_strategy:
   memo: ""
   # 只允许交易这些 dex
   enable_dexs: [
+      "HumidiFi",
+      "SolFiV2",
+      "TesseraV",
       # "Perps",
-      # "SolFi"
+      # "GoonFi"
   ]
   enable_landers: []
   base_mints:
     - mint: "So11111111111111111111111111111111111111112"
       trade_size_range:
-        - 10_000_000_000 # 10 SOL
-        - 100_000_000_000 # 100 SOL
+        - 30_000_000_000 # 10 SOL
+        # - 100_000_000_000 # 100 SOL
       # 在范围内将生成多少种不同的交易规模
-      trade_range_count: 3
+      trade_range_count: 1
       # 目前支持三个值： linear 、 random 、 exponential
       # exponential 将根据指数值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 77, 315, 668, 1000]
       # linear 将根据线性值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 200, 400, 600, 800, 1000]

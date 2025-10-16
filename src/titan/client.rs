@@ -22,8 +22,9 @@ use url::Url;
 use crate::titan::error::TitanError;
 
 use super::types::{
-    ClientRequest, QuoteSwapStreamResponse, RequestData, RequestId, ResponseData, ResponseSuccess,
-    ServerInfo, ServerMessage, StreamDataPayload, StreamEnd, StreamId, SwapQuoteRequest,
+    ClientRequest, ListProvidersRequest, ProviderInfo, QuoteSwapStreamResponse, RequestData,
+    RequestId, ResponseData, ResponseSuccess, ServerInfo, ServerMessage, StreamDataPayload,
+    StreamEnd, StreamId, SwapQuoteRequest,
 };
 
 type PendingSender = oneshot::Sender<Result<ResponseSuccess, TitanError>>;
@@ -74,7 +75,8 @@ const USER_AGENT: &str = "galileo-bot/0.1";
 ///     },
 ///     update: None,
 /// };
-/// let (_info, mut stream) = client.subscribe_swap_quotes(request).await?;
+/// let session = client.subscribe_swap_quotes(request).await?;
+/// let mut stream = session.receiver;
 /// while let Some(event) = stream.recv().await {
 ///     match event {
 ///         QuoteStreamItem::Update { seq, quotes } => {
@@ -91,6 +93,13 @@ pub struct TitanWsClient {
     reader_handle: JoinHandle<()>,
 }
 
+#[derive(Debug)]
+pub struct QuoteStreamSession {
+    pub info: QuoteSwapStreamResponse,
+    pub stream_id: StreamId,
+    pub receiver: mpsc::Receiver<QuoteStreamItem>,
+}
+
 struct TitanInner {
     sink: Mutex<futures::stream::SplitSink<WebSocketStream<ConnectorStream>, Message>>,
     pending: Mutex<PendingMap>,
@@ -104,7 +113,7 @@ type ConnectorStream = tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>;
 impl TitanWsClient {
     pub async fn connect(endpoint: Url) -> Result<Self, TitanError> {
         let mut request = endpoint
-            .clone()
+            .as_str()
             .into_client_request()
             .map_err(|err| TitanError::Handshake(format!("failed to build request: {err}")))?;
 
@@ -168,16 +177,40 @@ impl TitanWsClient {
         }
     }
 
+    pub async fn list_providers(&self) -> Result<Vec<ProviderInfo>, TitanError> {
+        let request = ListProvidersRequest {
+            include_icons: Some(true),
+        };
+        let response = self
+            .send_request(RequestData::ListProviders(request))
+            .await?;
+        match response.data {
+            ResponseData::ListProviders(providers) => Ok(providers),
+            other => Err(TitanError::Protocol(format!(
+                "unexpected response to ListProviders: {other:?}"
+            ))),
+        }
+    }
+
     pub async fn subscribe_swap_quotes(
         &self,
         request: SwapQuoteRequest,
-    ) -> Result<(QuoteSwapStreamResponse, mpsc::Receiver<QuoteStreamItem>), TitanError> {
+    ) -> Result<QuoteStreamSession, TitanError> {
         let (tx, rx) = mpsc::channel(64);
         let response = self
             .send_stream_request(RequestData::NewSwapQuoteStream(request), tx)
             .await?;
+        let stream_id = response
+            .stream
+            .as_ref()
+            .map(|start| start.id)
+            .ok_or_else(|| TitanError::Protocol("missing stream metadata in response".into()))?;
         if let ResponseData::NewSwapQuoteStream(info) = response.data {
-            Ok((info, rx))
+            Ok(QuoteStreamSession {
+                info,
+                stream_id,
+                receiver: rx,
+            })
         } else {
             Err(TitanError::Protocol(
                 "unexpected response payload for NewSwapQuoteStream".into(),
@@ -252,7 +285,7 @@ impl TitanWsClient {
 impl TitanInner {
     async fn send_message(&self, payload: Vec<u8>) -> Result<(), TitanError> {
         let mut sink = self.sink.lock().await;
-        sink.send(Message::Binary(payload))
+        sink.send(Message::Binary(payload.into()))
             .await
             .map_err(TitanError::Transport)
     }

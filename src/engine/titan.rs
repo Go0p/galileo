@@ -1,16 +1,28 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::str::FromStr;
 
 use serde_json::{Value, json};
 use solana_sdk::instruction::{AccountMeta as SolAccountMeta, Instruction as SolInstruction};
 use solana_sdk::pubkey::Pubkey;
 
-use crate::api::SwapInstructionsResponse;
+use crate::api::{SwapInstructionsResponse, swap_instructions::PrioritizationType};
+use crate::config::LanderSettings;
+use crate::lander::compute_priority_fee_micro_lamports;
 use crate::strategy::types::TradePair;
 use crate::titan::types::{SwapQuotes, SwapRoute};
 use crate::titan::{TitanLeg, TitanQuoteSignal};
 
+const TITAN_PROVIDER_ID: &str = "Titan";
 const COMPUTE_BUDGET_PROGRAM: Pubkey =
     solana_sdk::pubkey!("ComputeBudget111111111111111111111111111111");
+const TITAN_PLACEHOLDER_PUBKEY: Pubkey =
+    solana_sdk::pubkey!("Titan11111111111111111111111111111111111111");
+const ASSOCIATED_TOKEN_PROGRAM: Pubkey =
+    solana_sdk::pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+const TOKEN_PROGRAM: Pubkey = solana_sdk::pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const TOKEN_2022_PROGRAM: Pubkey =
+    solana_sdk::pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+const SYSTEM_PROGRAM: Pubkey = solana_sdk::pubkey!("11111111111111111111111111111111");
 
 #[derive(Debug, Clone)]
 pub struct TitanRoutePick {
@@ -120,14 +132,9 @@ fn select_forward(quote: &CachedQuote) -> Option<TitanRoutePick> {
 }
 
 fn select_reverse(quote: &CachedQuote) -> Option<TitanRoutePick> {
-    let (provider, route) = quote
-        .quotes
-        .quotes
-        .iter()
-        .min_by_key(|(_, route)| route.in_amount)?;
-
+    let route = quote.quotes.quotes.get(TITAN_PROVIDER_ID)?;
     Some(TitanRoutePick {
-        provider: provider.clone(),
+        provider: TITAN_PROVIDER_ID.to_string(),
         route: route.clone(),
     })
 }
@@ -152,9 +159,17 @@ pub fn build_quote_value(opportunity: &TitanOpportunity) -> Value {
 
 pub fn build_swap_instructions_response(
     opportunity: &TitanOpportunity,
+    wallet_pubkey: &Pubkey,
+    lander_settings: &LanderSettings,
+    compute_unit_price_override: Option<u64>,
 ) -> Option<SwapInstructionsResponse> {
     let mut forward_instrs = convert_instructions(&opportunity.forward.route.instructions);
     let mut reverse_instrs = convert_instructions(&opportunity.reverse.route.instructions);
+
+    remove_create_associated_token(&mut forward_instrs);
+    remove_create_associated_token(&mut reverse_instrs);
+    remove_token_close_accounts(&mut forward_instrs);
+    remove_token_close_accounts(&mut reverse_instrs);
 
     let mut compute_budget_instructions = Vec::new();
     extract_compute_budget(&mut forward_instrs, &mut compute_budget_instructions);
@@ -164,14 +179,8 @@ pub fn build_swap_instructions_response(
         return None;
     }
 
-    let (setup_instructions, swap_instruction, other_instructions) =
+    let (mut setup_instructions, mut swap_instruction, mut other_instructions) =
         arrange_instruction_sequence(forward_instrs, reverse_instrs)?;
-
-    let raw = build_quote_value(opportunity);
-    let address_lookup_table_addresses = collect_lookup_tables(
-        &opportunity.forward.route.address_lookup_tables,
-        &opportunity.reverse.route.address_lookup_tables,
-    );
 
     let forward_cu = opportunity
         .forward
@@ -186,6 +195,43 @@ pub fn build_swap_instructions_response(
         .or(opportunity.reverse.route.compute_units)
         .unwrap_or(0);
     let compute_unit_limit = (forward_cu.saturating_add(reverse_cu)).min(u32::MAX as u64) as u32;
+    let compute_unit_price = compute_unit_price_override.unwrap_or_else(|| {
+        compute_priority_fee_micro_lamports(lander_settings, compute_unit_limit)
+    });
+
+    ensure_compute_budget_instructions(
+        &mut compute_budget_instructions,
+        compute_unit_limit,
+        compute_unit_price,
+    );
+
+    let ata_rewrites = build_placeholder_ata_map(opportunity, wallet_pubkey);
+    remove_native_wrap_primitives(&mut setup_instructions);
+    remove_token_close_accounts(&mut setup_instructions);
+
+    rewrite_placeholder_accounts(
+        &mut compute_budget_instructions,
+        wallet_pubkey,
+        &ata_rewrites,
+    );
+    rewrite_placeholder_accounts(&mut setup_instructions, wallet_pubkey, &ata_rewrites);
+    rewrite_instruction_accounts(&mut swap_instruction, wallet_pubkey, &ata_rewrites);
+    rewrite_placeholder_accounts(&mut other_instructions, wallet_pubkey, &ata_rewrites);
+    remove_token_close_accounts(&mut other_instructions);
+    let raw = build_quote_value(opportunity);
+    let address_lookup_table_addresses = collect_lookup_tables(
+        &opportunity.forward.route.address_lookup_tables,
+        &opportunity.reverse.route.address_lookup_tables,
+    );
+
+    let prioritization_type = if compute_unit_price > 0 {
+        Some(PrioritizationType::ComputeBudget {
+            micro_lamports: compute_unit_price,
+            estimated_micro_lamports: Some(compute_unit_price),
+        })
+    } else {
+        None
+    };
 
     Some(SwapInstructionsResponse {
         raw,
@@ -198,7 +244,7 @@ pub fn build_swap_instructions_response(
         address_lookup_table_addresses,
         prioritization_fee_lamports: 0,
         compute_unit_limit,
-        prioritization_type: None,
+        prioritization_type,
         dynamic_slippage_report: None,
         simulation_error: None,
     })
@@ -235,6 +281,202 @@ fn extract_compute_budget(
             idx += 1;
         }
     }
+}
+
+fn rewrite_placeholder_accounts(
+    instructions: &mut [SolInstruction],
+    replacement: &Pubkey,
+    ata_rewrites: &HashMap<Pubkey, Pubkey>,
+) {
+    for instruction in instructions {
+        rewrite_instruction_accounts(instruction, replacement, ata_rewrites);
+    }
+}
+
+fn rewrite_instruction_accounts(
+    instruction: &mut SolInstruction,
+    replacement: &Pubkey,
+    ata_rewrites: &HashMap<Pubkey, Pubkey>,
+) {
+    for account in &mut instruction.accounts {
+        if account.pubkey == TITAN_PLACEHOLDER_PUBKEY {
+            account.pubkey = *replacement;
+            continue;
+        }
+
+        if let Some(mapped) = ata_rewrites.get(&account.pubkey) {
+            account.pubkey = *mapped;
+        }
+    }
+}
+
+fn remove_create_associated_token(instructions: &mut Vec<SolInstruction>) {
+    instructions.retain(|instruction| {
+        if instruction.program_id != ASSOCIATED_TOKEN_PROGRAM {
+            return true;
+        }
+
+        match instruction.data.first() {
+            Some(1) => false,
+            _ => true,
+        }
+    });
+}
+
+fn remove_native_wrap_primitives(instructions: &mut Vec<SolInstruction>) {
+    instructions.retain(|instruction| {
+        if instruction.program_id == SYSTEM_PROGRAM && is_system_transfer(instruction) {
+            return false;
+        }
+        if instruction.program_id == TOKEN_PROGRAM && is_sync_native(instruction) {
+            return false;
+        }
+        true
+    });
+}
+
+fn is_system_transfer(instruction: &SolInstruction) -> bool {
+    if instruction.data.len() != 12 {
+        return false;
+    }
+    let mut opcode = [0u8; 4];
+    opcode.copy_from_slice(&instruction.data[0..4]);
+    u32::from_le_bytes(opcode) == 2
+}
+
+fn is_sync_native(instruction: &SolInstruction) -> bool {
+    instruction.data.len() == 1 && instruction.data[0] == 17
+}
+
+fn remove_token_close_accounts(instructions: &mut Vec<SolInstruction>) {
+    instructions.retain(|instruction| {
+        if instruction.program_id != TOKEN_PROGRAM {
+            return true;
+        }
+        if instruction.data.first().copied() != Some(9) {
+            return true;
+        }
+        false
+    });
+}
+
+fn ensure_compute_budget_instructions(
+    instructions: &mut Vec<SolInstruction>,
+    compute_unit_limit: u32,
+    compute_unit_price_micro_lamports: u64,
+) {
+    let mut prepend = Vec::new();
+
+    let has_limit = instructions
+        .iter()
+        .any(|ix| ix.program_id == COMPUTE_BUDGET_PROGRAM && matches!(ix.data.first(), Some(0x02)));
+    if compute_unit_limit > 0 && !has_limit {
+        prepend.push(build_compute_unit_limit_instruction(compute_unit_limit));
+    }
+
+    let has_price = instructions
+        .iter()
+        .any(|ix| ix.program_id == COMPUTE_BUDGET_PROGRAM && matches!(ix.data.first(), Some(0x03)));
+    if !has_price {
+        prepend.push(build_compute_unit_price_instruction(
+            compute_unit_price_micro_lamports,
+        ));
+    }
+
+    if !prepend.is_empty() {
+        instructions.splice(0..0, prepend);
+    }
+}
+
+fn build_compute_unit_limit_instruction(limit: u32) -> SolInstruction {
+    let mut data = Vec::with_capacity(5);
+    data.push(0x02);
+    data.extend_from_slice(&limit.to_le_bytes());
+    SolInstruction {
+        program_id: COMPUTE_BUDGET_PROGRAM,
+        accounts: Vec::new(),
+        data,
+    }
+}
+
+fn build_compute_unit_price_instruction(price: u64) -> SolInstruction {
+    let mut data = Vec::with_capacity(9);
+    data.push(0x03);
+    data.extend_from_slice(&price.to_le_bytes());
+    SolInstruction {
+        program_id: COMPUTE_BUDGET_PROGRAM,
+        accounts: Vec::new(),
+        data,
+    }
+}
+
+fn build_placeholder_ata_map(
+    opportunity: &TitanOpportunity,
+    wallet_pubkey: &Pubkey,
+) -> HashMap<Pubkey, Pubkey> {
+    let mut mapping = HashMap::new();
+    let mints = collect_relevant_mints(opportunity);
+
+    for mint in mints {
+        let placeholder_default = compute_associated_token_address_for_program(
+            &TITAN_PLACEHOLDER_PUBKEY,
+            &mint,
+            &TOKEN_PROGRAM,
+        );
+        let wallet_default =
+            compute_associated_token_address_for_program(wallet_pubkey, &mint, &TOKEN_PROGRAM);
+        mapping.insert(placeholder_default, wallet_default);
+
+        let placeholder_token_2022 = compute_associated_token_address_for_program(
+            &TITAN_PLACEHOLDER_PUBKEY,
+            &mint,
+            &TOKEN_2022_PROGRAM,
+        );
+        let wallet_token_2022 =
+            compute_associated_token_address_for_program(wallet_pubkey, &mint, &TOKEN_2022_PROGRAM);
+        mapping.insert(placeholder_token_2022, wallet_token_2022);
+    }
+
+    mapping
+}
+
+fn collect_relevant_mints(opportunity: &TitanOpportunity) -> HashSet<Pubkey> {
+    let mut mints = HashSet::new();
+
+    if let Ok(mint) = Pubkey::from_str(&opportunity.base_pair.input_mint) {
+        mints.insert(mint);
+    }
+
+    if let Ok(mint) = Pubkey::from_str(&opportunity.base_pair.output_mint) {
+        mints.insert(mint);
+    }
+
+    for step in &opportunity.forward.route.steps {
+        mints.insert(step.input_mint);
+        mints.insert(step.output_mint);
+        if let Some(fee_mint) = step.fee_mint {
+            mints.insert(fee_mint);
+        }
+    }
+
+    for step in &opportunity.reverse.route.steps {
+        mints.insert(step.input_mint);
+        mints.insert(step.output_mint);
+        if let Some(fee_mint) = step.fee_mint {
+            mints.insert(fee_mint);
+        }
+    }
+
+    mints
+}
+
+fn compute_associated_token_address_for_program(
+    owner: &Pubkey,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+) -> Pubkey {
+    let seeds: [&[u8]; 3] = [owner.as_ref(), token_program.as_ref(), mint.as_ref()];
+    Pubkey::find_program_address(&seeds, &ASSOCIATED_TOKEN_PROGRAM).0
 }
 
 fn arrange_instruction_sequence(

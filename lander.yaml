@@ -5,7 +5,7 @@ lander:
   priority_fee_strategy: "fixed"
 
   # 固定优先费
-  fixed_priority_fee: 3000
+  fixed_priority_fee: 1500
   # 随机优先费范围
   random_priority_fee_range:
     - 3000

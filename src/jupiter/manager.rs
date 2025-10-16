@@ -26,6 +26,7 @@ impl JupiterBinaryManager {
         launch_overrides: LaunchOverrides,
         disable_local_binary: bool,
         show_jupiter_logs: bool,
+        log_proxy: bool,
     ) -> Result<Self, JupiterError> {
         let proxy = config.binary.proxy.clone();
         let mut builder = reqwest::Client::builder().user_agent(USER_AGENT);
@@ -33,12 +34,14 @@ impl JupiterBinaryManager {
             builder = builder.proxy(reqwest::Proxy::all(proxy_url)?);
         }
         let client = builder.build()?;
-        if let Some(proxy_url) = proxy {
-            info!(
-                target: "jupiter",
-                %proxy_url,
-                "🛡️ 使用下载代理处理 Jupiter Release 请求"
-            );
+        if log_proxy {
+            if let Some(proxy_url) = proxy {
+                info!(
+                    target: "jupiter",
+                    %proxy_url,
+                    "🛡️ 使用下载代理处理 Jupiter Release 请求"
+                );
+            }
         }
 
         Ok(Self {

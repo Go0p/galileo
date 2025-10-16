@@ -29,6 +29,10 @@ pub(crate) fn default_slow_swap_warn_ms() -> u64 {
     200
 }
 
+pub(crate) fn default_timezone_offset_hours() -> i8 {
+    0
+}
+
 pub(crate) fn default_max_tokens_limit() -> u32 {
     20
 }
@@ -129,6 +133,7 @@ impl Default for cfg::GalileoConfig {
     fn default() -> Self {
         Self {
             global: cfg::GlobalConfig::default(),
+            engine: cfg::EngineConfig::default(),
             request_params: cfg::RequestParamsConfig::default(),
             intermedium: cfg::IntermediumConfig::default(),
             bot: cfg::BotConfig::default(),
@@ -146,10 +151,30 @@ impl Default for cfg::GlobalConfig {
             rpc_url: None,
             yellowstone_grpc_url: None,
             yellowstone_grpc_token: None,
-            titan_jwt: None,
             wallet: cfg::WalletConfig::default(),
             instruction: cfg::InstructionConfig::default(),
             logging: cfg::LoggingConfig::default(),
+        }
+    }
+}
+
+impl Default for cfg::EngineConfig {
+    fn default() -> Self {
+        Self {
+            titan: cfg::TitanEngineConfig::default(),
+        }
+    }
+}
+
+impl Default for cfg::TitanEngineConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            ws_url: Some("wss://api.titan.exchange/api/v1/ws".to_string()),
+            default_pubkey: Some("Titan11111111111111111111111111111111111111".to_string()),
+            jwt: None,
+            providers: vec!["Titan".to_string()],
+            reverse_slippage_bps: Some(5),
         }
     }
 }
@@ -190,6 +215,7 @@ impl Default for cfg::LoggingConfig {
             profile: default_logging_profile(),
             slow_quote_warn_ms: default_slow_quote_warn_ms(),
             slow_swap_warn_ms: default_slow_swap_warn_ms(),
+            timezone_offset_hours: default_timezone_offset_hours(),
         }
     }
 }
@@ -224,7 +250,6 @@ impl Default for cfg::IntermediumConfig {
 impl Default for cfg::BotConfig {
     fn default() -> Self {
         Self {
-            arb_engine: cfg::ArbEngine::Jupiter,
             disable_local_binary: false,
             disable_running: false,
             request_timeout_ms: default_request_timeout_ms(),
@@ -243,8 +268,7 @@ impl Default for cfg::BotConfig {
 impl Default for cfg::FlashloanConfig {
     fn default() -> Self {
         Self {
-            enable: false,
-            prefer_wallet_balance: false,
+            marginfi: cfg::FlashloanMarginfiConfig::default(),
         }
     }
 }

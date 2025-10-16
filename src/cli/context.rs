@@ -14,7 +14,8 @@ use url::Url;
 
 use crate::config::{
     AppConfig, BotConfig, ConfigError, GlobalConfig, IntermediumConfig, JupiterConfig,
-    LaunchOverrides, LoggingProfile, RequestParamsConfig, YellowstoneConfig, load_config,
+    LaunchOverrides, LoggingProfile, RequestParamsConfig, TitanEngineConfig, YellowstoneConfig,
+    load_config,
 };
 use crate::jupiter::{BinaryStatus, JupiterBinaryManager, JupiterError};
 
@@ -55,10 +56,16 @@ pub fn init_tracing(config: &crate::config::LoggingConfig) -> Result<()> {
 
     let time_format =
         format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]");
-    let gmt_timer = OffsetTime::new(UtcOffset::UTC, time_format);
+    let offset = UtcOffset::from_hms(config.timezone_offset_hours, 0, 0).map_err(|err| {
+        anyhow!(
+            "invalid logging timezone offset {}: {err}",
+            config.timezone_offset_hours
+        )
+    })?;
+    let offset_timer = OffsetTime::new(offset, time_format);
 
     let base = fmt()
-        .with_timer(gmt_timer.clone())
+        .with_timer(offset_timer.clone())
         .with_file(false)
         .with_line_number(false)
         .with_thread_ids(false)
@@ -148,21 +155,38 @@ pub fn should_bypass_proxy(base_url: &str) -> bool {
     false
 }
 
-pub fn resolve_titan_ws_endpoint(global: &GlobalConfig) -> Result<Option<Url>> {
-    let jwt = match global
-        .titan_jwt
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    {
-        Some(token) => token,
-        None => return Ok(None),
-    };
+pub fn resolve_titan_ws_endpoint(titan: &TitanEngineConfig) -> Result<Option<Url>> {
+    if !titan.enable {
+        return Ok(None);
+    }
 
-    let base = std::env::var("TITAN_WS_URL")
-        .ok()
+    let jwt = titan
+        .jwt
+        .as_ref()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+        .or_else(|| {
+            std::env::var("TITAN_JWT")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        });
+
+    let Some(jwt) = jwt else {
+        return Ok(None);
+    };
+
+    let base = titan
+        .ws_url
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            std::env::var("TITAN_WS_URL")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
         .unwrap_or_else(|| "wss://api.titan.exchange/api/v1/ws".to_string());
 
     let mut url =
@@ -173,7 +197,7 @@ pub fn resolve_titan_ws_endpoint(global: &GlobalConfig) -> Result<Option<Url>> {
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
     params.retain(|(key, _)| key != "auth");
-    params.push(("auth".to_string(), jwt.to_string()));
+    params.push(("auth".to_string(), jwt));
 
     {
         let mut serializer = url.query_pairs_mut();
