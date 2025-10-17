@@ -10,7 +10,7 @@ use crate::api::{SwapInstructionsResponse, swap_instructions::PrioritizationType
 use crate::config::LanderSettings;
 use crate::lander::compute_priority_fee_micro_lamports;
 use crate::strategy::types::TradePair;
-use crate::titan::types::{SwapQuotes, SwapRoute};
+use crate::titan::types::{SwapMode, SwapQuotes, SwapRoute};
 use crate::titan::{TitanLeg, TitanQuoteSignal};
 
 const TITAN_PROVIDER_ID: &str = "Titan";
@@ -103,8 +103,54 @@ impl TitanPairQuotes {
         let forward = self.forward.as_ref()?;
         let reverse = self.reverse.as_ref()?;
 
+        if !matches!(forward.quotes.swap_mode, SwapMode::ExactIn) {
+            debug!(
+                target: "engine::titan",
+                input_mint = %base_pair.input_mint,
+                intermediate_mint = %base_pair.output_mint,
+                amount,
+                "忽略 Titan 报价：正向报价非 ExactIn"
+            );
+            return None;
+        }
+
+        if !matches!(reverse.quotes.swap_mode, SwapMode::ExactOut) {
+            debug!(
+                target: "engine::titan",
+                input_mint = %base_pair.input_mint,
+                intermediate_mint = %base_pair.output_mint,
+                amount,
+                "忽略 Titan 报价：反向报价非 ExactOut"
+            );
+            return None;
+        }
+
         let forward_pick = select_forward(forward)?;
         let reverse_pick = select_reverse(reverse)?;
+
+        if forward_pick.route.in_amount != amount {
+            debug!(
+                target: "engine::titan",
+                input_mint = %base_pair.input_mint,
+                intermediate_mint = %base_pair.output_mint,
+                amount,
+                in_amount = forward_pick.route.in_amount,
+                "忽略 Titan 报价：正向 ExactIn 金额不匹配"
+            );
+            return None;
+        }
+
+        if reverse_pick.route.out_amount != amount {
+            debug!(
+                target: "engine::titan",
+                input_mint = %base_pair.input_mint,
+                intermediate_mint = %base_pair.output_mint,
+                amount,
+                out_amount = reverse_pick.route.out_amount,
+                "忽略 Titan 报价：反向 ExactOut 金额不匹配"
+            );
+            return None;
+        }
 
         let forward_out = forward_pick.route.out_amount;
         let reverse_in = reverse_pick.route.in_amount;
@@ -520,4 +566,223 @@ fn collect_lookup_tables(forward: &[Pubkey], reverse: &[Pubkey]) -> Vec<Pubkey> 
         set.insert(*key);
     }
     set.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::titan::types::RoutePlanStep;
+    use solana_sdk::pubkey::Pubkey;
+    use std::collections::HashMap;
+
+    fn build_route(in_amount: u64, out_amount: u64) -> SwapRoute {
+        SwapRoute {
+            in_amount,
+            out_amount,
+            slippage_bps: 0,
+            platform_fee: None,
+            steps: Vec::<RoutePlanStep>::new(),
+            instructions: Vec::new(),
+            address_lookup_tables: Vec::new(),
+            context_slot: None,
+            time_taken_ns: None,
+            expires_at_ms: None,
+            expires_after_slot: None,
+            compute_units: None,
+            compute_units_safe: None,
+            transaction: None,
+            reference_id: None,
+        }
+    }
+
+    fn build_swap_quotes(
+        id: &str,
+        input_mint: Pubkey,
+        output_mint: Pubkey,
+        mode: SwapMode,
+        amount: u64,
+        routes: Vec<(&str, SwapRoute)>,
+    ) -> SwapQuotes {
+        let mut quotes = HashMap::new();
+        for (provider, route) in routes {
+            quotes.insert(provider.to_string(), route);
+        }
+        SwapQuotes {
+            id: id.to_string(),
+            input_mint,
+            output_mint,
+            swap_mode: mode,
+            amount,
+            quotes,
+        }
+    }
+
+    #[test]
+    fn titan_aggregator_accepts_exact_in_out_pair() {
+        let mut aggregator = TitanAggregator::new();
+        let base_input = Pubkey::new_unique();
+        let base_output = Pubkey::new_unique();
+        let pair = TradePair {
+            input_mint: base_input.to_string(),
+            output_mint: base_output.to_string(),
+        };
+        let amount = 1_000_000;
+
+        let forward_route = build_route(amount, 1_500_000);
+        let forward_quotes = build_swap_quotes(
+            "forward",
+            base_input,
+            base_output,
+            SwapMode::ExactIn,
+            amount,
+            vec![("ProviderA", forward_route.clone())],
+        );
+
+        let reverse_route = build_route(900_000, amount);
+        let reverse_quotes = build_swap_quotes(
+            "reverse",
+            base_output,
+            base_input,
+            SwapMode::ExactOut,
+            amount,
+            vec![(TITAN_PROVIDER_ID, reverse_route.clone())],
+        );
+
+        let forward_signal = TitanQuoteSignal {
+            base_pair: pair.clone(),
+            leg: TitanLeg::Forward,
+            amount,
+            seq: 1,
+            quotes: forward_quotes,
+        };
+        assert!(aggregator.update(forward_signal).is_none());
+
+        let reverse_signal = TitanQuoteSignal {
+            base_pair: pair.clone(),
+            leg: TitanLeg::Reverse,
+            amount,
+            seq: 2,
+            quotes: reverse_quotes,
+        };
+        let opportunity = aggregator
+            .update(reverse_signal)
+            .expect("expected arbitrage opportunity");
+
+        assert_eq!(opportunity.amount_in, amount);
+        assert_eq!(opportunity.forward.route.in_amount, amount);
+        assert_eq!(opportunity.reverse.route.out_amount, amount);
+        assert_eq!(opportunity.forward.route.out_amount, 1_500_000);
+        assert_eq!(opportunity.reverse.route.in_amount, 900_000);
+    }
+
+    #[test]
+    fn titan_aggregator_rejects_non_exactout_reverse() {
+        let mut aggregator = TitanAggregator::new();
+        let base_input = Pubkey::new_unique();
+        let base_output = Pubkey::new_unique();
+        let pair = TradePair {
+            input_mint: base_input.to_string(),
+            output_mint: base_output.to_string(),
+        };
+        let amount = 1_000;
+
+        let forward_route = build_route(amount, 2_000);
+        let forward_quotes = build_swap_quotes(
+            "forward",
+            base_input,
+            base_output,
+            SwapMode::ExactIn,
+            amount,
+            vec![("ProviderA", forward_route)],
+        );
+
+        assert!(
+            aggregator
+                .update(TitanQuoteSignal {
+                    base_pair: pair.clone(),
+                    leg: TitanLeg::Forward,
+                    amount,
+                    seq: 7,
+                    quotes: forward_quotes,
+                })
+                .is_none()
+        );
+
+        let reverse_route = build_route(1_500, amount - 1);
+        let reverse_quotes = build_swap_quotes(
+            "reverse",
+            base_output,
+            base_input,
+            SwapMode::ExactIn,
+            amount,
+            vec![(TITAN_PROVIDER_ID, reverse_route)],
+        );
+
+        assert!(
+            aggregator
+                .update(TitanQuoteSignal {
+                    base_pair: pair,
+                    leg: TitanLeg::Reverse,
+                    amount,
+                    seq: 8,
+                    quotes: reverse_quotes,
+                })
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn titan_aggregator_rejects_amount_mismatch() {
+        let mut aggregator = TitanAggregator::new();
+        let base_input = Pubkey::new_unique();
+        let base_output = Pubkey::new_unique();
+        let pair = TradePair {
+            input_mint: base_input.to_string(),
+            output_mint: base_output.to_string(),
+        };
+        let amount = 500_000;
+
+        let forward_route = build_route(amount - 10, 750_000);
+        let forward_quotes = build_swap_quotes(
+            "forward",
+            base_input,
+            base_output,
+            SwapMode::ExactIn,
+            amount,
+            vec![("ProviderA", forward_route)],
+        );
+        assert!(
+            aggregator
+                .update(TitanQuoteSignal {
+                    base_pair: pair.clone(),
+                    leg: TitanLeg::Forward,
+                    amount,
+                    seq: 3,
+                    quotes: forward_quotes,
+                })
+                .is_none()
+        );
+
+        let reverse_route = build_route(400_000, amount - 20);
+        let reverse_quotes = build_swap_quotes(
+            "reverse",
+            base_output,
+            base_input,
+            SwapMode::ExactOut,
+            amount,
+            vec![(TITAN_PROVIDER_ID, reverse_route)],
+        );
+
+        assert!(
+            aggregator
+                .update(TitanQuoteSignal {
+                    base_pair: pair,
+                    leg: TitanLeg::Reverse,
+                    amount,
+                    seq: 4,
+                    quotes: reverse_quotes,
+                })
+                .is_none()
+        );
+    }
 }

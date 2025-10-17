@@ -41,7 +41,7 @@ engine:
     ws_url: "wss://api.titan.exchange/api/v1/ws"
     # Titan 目前要求使用内置账户发起报价，如需自定义可在拿到白名单后修改
     default_pubkey: "Titan11111111111111111111111111111111111111"
-    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjA2Mzk4NjQsImV4cCI6MTc2MDY0MDc2NCwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.J5qOIChi8vAX_QI6rYpzAibIQi0oxdejfqRKwXdq5gM"
+    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjA2OTAwOTcsImV4cCI6MTc2MDY5MDk5Nywic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.lb2J4rncrBwUMaCW08juVXyNYL0MTCWFKOHnhv7WAHc"
     # Titan , Okx , Metis , Pyth
     providers:
       - "Titan"
@@ -146,9 +146,9 @@ blind_strategy:
   memo: ""
   # 只允许交易这些 dex
   enable_dexs: [
-      "HumidiFi",
-      "SolFiV2",
-      "TesseraV",
+      # "HumidiFi",
+      # "SolFiV2",
+      # "TesseraV",
       # "Perps",
       # "GoonFi"
   ]

@@ -5,8 +5,7 @@
 ## 网络与监听
 - `rpc_url` → `[bot].rpc_url`（策略运行时访问主链 RPC）
 - `yellowstone_grpc_url`/`yellowstone_grpc_token` → `[bot].yellowstone_grpc_url` / `[bot].yellowstone_grpc_token`
-- Titan WS 相关配置 → `[galileo.engine.titan]`（含 `enable` / `enable_loopback` / `ws_url` / `default_pubkey` / `jwt` / `providers` / `reverse_slippage_bps` / `interval_ms` / `num_quotes`）
-  - `enable_loopback`：开启后 Titan 仅保留 base mint → base mint 的正向流，并自动关闭 `onlyDirectRoutes`，由单条流的报价判断 `forward_out > amount_in` 是否可套利。
+- Titan WS 相关配置 → `[galileo.engine.titan]`（含 `enable` / `ws_url` / `default_pubkey` / `jwt` / `providers` / `reverse_slippage_bps` / `interval_ms` / `num_quotes`）
   - `interval_ms` / `num_quotes`：控制 Titan WS 推送频率与单次返回的报价数量，未指定时使用服务端默认值。
 - `jupiter_api_url` → `[bot].jupiter_api_url`（禁用本地 Jupiter 时指向在线 API）
 - `jupiter_local_port` → `[jupiter.launch].port`
