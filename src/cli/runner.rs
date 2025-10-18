@@ -1,31 +1,25 @@
 use std::str::FromStr;
 
 use anyhow::{Result, anyhow};
-use clap::Parser;
 use tracing::info;
 
 use crate::api::{
     ComputeUnitPriceMicroLamports, JupiterApiClient, QuoteRequest, SwapInstructionsRequest,
 };
-use crate::cli::args::{Cli, Command, DFlowProbeCmd, ToolCmd};
+use crate::cli::args::{Cli, Command};
 use crate::cli::context::{
-    build_launch_overrides, ensure_running, init_configs, init_tracing, load_configuration,
-    resolve_instruction_memo, resolve_jupiter_base_url, resolve_jupiter_defaults,
+    build_launch_overrides, ensure_running, init_configs, resolve_instruction_memo,
+    resolve_jupiter_api_proxy, resolve_jupiter_base_url, resolve_jupiter_defaults,
     should_bypass_proxy,
 };
 use crate::cli::jupiter::handle_jupiter_cmd;
 use crate::cli::lander::handle_lander_cmd;
 use crate::cli::strategy::{StrategyMode, run_strategy};
-use crate::cli::utils::apply_request_defaults_to_quote;
+use crate::cli::utils::apply_quote_defaults;
 use crate::config::AppConfig;
 use crate::jupiter::JupiterBinaryManager;
-use crate::tools;
 
-pub async fn run() -> Result<()> {
-    let cli = Cli::parse();
-    let config = load_configuration(cli.config.clone())?;
-    init_tracing(&config.galileo.global.logging)?;
-
+pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
     if config.galileo.bot.prometheus.enable {
         crate::monitoring::try_init_prometheus(&config.galileo.bot.prometheus.listen)
             .map_err(|err| anyhow!(err))?;
@@ -34,24 +28,39 @@ pub async fn run() -> Result<()> {
     let jupiter_cfg = resolve_jupiter_defaults(config.jupiter.clone(), &config.galileo.global)?;
     let needs_jupiter = matches!(
         cli.command,
-        Command::Jupiter(_) | Command::Quote(_) | Command::SwapInstructions(_)
-    ) || matches!(cli.command, Command::Strategy | Command::StrategyDryRun)
-        && !config.galileo.engine.titan.enable;
+        Command::Jupiter(_)
+            | Command::Quote(_)
+            | Command::SwapInstructions(_)
+            | Command::Strategy
+            | Command::StrategyDryRun
+    );
 
     let launch_overrides =
-        build_launch_overrides(&config.galileo.request_params, &config.galileo.intermedium);
+        build_launch_overrides(&config.galileo.engine.jupiter, &config.galileo.intermedium);
     let base_url = resolve_jupiter_base_url(&config.galileo.bot, &jupiter_cfg);
+    let api_proxy = resolve_jupiter_api_proxy(&config.galileo.engine);
     let bypass_proxy = should_bypass_proxy(&base_url);
-    if needs_jupiter && bypass_proxy {
-        info!(
-            target: "jupiter",
-            base_url = %base_url,
-            "Jupiter API 请求绕过 HTTP 代理"
-        );
-    }
     let mut api_http_builder =
         reqwest::Client::builder().user_agent(crate::jupiter::updater::USER_AGENT);
-    if bypass_proxy {
+    if let Some(proxy_url) = api_proxy {
+        let proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|err| anyhow!("Jupiter API 代理地址无效 {proxy_url}: {err}"))?;
+        if needs_jupiter {
+            info!(
+                target: "jupiter",
+                proxy = %proxy_url,
+                "Jupiter API 请求将通过配置的代理发送"
+            );
+        }
+        api_http_builder = api_http_builder.proxy(proxy);
+    } else if bypass_proxy {
+        if needs_jupiter {
+            info!(
+                target: "jupiter",
+                base_url = %base_url,
+                "Jupiter API 请求绕过 HTTP 代理"
+            );
+        }
         api_http_builder = api_http_builder.no_proxy();
     }
     let api_http_client = api_http_builder.build()?;
@@ -92,7 +101,6 @@ async fn dispatch(
             )
             .await?;
         }
-        Command::Tools(tool) => handle_tool_cmd(tool)?,
         Command::Quote(args) => {
             ensure_running(&manager).await?;
             let input = args.parse_input_pubkey()?;
@@ -103,7 +111,7 @@ async fn dispatch(
             for (k, v) in args.extra {
                 request.extra_query_params.insert(k, v);
             }
-            apply_request_defaults_to_quote(&mut request, &config.galileo.request_params);
+            apply_quote_defaults(&mut request, &config.galileo.engine.jupiter.quote_config);
 
             let quote = api_client.quote(&request).await?;
             println!("{}", serde_json::to_string_pretty(&quote.raw)?);
@@ -115,16 +123,21 @@ async fn dispatch(
             let user = args.parse_user_pubkey()?;
             let mut request = SwapInstructionsRequest::new(quote_value, user);
             if let Some(flag) = args.wrap_sol {
-                request.config.wrap_and_unwrap_sol = flag;
-            } else if let Some(default_flag) = config.galileo.request_params.wrap_and_unwrap_sol {
-                request.config.wrap_and_unwrap_sol = default_flag;
+                request.wrap_and_unwrap_sol = flag;
+            } else {
+                request.wrap_and_unwrap_sol = config
+                    .galileo
+                    .engine
+                    .jupiter
+                    .swap_config
+                    .wrap_and_unwrap_sol;
             }
-            request.config.use_shared_accounts = Some(args.shared_accounts);
+            request.use_shared_accounts = Some(args.shared_accounts);
             if let Some(ref fee) = args.fee_account {
-                request.config.fee_account = Some(args.parse_fee_pubkey(fee)?);
+                request.fee_account = Some(args.parse_fee_pubkey(fee)?);
             }
             if let Some(price) = args.compute_unit_price {
-                request.config.compute_unit_price_micro_lamports =
+                request.compute_unit_price_micro_lamports =
                     Some(ComputeUnitPriceMicroLamports::MicroLamports(price));
             }
 
@@ -143,15 +156,6 @@ async fn dispatch(
     }
 
     Ok(())
-}
-
-fn handle_tool_cmd(cmd: ToolCmd) -> Result<()> {
-    match cmd {
-        ToolCmd::DFlowProbe(DFlowProbeCmd {
-            template,
-            instruction_index,
-        }) => tools::dflow_probe::run(&template, instruction_index),
-    }
 }
 
 trait QuoteArgsExt {

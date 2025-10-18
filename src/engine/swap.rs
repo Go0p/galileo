@@ -6,16 +6,16 @@ use super::error::{EngineError, EngineResult};
 use super::identity::EngineIdentity;
 use super::types::SwapOpportunity;
 use crate::api::{ComputeUnitPriceMicroLamports, JupiterApiClient, SwapInstructionsRequest};
-use crate::config::RequestParamsConfig;
+use crate::config::JupiterSwapConfig;
 
 #[derive(Clone)]
 pub struct SwapInstructionFetcher {
     client: JupiterApiClient,
-    request_defaults: RequestParamsConfig,
+    request_defaults: JupiterSwapConfig,
 }
 
 impl SwapInstructionFetcher {
-    pub fn new(client: JupiterApiClient, request_defaults: RequestParamsConfig) -> Self {
+    pub fn new(client: JupiterApiClient, request_defaults: JupiterSwapConfig) -> Self {
         Self {
             client,
             request_defaults,
@@ -32,16 +32,15 @@ impl SwapInstructionFetcher {
         let mut request =
             SwapInstructionsRequest::new(opportunity.merged_quote.clone(), identity.pubkey);
 
-        let wrap_and_unwrap = self
-            .request_defaults
-            .wrap_and_unwrap_sol
-            .unwrap_or_else(|| identity.wrap_and_unwrap_sol());
-        request.config.wrap_and_unwrap_sol = wrap_and_unwrap;
-        request.config.use_shared_accounts = Some(identity.use_shared_accounts());
-        request.config.skip_user_accounts_rpc_calls = identity.skip_user_accounts_rpc_calls();
+        let wrap_and_unwrap =
+            self.request_defaults.wrap_and_unwrap_sol || identity.wrap_and_unwrap_sol();
+        request.wrap_and_unwrap_sol = wrap_and_unwrap;
+        request.dynamic_compute_unit_limit = self.request_defaults.dynamic_compute_unit_limit;
+        request.use_shared_accounts = Some(identity.use_shared_accounts());
+        request.skip_user_accounts_rpc_calls = identity.skip_user_accounts_rpc_calls();
         if let Some(fee) = identity.fee_account() {
             match solana_sdk::pubkey::Pubkey::from_str(fee) {
-                Ok(pubkey) => request.config.fee_account = Some(pubkey),
+                Ok(pubkey) => request.fee_account = Some(pubkey),
                 Err(err) => {
                     warn!(
                         target: "engine::swap",
@@ -54,7 +53,7 @@ impl SwapInstructionFetcher {
         }
         if let Some(price) = compute_unit_price_override.or(identity.compute_unit_price_override())
         {
-            request.config.compute_unit_price_micro_lamports =
+            request.compute_unit_price_micro_lamports =
                 Some(ComputeUnitPriceMicroLamports::MicroLamports(price));
         }
 

@@ -5,7 +5,7 @@ use solana_sdk::pubkey::Pubkey;
 use tracing::debug;
 
 use crate::api::{JupiterApiClient, QuoteRequest, QuoteResponse};
-use crate::config::RequestParamsConfig;
+use crate::config::JupiterQuoteConfig;
 use crate::strategy::types::TradePair;
 
 use super::error::{EngineError, EngineResult};
@@ -25,11 +25,11 @@ impl QuoteConfig {}
 #[derive(Clone)]
 pub struct QuoteExecutor {
     client: JupiterApiClient,
-    defaults: RequestParamsConfig,
+    defaults: JupiterQuoteConfig,
 }
 
 impl QuoteExecutor {
-    pub fn new(client: JupiterApiClient, defaults: RequestParamsConfig) -> Self {
+    pub fn new(client: JupiterApiClient, defaults: JupiterQuoteConfig) -> Self {
         Self { client, defaults }
     }
 

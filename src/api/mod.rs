@@ -13,14 +13,13 @@ use crate::monitoring::metrics::prometheus_enabled;
 use crate::monitoring::{LatencyMetadata, guard_with_level};
 
 pub mod quote;
-pub mod route_plan_with_metadata;
 pub mod serde_helpers;
 pub mod swap_instructions;
-pub mod transaction_config;
 
 pub use quote::{QuoteRequest, QuoteResponse};
-pub use swap_instructions::{SwapInstructionsRequest, SwapInstructionsResponse};
-pub use transaction_config::ComputeUnitPriceMicroLamports;
+pub use swap_instructions::{
+    ComputeUnitPriceMicroLamports, SwapInstructionsRequest, SwapInstructionsResponse,
+};
 
 #[derive(Clone, Debug)]
 pub struct JupiterApiClient {
@@ -73,18 +72,14 @@ impl JupiterApiClient {
         };
         let guard = guard_with_level("jupiter.quote", latency_level, metadata);
 
-        let prepared = request.to_internal();
         debug!(
             target: "jupiter::quote",
-            input_mint = %prepared.internal.input_mint,
-            output_mint = %prepared.internal.output_mint,
-            amount = prepared.internal.amount,
-            slippage_bps = prepared.internal.slippage_bps,
-            only_direct_routes = prepared.internal.only_direct_routes.unwrap_or(false),
-            restrict_intermediate_tokens = prepared
-                .internal
-                .restrict_intermediate_tokens
-                .unwrap_or(false),
+            input_mint = %request.input_mint,
+            output_mint = %request.output_mint,
+            amount = request.amount,
+            slippage_bps = request.slippage_bps,
+            only_direct_routes = request.only_direct_routes.unwrap_or(false),
+            restrict_intermediate_tokens = request.restrict_intermediate_tokens.unwrap_or(false),
             "开始请求 Jupiter 报价"
         );
 
@@ -92,34 +87,25 @@ impl JupiterApiClient {
             .client
             .get(&url)
             .timeout(self.quote_timeout)
-            .query(&prepared.internal);
-        if let Some(extra) = &prepared.quote_args {
-            http_request = http_request.query(extra);
-        }
-        if !prepared.extra.is_empty() {
-            http_request = http_request.query(&prepared.extra);
+            .query(request);
+        if !request.extra_query_params.is_empty() {
+            http_request = http_request.query(&request.extra_query_params);
         }
 
         trace!(
             target: "jupiter::quote",
-            request = ?prepared.internal,
-            extra = ?prepared.extra,
-            quote_args = ?prepared.quote_args,
+            request = ?request,
+            extra = ?request.extra_query_params,
             "已构造 Jupiter 报价请求"
         );
 
-        let serialized_internal = serde_urlencoded::to_string(&prepared.internal)
+        let serialized_internal = serde_urlencoded::to_string(request)
             .map_err(|err| JupiterError::Schema(format!("序列化报价参数失败: {err}")))?;
         let mut query_pairs: Vec<(String, String)> =
             form_urlencoded::parse(serialized_internal.as_bytes())
                 .into_owned()
                 .collect();
-        if let Some(extra) = &prepared.quote_args {
-            for (key, value) in extra {
-                query_pairs.push((key.clone(), value.clone()));
-            }
-        }
-        for (key, value) in &prepared.extra {
+        for (key, value) in &request.extra_query_params {
             query_pairs.push((key.clone(), value.clone()));
         }
         let final_url = reqwest::Url::parse_with_params(
@@ -229,18 +215,14 @@ impl JupiterApiClient {
         };
         let guard = guard_with_level("jupiter.swap_instructions", latency_level, metadata);
 
-        let wrap_and_unwrap_sol = request.config.wrap_and_unwrap_sol;
-        let use_shared = request.config.use_shared_accounts.unwrap_or(false);
-        let shared_overridden = request.config.use_shared_accounts.is_some();
-        let skip_user_accounts = request.config.skip_user_accounts_rpc_calls;
-        let allow_optimized = request.config.allow_optimized_wrapped_sol_token_account;
-        let quote_in_amount = extract_string(&request.quote_response, "inAmount");
-        let quote_out_amount = extract_string(&request.quote_response, "outAmount");
-        let route_steps = request
-            .quote_response
-            .get("routePlan")
-            .and_then(|value| value.as_array().map(|arr| arr.len()))
-            .unwrap_or(0);
+        let wrap_and_unwrap_sol = request.wrap_and_unwrap_sol;
+        let use_shared = request.use_shared_accounts.unwrap_or(false);
+        let shared_overridden = request.use_shared_accounts.is_some();
+        let skip_user_accounts = request.skip_user_accounts_rpc_calls;
+        let allow_optimized = request.allow_optimized_wrapped_sol_token_account;
+        let quote_in_amount = request.quote_response.in_amount;
+        let quote_out_amount = request.quote_response.out_amount;
+        let route_steps = request.quote_response.route_plan.len();
         debug!(
             target: "jupiter::swap_instructions",
             user = %request.user_public_key,
@@ -249,8 +231,8 @@ impl JupiterApiClient {
             use_shared_accounts = use_shared,
             shared_accounts_overridden = shared_overridden,
             allow_optimized_wrapped_sol = allow_optimized,
-            quote_in_amount = quote_in_amount.as_deref().unwrap_or(""),
-            quote_out_amount = quote_out_amount.as_deref().unwrap_or(""),
+            quote_in_amount,
+            quote_out_amount,
             route_steps,
             "开始请求 Jupiter Swap 指令"
         );
@@ -424,14 +406,6 @@ fn summarize_error_body(body: String) -> String {
         }
         single_line
     }
-}
-
-fn extract_string(root: &Value, key: &str) -> Option<String> {
-    root.get(key).and_then(|value| match value {
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    })
 }
 
 fn prune_nulls(value: &mut Value) {

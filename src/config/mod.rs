@@ -135,12 +135,10 @@ impl Default for cfg::GalileoConfig {
         Self {
             global: cfg::GlobalConfig::default(),
             engine: cfg::EngineConfig::default(),
-            request_params: cfg::RequestParamsConfig::default(),
             intermedium: cfg::IntermediumConfig::default(),
             bot: cfg::BotConfig::default(),
             flashloan: cfg::FlashloanConfig::default(),
             blind_strategy: cfg::BlindStrategyConfig::default(),
-            copy_strategy: cfg::CopyStrategyConfig::default(),
             back_run_strategy: cfg::BackRunStrategyConfig::default(),
         }
     }
@@ -162,22 +160,38 @@ impl Default for cfg::GlobalConfig {
 impl Default for cfg::EngineConfig {
     fn default() -> Self {
         Self {
-            titan: cfg::TitanEngineConfig::default(),
+            jupiter: cfg::JupiterEngineConfig::default(),
         }
     }
 }
 
-impl Default for cfg::TitanEngineConfig {
+impl Default for cfg::JupiterEngineConfig {
     fn default() -> Self {
         Self {
-            enable: false,
-            ws_url: Some("wss://api.titan.exchange/api/v1/ws".to_string()),
-            default_pubkey: Some("Titan11111111111111111111111111111111111111".to_string()),
-            jwt: None,
-            providers: vec!["Titan".to_string()],
-            reverse_slippage_bps: Some(5),
-            interval_ms: None,
-            num_quotes: None,
+            enable: true,
+            api_proxy: None,
+            args_included_dexes: Vec::new(),
+            quote_config: cfg::JupiterQuoteConfig::default(),
+            swap_config: cfg::JupiterSwapConfig::default(),
+        }
+    }
+}
+
+impl Default for cfg::JupiterQuoteConfig {
+    fn default() -> Self {
+        Self {
+            only_direct_routes: false,
+            restrict_intermediate_tokens: true,
+        }
+    }
+}
+
+impl Default for cfg::JupiterSwapConfig {
+    fn default() -> Self {
+        Self {
+            skip_user_accounts_rpc_calls: false,
+            dynamic_compute_unit_limit: true,
+            wrap_and_unwrap_sol: false,
         }
     }
 }
@@ -223,21 +237,6 @@ impl Default for cfg::LoggingConfig {
     }
 }
 
-impl Default for cfg::RequestParamsConfig {
-    fn default() -> Self {
-        Self {
-            included_dexes: Vec::new(),
-            excluded_dexes: Vec::new(),
-            only_direct_routes: false,
-            restrict_intermediate_tokens: true,
-            skip_user_accounts_rpc_calls: false,
-            use_shared_accounts: None,
-            dynamic_compute_unit_limit: true,
-            wrap_and_unwrap_sol: None,
-        }
-    }
-}
-
 impl Default for cfg::IntermediumConfig {
     fn default() -> Self {
         Self {
@@ -255,6 +254,7 @@ impl Default for cfg::BotConfig {
         Self {
             disable_local_binary: false,
             disable_running: false,
+            cpu_affinity: cfg::CpuAffinityConfig::default(),
             request_timeout_ms: default_request_timeout_ms(),
             swap_request_timeout_ms: None,
             landing_timeout_ms: None,
@@ -280,19 +280,6 @@ impl Default for cfg::BlindStrategyConfig {
     fn default() -> Self {
         Self {
             enable: false,
-            memo: String::new(),
-            enable_dexs: Vec::new(),
-            enable_landers: Vec::new(),
-            base_mints: Vec::new(),
-        }
-    }
-}
-
-impl Default for cfg::CopyStrategyConfig {
-    fn default() -> Self {
-        Self {
-            enable: false,
-            template_tx: String::new(),
             memo: String::new(),
             enable_dexs: Vec::new(),
             enable_landers: Vec::new(),

@@ -34,7 +34,12 @@ async fn send_transaction(
     let mut identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
     identity.set_skip_user_accounts_rpc_calls(
-        config.galileo.request_params.skip_user_accounts_rpc_calls,
+        config
+            .galileo
+            .engine
+            .jupiter
+            .swap_config
+            .skip_user_accounts_rpc_calls,
     );
 
     let builder_config = BuilderConfig::new(memo);

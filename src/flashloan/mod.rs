@@ -17,8 +17,6 @@ use tokio::sync::Mutex;
 use crate::api::SwapInstructionsResponse;
 use crate::config::FlashloanMarginfiConfig;
 use crate::engine::{EngineError, EngineIdentity, SwapOpportunity};
-use crate::strategy::compute_associated_token_address;
-
 pub use error::{FlashloanError, FlashloanResult};
 pub use marginfi::{
     MarginfiAccountEnsure, MarginfiFlashloan, build_initialize_instruction,
@@ -27,6 +25,18 @@ pub use marginfi::{
 };
 
 const BALANCE_CACHE_TTL: Duration = Duration::from_millis(500);
+const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
+    solana_sdk::pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+const SPL_TOKEN_PROGRAM_ID: Pubkey =
+    solana_sdk::pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+
+pub(super) fn compute_associated_token_address(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[owner.as_ref(), SPL_TOKEN_PROGRAM_ID.as_ref(), mint.as_ref()],
+        &ASSOCIATED_TOKEN_PROGRAM_ID,
+    )
+    .0
+}
 
 pub struct FlashloanManager {
     rpc: Arc<RpcClient>,

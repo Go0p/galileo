@@ -27,9 +27,6 @@ pub enum Command {
     /// Lander 工具
     #[command(subcommand)]
     Lander(LanderCmd),
-    /// 调试与分析工具
-    #[command(subcommand)]
-    Tools(ToolCmd),
     /// 请求 Jupiter API 报价
     Quote(QuoteCmd),
     #[command(name = "swap-instructions")]
@@ -103,30 +100,6 @@ pub enum LanderCmd {
     /// 使用指定落地器直接发送交易
     #[command(name = "send")]
     Send(LanderSendArgs),
-}
-
-#[derive(Subcommand, Debug)]
-pub enum ToolCmd {
-    /// 比对 DFlow 动态路由指令的编码
-    #[command(name = "dflow-probe")]
-    DFlowProbe(DFlowProbeCmd),
-}
-
-#[derive(Args, Debug)]
-pub struct DFlowProbeCmd {
-    #[arg(
-        long,
-        value_name = "FILE",
-        default_value = "copy_tx/template_tx.json",
-        help = "包含 Jupiter 返回交易模板的 JSON 文件"
-    )]
-    pub template: PathBuf,
-    #[arg(
-        long,
-        default_value_t = 2usize,
-        help = "待解析指令在 JSON instructions 数组中的索引"
-    )]
-    pub instruction_index: usize,
 }
 
 #[derive(Args, Debug)]

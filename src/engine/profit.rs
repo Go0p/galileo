@@ -2,8 +2,6 @@ use rand::prelude::IndexedRandom;
 use serde_json::Value;
 use tracing::debug;
 
-use crate::strategy::types::TradePair;
-
 use super::error::EngineResult;
 use super::types::{DoubleQuote, SwapOpportunity};
 
@@ -91,34 +89,6 @@ impl ProfitEvaluator {
             profit_lamports: profit_u64,
             tip_lamports,
             merged_quote: merged,
-        })
-    }
-
-    pub fn evaluate_titan(
-        &self,
-        amount_in: u64,
-        pair: &TradePair,
-        gross_profit: u64,
-        merged_quote: Value,
-    ) -> Option<SwapOpportunity> {
-        if gross_profit <= self.config.min_profit_threshold_lamports {
-            debug!(
-                target: "engine::profit",
-                profit = gross_profit,
-                threshold = self.config.min_profit_threshold_lamports,
-                "Titan 收益低于阈值"
-            );
-            return None;
-        }
-
-        let tip_lamports = self.tip_calculator.calculate(gross_profit);
-
-        Some(SwapOpportunity {
-            pair: pair.clone(),
-            amount_in,
-            profit_lamports: gross_profit,
-            tip_lamports,
-            merged_quote,
         })
     }
 }

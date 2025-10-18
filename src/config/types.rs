@@ -23,8 +23,6 @@ pub struct GalileoConfig {
     #[serde(default)]
     pub engine: EngineConfig,
     #[serde(default)]
-    pub request_params: RequestParamsConfig,
-    #[serde(default)]
     pub intermedium: IntermediumConfig,
     #[serde(default)]
     pub bot: BotConfig,
@@ -32,8 +30,6 @@ pub struct GalileoConfig {
     pub flashloan: FlashloanConfig,
     #[serde(default)]
     pub blind_strategy: BlindStrategyConfig,
-    #[serde(default)]
-    pub copy_strategy: CopyStrategyConfig,
     #[serde(default)]
     pub back_run_strategy: BackRunStrategyConfig,
 }
@@ -83,27 +79,39 @@ pub struct InstructionConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct EngineConfig {
     #[serde(default)]
-    pub titan: TitanEngineConfig,
+    pub jupiter: JupiterEngineConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct TitanEngineConfig {
+pub struct JupiterEngineConfig {
     #[serde(default)]
     pub enable: bool,
     #[serde(default)]
-    pub ws_url: Option<String>,
+    pub api_proxy: Option<String>,
     #[serde(default)]
-    pub default_pubkey: Option<String>,
+    pub args_included_dexes: Vec<String>,
     #[serde(default)]
-    pub jwt: Option<String>,
+    pub quote_config: JupiterQuoteConfig,
     #[serde(default)]
-    pub providers: Vec<String>,
+    pub swap_config: JupiterSwapConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JupiterQuoteConfig {
     #[serde(default)]
-    pub reverse_slippage_bps: Option<u16>,
+    pub only_direct_routes: bool,
+    #[serde(default = "super::default_true")]
+    pub restrict_intermediate_tokens: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JupiterSwapConfig {
     #[serde(default)]
-    pub interval_ms: Option<u64>,
+    pub skip_user_accounts_rpc_calls: bool,
+    #[serde(default = "super::default_true")]
+    pub dynamic_compute_unit_limit: bool,
     #[serde(default)]
-    pub num_quotes: Option<u32>,
+    pub wrap_and_unwrap_sol: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -146,26 +154,6 @@ pub struct LoggingConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct RequestParamsConfig {
-    #[serde(default)]
-    pub included_dexes: Vec<String>,
-    #[serde(default)]
-    pub excluded_dexes: Vec<String>,
-    #[serde(default)]
-    pub only_direct_routes: bool,
-    #[serde(default = "super::default_true")]
-    pub restrict_intermediate_tokens: bool,
-    #[serde(default)]
-    pub skip_user_accounts_rpc_calls: bool,
-    #[serde(default)]
-    pub use_shared_accounts: Option<bool>,
-    #[serde(default = "super::default_true")]
-    pub dynamic_compute_unit_limit: bool,
-    #[serde(default)]
-    pub wrap_and_unwrap_sol: Option<bool>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct IntermediumConfig {
     #[serde(default)]
     pub load_mints_from_files: Vec<String>,
@@ -185,6 +173,8 @@ pub struct BotConfig {
     pub disable_local_binary: bool,
     #[serde(default)]
     pub disable_running: bool,
+    #[serde(default)]
+    pub cpu_affinity: CpuAffinityConfig,
     #[serde(default = "super::default_request_timeout_ms")]
     pub request_timeout_ms: u64,
     #[serde(default)]
@@ -203,6 +193,18 @@ pub struct BotConfig {
     pub dry_run: bool,
     #[serde(default)]
     pub prometheus: PrometheusConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct CpuAffinityConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub worker_cores: Vec<usize>,
+    #[serde(default)]
+    pub max_blocking_threads: Option<usize>,
+    #[serde(default)]
+    pub strict: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -255,40 +257,6 @@ pub struct BlindBaseMintConfig {
     pub route_types: Vec<String>,
     #[serde(default)]
     pub three_hop_mints: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct CopyStrategyConfig {
-    #[serde(default)]
-    pub enable: bool,
-    #[serde(default)]
-    pub template_tx: String,
-    #[serde(default)]
-    pub memo: String,
-    #[serde(default)]
-    pub enable_dexs: Vec<String>,
-    #[serde(default)]
-    pub enable_landers: Vec<String>,
-    #[serde(default)]
-    pub base_mints: Vec<CopyBaseMintConfig>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct CopyBaseMintConfig {
-    #[serde(default)]
-    pub mint: String,
-    #[serde(default, deserialize_with = "deserialize_trade_size_range")]
-    pub trade_size_range: Vec<u64>,
-    #[serde(default)]
-    pub trade_range_count: Option<u32>,
-    #[serde(default)]
-    pub trade_range_strategy: Option<String>,
-    #[serde(default)]
-    pub process_delay: Option<u64>,
-    #[serde(default)]
-    pub sending_cooldown: Option<u64>,
-    #[serde(default)]
-    pub reverse_amount: Option<u64>,
 }
 
 fn deserialize_trade_size_range<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>

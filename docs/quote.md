@@ -1,224 +1,318 @@
----
-sidebar_label: "Get Quote"
-description: "Start using Jupiter Swap API by getting a Quote."
-title: "Get Quote"
----
+# quote
 
-<head>
-    <title>Get Quote</title>
-    <meta name="twitter:card" content="summary" />
-</head>
-
-:::note
-- Lite URL: `https://lite-api.jup.ag/swap/v1/quote`
-- Pro URL: `https://api.jup.ag/swap/v1/quote`
-
-To upgrade to Pro or understand our rate limiting, please refer to this section.
-- [API Key Setup](/docs/api-setup)
-- [API Rate Limit](/docs/api-rate-limit)
-:::
-
-:::warning Please use the Swap API at your own discretion.
-
-The Jupiter UI at https://jup.ag/ contains multiple safeguards, warnings and default settings to guide our users to trade safer. Jupiter is not liable for losses incurred by users on other platforms.
-
-If you need clarification or support, please reach out to us in [Discord](https://discord.gg/jup).
-:::
-
-:::warning Routing Engine
-The quotes from Swap API are from the Jupiter Metis v1 Routing Engine.
-:::
-
-The Quote API enables you to tap into the Jupiter Metis v1 Routing Engine, which accesses the deep liquidity available within the DEXes of Solana's DeFi ecosystem. In this guide, we will walkthrough how you can get a quote for a specific token pair and other related parameters.
-
-## Let’s Get Started
-
-In this guide, we will be using the Solana web3.js package.
-
-If you have not set up your environment to use the necessary libraries and the connection to the Solana network, please head over to [Environment Setup](/docs/environment-setup).
-
-:::tip API Reference
-To fully utilize the Quote API, check out the [Quote API Reference](/docs/api/swap-api/quote.api.mdx).
-:::
-
-## Quote API
-
-The most common trading pair on Solana is SOL and USDC, to get a quote for this specific token pair, you need to pass in the required parameters such as:
-
-| Parameters | Description |
-| --- | --- |
-| inputMint | The pubkey or token mint address e.g. So11111111111111111111111111111111111111112 |
-| outputMint | The pubkey or token mint address e.g. EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v |
-| amount | The number of **input** tokens before the decimal is applied, also known as the “raw amount” or “integer amount” in lamports for SOL or atomic units for all other tokens. |
-| slippageBps | The number of basis points you can tolerate to lose during time of execution. e.g. 1% = 100bps |
-
-## Get Quote
-
-Using the root URL and parameters to pass in, it is as simple as the example code below!
-
-```jsx
-const quoteResponse = await (
-    await fetch(
-        'https://lite-api.jup.ag/swap/v1/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v&amount=100000000&slippageBps=50&restrictIntermediateTokens=true'
-    )
-  ).json();
-  
-console.log(JSON.stringify(quoteResponse, null, 2));
-```
-
-Example response:
-
-```json
-{
-  "inputMint": "So11111111111111111111111111111111111111112",
-  "inAmount": "100000000",
-  "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-  "outAmount": "16198753",
-  "otherAmountThreshold": "16117760",
-  "swapMode": "ExactIn",
-  "slippageBps": 50,
-  "platformFee": null,
-  "priceImpactPct": "0",
-  "routePlan": [
-    {
-      "swapInfo": {
-        "ammKey": "5BKxfWMbmYBAEWvyPZS9esPducUba9GqyMjtLCfbaqyF",
-        "label": "Meteora DLMM",
-        "inputMint": "So11111111111111111111111111111111111111112",
-        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-        "inAmount": "100000000",
-        "outAmount": "16198753",
-        "feeAmount": "24825",
-        "feeMint": "So11111111111111111111111111111111111111112"
-      },
-      "percent": 100
-    }
-  ],
-  "contextSlot": 299283763,
-  "timeTaken": 0.015257836
-}
-```
-
-:::tip
-`outAmount` refers to the best possible output amount based on the route at time of quote, this means that `slippageBps` does not affect.
-:::
-
-## What’s Next
-
-Now, you are able to get a quote, next steps is to submit a transaction to execute the swap based on the quote given. Let’s go!
-
----
-
-## Additional Resources
-
-### Restrict Intermediate Tokens
-
-`restrictIntermediateTokens` can be set to `true` . If your route is routed through random intermediate tokens, it will fail more frequently. With this, we make sure that your route is only routed through highly liquid intermediate tokens to give you the best price and more stable route.
-
-### Legacy Transactions
-
-All Jupiter swaps are using Versioned Transactions and [Address Lookup Tables](https://docs.solana.com/developing/lookup-tables). However, not all wallets support Versioned Transactions yet, so if you detect a wallet that does not support versioned transactions, you will need to set the `asLegacyTransaction` parameter to `true`.
-
-### Adding Fees
-
-By using the Quote API in your app, you can add a fee to charge your users. You can refer to the `platformFeeBps` parameter and to add it to your quote and in conjuction, add `feeAccount` (it can be any valid token account) to your swap request.
-
-### Direct Routes
-
-In some cases, you may want to restrict the routing to only go through 1 market. You can use the `onlyDirectRoutes` parameter to achieve this. This will ensure routing will only go through 1 market.
-
-:::note
-- If there are no direct routes, there will be no quote.
-- If there is only 1 market but it is illiquid, it will still return the route with the illiquid market.
-:::
-
-:::warning unfavorable trades
-Please be aware that using `onlyDirectRoutes` can often yield unfavorable trades or outcomes.
-:::
-
-### Max Accounts
-
-In some cases, you may want to add more accounts to the transaction for specific use cases, but it might exceed the transaction size limit. You can use the `maxAccounts` parameter to limit the number of accounts in the transaction.
-
-:::warning unfavorable trades
-Please be aware that the misuse of `maxAccounts` can yield unfavorable trades or outcomes.
-:::
-
-:::tip
-- Refer to the [Requote with Lower Max Accounts](/docs/swap-api/requote-with-lower-max-accounts) guide for more information on how to requote and adjust the swap when using `maxAccounts`.
-:::
-
-:::note
-- `maxAccounts` is an estimation and the actual number of accounts may vary.
-- `maxAccounts` only applies to the total number of accounts of the inner swaps in the swap instruction and not any of the setup, cleanup or other instructions (see the example below).
-- We recommend setting `maxAccounts` to 64
-- Keep `maxAccounts` as large as possible, only reduce `maxAccounts` if you exceed the transaction size limit.
-- If `maxAccounts` is set too low, example to 30, the computed route may drop DEXes/AMMs like Meteora DLMM that require more than 30 accounts.
-
-<br/>
-**Jupiter has 2 types of routing instructions**, if you plan to limit `maxAccounts`, you will need to account for if the market is routable with [ALTs](https://docs.solana.com/developing/lookup-tables) or not:
-- **`Routing Instruction`** (Simple Routing): The market is still new, and we do not have ALTs set up for the market, hence the number of accounts required is higher as there are more accounts required.
-- **`Shared Accounts Routing Instruction`**: The market has sufficient liquidity (and has been live for a while), and we have [ALTs](https://docs.solana.com/developing/lookup-tables) set up for the market to be used in the routing instruction, hence the number of accounts required is lower as there are less accounts required.
-:::
-
-<details>
-    <summary>
-        <div>
-            <div>
-                <b>Counting the accounts using an example transaction</b>
-            </div>
-        </div>
-    </summary>
-
-[In this transaction](https://solscan.io/tx/2xpiniSn5z61hE6gB6EUaeRZCqeg8rLBEbiSnAjSD28tjVTSpBogSLfrMRaJiDzuqDyZ8v49Z7WL2TKvGQVwYbB7):
-
-<img src="/dev/max_accounts_stabble.png" alt="Max Accounts Stabble Example" style={{ width: "50%" }} />
-<img src="/dev/max_accounts_lifinity_v2.png" alt="Max Accounts Lifinity V2 Example" style={{ width: "50%" }} />
-<img src="/dev/max_accounts_shared_accounts_route.png" alt="Max Accounts Shared Accounts Route Example" style={{ width: "50%" }} />
-
-- You can see that there are a total of 2 inner swaps where the number of accounts respectively are
-  - Stabble Stable Swap: 12
-  - Lifinity Swap V2: 13
-  - Total: 25
--  The `maxAccounts` parameter is to control this value - to limit the total number of accounts in the inner swaps.
-- It doesn’t take into the consideration of a few things:
-  - Each of the inner swap's program address, so 2 in this case.
-  - Top level routing instruction accounts where in this case Shared Accounts Route is 13 and Route is 9.
-  - There are also other accounts that are required to set up, clean up, etc which are not counted in the `maxAccounts` parameter
+> Request for a quote to be used in `POST /swap`
 
 
+## OpenAPI
 
-</details>
+````yaml openapi-spec/swap/swap.yaml get /quote
+paths:
+  path: /quote
+  method: get
+  servers:
+    - url: https://lite-api.jup.ag/swap/v1
+      description: Free tier API endpoint with rate limits
+    - url: https://api.jup.ag/swap/v1
+      description: >-
+        Paid tier API endpoint with higher rate limits to be used with an API
+        Key
+    - url: https://preprod-quote-api.jup.ag/
+      description: This is a staging endpoint for tests
+  request:
+    security: []
+    parameters:
+      path: {}
+      query:
+        inputMint:
+          schema:
+            - type: string
+              required: true
+        outputMint:
+          schema:
+            - type: string
+              required: true
+        amount:
+          schema:
+            - type: integer
+              required: true
+              description: |
+                - Raw amount to swap (before decimals)
+                - Input Amount if `SwapMode=ExactIn`
+                - Output Amount if `SwapMode=ExactOut`
+        slippageBps:
+          schema:
+            - type: integer
+              description: >
+                - Default: 50
 
+                - This is threshold denoted in basis points.
 
-<details>
-    <summary>
-        <div>
-            <div>
-                <b>List of DEXes and their required accounts</b>
-            </div>
-        </div>
-    </summary>
+                - If exact in and output amount exceeds the threshold, then the
+                swap transaction will fail.
+              default: 50
+        swapMode:
+          schema:
+            - type: enum<string>
+              enum:
+                - ExactIn
+                - ExactOut
+              description: >
+                - ExactOut is for supporting use cases where you need an exact
+                output amount
 
-Notes:
-- Values in the table are only estimations and the actual number of accounts may vary.
-- Min accounts are needed when we have already created the necessary [ALTs](https://docs.solana.com/developing/lookup-tables) for a specific pool resulting in less accounts needed in a Shared Accounts Routing context.
-- Sanctum and Sanctum Infinity are unique, and their accounts are dynamic.
+                - In the case of `ExactIn`, the slippage is on the output token
 
-| DEX | Max | Min |
-| --- | --- | --- |
-| Meteora DLMM | 47 | 19 |
-| Meteora | 45 | 18 |
-| Moonshot | 37 | 15 |
-| Obric | 30 | 12 |
-| Orca Whirlpool | 30 | 12 |
-| Pumpfun AMM | 42 | 17 |
-| Pumpfun Bonding Curve | 40 | 16 |
-| Raydium | 45 | 18 |
-| Raydium CLMM | 45 | 19 |
-| Raydium CPMM | 37 | 14 |
-| Sanctum | 80 | 80 |
-| Sanctum Infinity | 80 | 80 |
-| Solfi | 22 | 9 |
+                - In the case of `ExactOut`, the slippage is on the input token
 
-</details>
+                - Not all AMMs support `ExactOut`: Currently only Orca
+                Whirlpool, Raydium CLMM, Raydium CPMM
+
+                - We do not recommend using `ExactOut` for most use cases
+              default: ExactIn
+        dexes:
+          schema:
+            - type: array
+              items:
+                allOf:
+                  - type: string
+              description: >
+                - Multiple DEXes can be pass in by comma separating them
+
+                - For example: `dexes=Raydium,Orca+V2,Meteora+DLMM`
+
+                - If a DEX is indicated, the route will **only use** that DEX
+
+                - Full list of DEXes here:
+                https://lite-api.jup.ag/swap/v1/program-id-to-label
+        excludeDexes:
+          schema:
+            - type: array
+              items:
+                allOf:
+                  - type: string
+              description: >
+                - Multiple DEXes can be pass in by comma separating them
+
+                - For example: `excludeDexes=Raydium,Orca+V2,Meteora+DLMM`
+
+                - If a DEX is indicated, the route will **not use** that DEX
+
+                - Full list of DEXes here:
+                https://lite-api.jup.ag/swap/v1/program-id-to-label
+        restrictIntermediateTokens:
+          schema:
+            - type: boolean
+              description: >
+                - Restrict intermediate tokens within a route to a set of more
+                stable tokens
+
+                - This will help to reduce exposure to potential high slippage
+                routes
+              default: true
+        onlyDirectRoutes:
+          schema:
+            - type: boolean
+              description: |
+                - Direct route limits Jupiter routing to single hop routes only
+                - This may result in worse routes
+              default: false
+        asLegacyTransaction:
+          schema:
+            - type: boolean
+              description: >
+                - Instead of using versioned transaction, this will use the
+                legacy transaction
+              default: false
+        platformFeeBps:
+          schema:
+            - type: integer
+              description: >
+                - Take fees in basis points
+
+                - If `platformFeeBps` is passed in, the `feeAccount` in `/swap`
+                must be passed as well
+        maxAccounts:
+          schema:
+            - type: integer
+              description: >
+                - Rough estimate of the max accounts to be used for the quote
+
+                - Useful if composing your own transaction or to be more precise
+                in resource accounting for better routes
+              default: 64
+        instructionVersion:
+          schema:
+            - type: enum<string>
+              enum:
+                - V1
+                - V2
+              description: |
+                - The version of instruction to use in the swap program
+              default: V1
+        dynamicSlippage:
+          schema:
+            - type: boolean
+              description: >
+                - No longer applicable, only required to pass in via `/swap`
+                endpoint
+              default: false
+      header: {}
+      cookie: {}
+    body: {}
+  response:
+    '200':
+      application/json:
+        schemaArray:
+          - type: object
+            properties:
+              inputMint:
+                allOf:
+                  - type: string
+              inAmount:
+                allOf:
+                  - type: string
+              outputMint:
+                allOf:
+                  - type: string
+              outAmount:
+                allOf:
+                  - type: string
+                    description: >
+                      - Calculated output amount from routing engine
+
+                      - The value includes platform fees and DEX fees, excluding
+                      slippage
+              otherAmountThreshold:
+                allOf:
+                  - type: string
+                    description: >
+                      - Calculated minimum output amount after accounting for
+                      `slippageBps` on the `outAmount` value
+
+                      - Not used by `/swap` endpoint to build transaction
+              swapMode:
+                allOf:
+                  - $ref: '#/components/schemas/SwapMode'
+                    required: true
+              slippageBps:
+                allOf:
+                  - type: integer
+                    format: uint16
+                    minimum: 0
+              platformFee:
+                allOf:
+                  - $ref: '#/components/schemas/PlatformFee'
+              priceImpactPct:
+                allOf:
+                  - type: string
+              routePlan:
+                allOf:
+                  - type: array
+                    items:
+                      $ref: '#/components/schemas/RoutePlanStep'
+              contextSlot:
+                allOf:
+                  - type: integer
+                    format: uint64
+              timeTaken:
+                allOf:
+                  - type: number
+            refIdentifier: '#/components/schemas/QuoteResponse'
+            requiredProperties:
+              - inputMint
+              - outputMint
+              - inAmount
+              - outAmount
+              - otherAmountThreshold
+              - swapMode
+              - slippageBps
+              - priceImpactPct
+              - routePlan
+        examples:
+          example:
+            value:
+              inputMint: <string>
+              inAmount: <string>
+              outputMint: <string>
+              outAmount: <string>
+              otherAmountThreshold: <string>
+              swapMode: ExactIn
+              slippageBps: 1
+              platformFee:
+                amount: <string>
+                feeBps: 123
+              priceImpactPct: <string>
+              routePlan:
+                - swapInfo:
+                    ammKey: <string>
+                    label: <string>
+                    inputMint: <string>
+                    outputMint: <string>
+                    inAmount: <string>
+                    outAmount: <string>
+                    feeAmount: <string>
+                    feeMint: <string>
+                  percent: 123
+                  bps: 123
+              contextSlot: 123
+              timeTaken: 123
+        description: Successful response to be used in `/swap`
+  deprecated: false
+  type: path
+components:
+  schemas:
+    SwapMode:
+      type: string
+      enum:
+        - ExactIn
+        - ExactOut
+    PlatformFee:
+      type: object
+      properties:
+        amount:
+          type: string
+        feeBps:
+          type: integer
+          format: uint16
+    RoutePlanStep:
+      type: object
+      properties:
+        swapInfo:
+          $ref: '#/components/schemas/SwapInfo'
+        percent:
+          type: integer
+          format: uint8
+        bps:
+          type: integer
+          format: uint16
+      required:
+        - swapInfo
+    SwapInfo:
+      type: object
+      required:
+        - ammKey
+        - inputMint
+        - outputMint
+        - inAmount
+        - outAmount
+        - feeAmount
+        - feeMint
+      properties:
+        ammKey:
+          type: string
+        label:
+          type: string
+        inputMint:
+          type: string
+        outputMint:
+          type: string
+        inAmount:
+          type: string
+        outAmount:
+          type: string
+        feeAmount:
+          type: string
+        feeMint:
+          type: string
+
+````

@@ -1,350 +1,585 @@
----
-sidebar_label: "Build Swap Transaction"
-description: "Jupiter Swap API helps you to build your swap transaction using the quote."
-title: "Build Swap Transaction"
----
-
-import Tabs from '@theme/Tabs';
-import TabItem from '@theme/TabItem';
-
-<head>
-    <title>Build Swap Transaction</title>
-    <meta name="twitter:card" content="summary" />
-</head>
-
-:::note
-- Lite URL: `https://lite-api.jup.ag/swap/v1/swap`
-- Pro URL: `https://api.jup.ag/swap/v1/swap`
-
-To upgrade to Pro or understand our rate limiting, please refer to this section.
-- [API Key Setup](/docs/api-setup)
-- [API Rate Limit](/docs/api-rate-limit)
-:::
-
-The Swap API is one of the ways for you to interact with the Jupiter Swap Aggregator program. Before you send a transaction to the network, you will need to build the transaction that defines the instructions to execute and accounts to read/write to. 
-
-It can be complex to handle this yourself, but good news! Most of our APIs and SDKs just handles it for you, so you get a response with the transaction to be prepared and sent to the network.
-
-:::tip Use Swap API to handle it for you or ...
-
-If you are looking to interact with the Jupiter Swap Aggregator program in a different way, check out the other guides:
-
-#### Swap Instructions
-To compose with instructions and build your own transaction, [read how to use the `/swap-instructions` in this section](#build-your-own-transaction-with-instructions).
-
-#### Flash Fill or Cross Program Invocation (CPI)
-To interact with your own Solana program, [read how to use the **Flash Fill method** or **CPI** in this section](#build-your-own-transaction-with-flash-fill-or-cpi).
-:::
-
-## Let’s Get Started
-
-In this guide, we will pick up from where [**Get Quote**](./1-get-quote.md) guide has left off.
-
-If you have not set up your environment to use the necessary libraries, the RPC connection to the network and successfully get a quote from the Quote API, please start at [Environment Setup](/docs/environment-setup) or [get quote](./1-get-quote.md).
-
-:::tip API Reference
-To fully utilize the Swap API, check out the [Swap API or Swap Instructions Reference](/docs/api/swap-api/swap.api.mdx).
-:::
-
-## Swap API
-
-From the previous guide on getting a quote, now using the quote response and your wallet, you can receive a **serialized swap transaction** that needs to be prepared and signed before sending to the network.
-
-## Get Serialized Transaction
-
-Using the root URL and parameters to pass in, it is as simple as the example code below!
-
-:::tip Optimizing for Transaction Landing is super super important!
-This code block includes additional parameters that our Swap API supports, such as estimating compute units, priority fees and slippage, to optimize for transaction landing.
-
-To understand how these parameters help, the next step, [Send Swap Transaction guide](./3-send-swap-transaction.md) will discuss them.
-:::
-
-```jsx
-const swapResponse = await (
-await fetch('https://lite-api.jup.ag/swap/v1/swap', {
-    method: 'POST',
-    headers: {
-    'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-    quoteResponse,
-    userPublicKey: wallet.publicKey,
-    
-    // ADDITIONAL PARAMETERS TO OPTIMIZE FOR TRANSACTION LANDING
-    // See next guide to optimize for transaction landing
-    dynamicComputeUnitLimit: true,
-    dynamicSlippage: true,
-    prioritizationFeeLamports: {
-          priorityLevelWithMaxLamports: {
-            maxLamports: 1000000,
-            priorityLevel: "veryHigh"
-          }
-        }
-    })
-})
-).json();
-
-console.log(swapResponse);
-```
-
-From the above example, you should see this response.
-
-```json
-{
-    swapTransaction: 'AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQAGDkS+3LuGTbs......+/oD9qb31dH6i0QZ2IHELXUX3Y1YeW79p9Stkqk12z4yvZFJiQ4GCQwLBwYQBgUEDggNTQ==',
-    lastValidBlockHeight: 279632475,
-    prioritizationFeeLamports: 9999,
-    computeUnitLimit: 388876,
-    prioritizationType: {
-        computeBudget: { 
-            microLamports: 25715,
-            estimatedMicroLamports: 785154 
-        }
-    },
-    dynamicSlippageReport: {
-        slippageBps: 50,
-        otherAmount: 20612318,
-        simulatedIncurredSlippageBps: -18,
-        amplificationRatio: '1.5',
-        categoryName: 'lst',
-        heuristicMaxSlippageBps: 100
-    },
-    simulationError: null
-}
-```
-
-## What’s Next
-
-Now, you are able to get a quote and use our Swap API to build the swap transaction for you. Next steps is to proceed to prepare and sign the transaction and send the signed transaction to the network.
-
-**[Let’s go sign and send!](./3-send-swap-transaction.md)**
-
----
-
-## Additional Resources
-
-### Build Your Own Transaction With Instructions
-
-If you prefer to compose with instructions instead of the provided transaction that is returned from the `/swap` endpoint (like the above example). You can post to `/swap-instructions` instead, it takes the same parameters as the `/swap` endpoint but returns you the instructions rather than the serialized transaction.
-
-:::note
-In some cases, you may add more accounts to the transaction, which may exceed the transaction size limits. To work around this, you can use the `maxAccounts` parameter in `/quote` endpoint to limit the number of accounts in the transaction.
-
-[Refer to the GET /quote's `maxAccounts` guide for more details.](/docs/swap-api/get-quote#max-accounts)
-:::
-
-<details>
-    <summary>
-        <div>
-            <div>
-                <b>/swap-instructions code snippet</b>
-            </div>
-        </div>
-    </summary>
-Example code snippet of using `/swap-instruction`
-
-```jsx
-const instructions = await (
-    await fetch('https://lite-api.jup.ag/swap/v1/swap-instructions', {
-    method: 'POST',
-    headers: {
-        'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-        quoteResponse,
-        userPublicKey: wallet.publicKey,
-    })
-    })
-).json();
-
-if (instructions.error) {
-    throw new Error("Failed to get swap instructions: " + instructions.error);
-}
-
-const {
-    tokenLedgerInstruction, // If you are using `useTokenLedger = true`.
-    computeBudgetInstructions, // The necessary instructions to setup the compute budget.
-    setupInstructions, // Setup missing ATA for the users.
-    swapInstruction: swapInstructionPayload, // The actual swap instruction.
-    cleanupInstruction, // Unwrap the SOL if `wrapAndUnwrapSol = true`.
-    addressLookupTableAddresses, // The lookup table addresses that you can use if you are using versioned transaction.
-} = instructions;
-
-const deserializeInstruction = (instruction) => {
-    return new TransactionInstruction({
-    programId: new PublicKey(instruction.programId),
-    keys: instruction.accounts.map((key) => ({
-        pubkey: new PublicKey(key.pubkey),
-        isSigner: key.isSigner,
-        isWritable: key.isWritable,
-    })),
-    data: Buffer.from(instruction.data, "base64"),
-    });
-};
-
-const getAddressLookupTableAccounts = async (
-    keys: string[]
-): Promise<AddressLookupTableAccount[]> => {
-    const addressLookupTableAccountInfos =
-    await connection.getMultipleAccountsInfo(
-        keys.map((key) => new PublicKey(key))
-    );
-
-    return addressLookupTableAccountInfos.reduce((acc, accountInfo, index) => {
-    const addressLookupTableAddress = keys[index];
-    if (accountInfo) {
-        const addressLookupTableAccount = new AddressLookupTableAccount({
-        key: new PublicKey(addressLookupTableAddress),
-        state: AddressLookupTableAccount.deserialize(accountInfo.data),
-        });
-        acc.push(addressLookupTableAccount);
-    }
-
-    return acc;
-    }, new Array<AddressLookupTableAccount>());
-};
-
-const addressLookupTableAccounts: AddressLookupTableAccount[] = [];
-
-addressLookupTableAccounts.push(
-    ...(await getAddressLookupTableAccounts(addressLookupTableAddresses))
-);
-
-const blockhash = (await connection.getLatestBlockhash()).blockhash;
-const messageV0 = new TransactionMessage({
-    payerKey: payerPublicKey,
-    recentBlockhash: blockhash,
-    instructions: [
-    // uncomment if needed: ...setupInstructions.map(deserializeInstruction),
-    deserializeInstruction(swapInstructionPayload),
-    // uncomment if needed: deserializeInstruction(cleanupInstruction),
-    ],
-}).compileToV0Message(addressLookupTableAccounts);
-const transaction = new VersionedTransaction(messageV0);
-```
-</details>
-
-### Build Your Own Transaction With Flash Fill Or CPI
-
-If you prefer to interact with the Jupiter Swap Aggregator program with your own on-chain program. There are 2 ways to do it, typically on-chain program call **Cross Program Invocation (CPI)** to interact with each other, we also have another method called **Flash Fill** built by Jupiter (due to limitations of CPI in the past).
-
-:::info CPI is now recommended!
-As of January 2025, Jupiter Swap via CPI is recommended for most users.
-
-[The `Loosen CPI restriction` feature has been deployed on Solana, you can read more here](https://github.com/solana-labs/solana/issues/26641).
-:::
-
-:::tip Why Flash Fill?
-
-With Jupiter's complex routing, best prices comes at a cost. It often means more compute resources and accounts are required as it would route across multiple DEXes in one transaction.
-
-Solana transactions are limited to 1232 bytes, Jupiter is using [Address Lookup Tables (ALTs)](https://docs.solana.com/developing/lookup-tables) to include more accounts in one transaction. However, the CPI method cannot use ALTs, which means when you add more accounts to a Jupiter Swap transaction, it will likely fail if it exceeds the transaction size limits.
-
-**Flash Fill allows the use of Versioned Transaction and ALTs**, hence, reducing the total accounts used for a Jupiter Swap transaction.
-:::
-
-<details>
-    <summary>
-        <div>
-            <div>
-                <b>CPI References</b>
-            </div>
-        </div>
-    </summary>
-
-**A CPI transaction will be composed of these instructions:**
-1. Borrow enough SOL from the program to open a wSOL account that the program owns.
-2. Swap X token from the user to wSOL on Jupiter via CPI.
-3. Close the wSOL account and send it to the program.
-4. The program then transfers the SOL back to the user.
-
-**Links and Resources:**
-- https://github.com/jup-ag/jupiter-cpi-swap-example
-- https://github.com/jup-ag/sol-swap-cpi
-
-<details>
-    <summary>
-        <div>
-            <div>
-                <b>To ease integration via CPI, you may add the following crate <a href="https://github.com/jup-ag/jupiter-cpi">jupiter-cpi</a> to your program.</b>
-            </div>
-        </div>
-    </summary>
-
-In cargo.toml<br />
-
-```toml
-[dependencies]
-jupiter-cpi = { git = "https://github.com/jup-ag/jupiter-cpi", rev = "5eb8977" }
-```
-
-In your code
-
-```rust
-use jupiter_cpi;
-...
-
-let signer_seeds: &[&[&[u8]]] = &[...];
-
-// Pass accounts to context one-by-one and construct accounts here
-// Or in practise, it may be easier to use remaining_accounts
-// https://book.anchor-lang.com/anchor_in_depth/the_program_module.html
-
-let accounts = jupiter_cpi::cpi::accounts::SharedAccountsRoute {
-    token_program: ,
-    program_authority: ,
-    user_transfer_authority: ,
-    source_token_account: ,
-    program_source_token_account: ,
-    program_destination_token_account: ,
-    destination_token_account: ,
-    source_mint: ,
-    destination_mint: ,
-    platform_fee_account: ,
-    token_2022_program: ,
-};
-let cpi_ctx = CpiContext::new_with_signer(
-    ctx.accounts.jup.to_account_info(),
-    accounts,
-    signer_seeds,
-);
-
-jupiter_cpi::cpi::shared_accounts_route(
-    cpi_ctx,
-    id,
-    route_plan,
-    in_amount,
-    quoted_out_amount,
-    slippage_bps,
-    platform_fee_bps,
-);
-
-...
-```
-
-</details>
-
-</details>
-
-<details>
-    <summary>
-        <div>
-            <div>
-                <b>Flash Fill References</b>
-            </div>
-        </div>
-    </summary>
-
-**A Flash Fill transaction will be composed of these instructions:**
-
-1. Borrow enough SOL for opening the wSOL account from this program.
-2. Create the wSOL account for the borrower.
-3. Swap X token to wSOL.
-4. Close the wSOL account and send it to the borrower.
-5. Repay the SOL for opening the wSOL account back to this program.
-
-**Links and resources:**
-- https://github.com/jup-ag/sol-swap-flash-fill
-
-</details>
+# swap-instructions
+
+> Request for swap instructions that you can use from the quote you get from `/quote`
+
+
+## OpenAPI
+
+````yaml openapi-spec/swap/swap.yaml post /swap-instructions
+paths:
+  path: /swap-instructions
+  method: post
+  servers:
+    - url: https://lite-api.jup.ag/swap/v1
+      description: Free tier API endpoint with rate limits
+    - url: https://api.jup.ag/swap/v1
+      description: >-
+        Paid tier API endpoint with higher rate limits to be used with an API
+        Key
+    - url: https://preprod-quote-api.jup.ag/
+      description: This is a staging endpoint for tests
+  request:
+    security: []
+    parameters:
+      path: {}
+      query: {}
+      header: {}
+      cookie: {}
+    body:
+      application/json:
+        schemaArray:
+          - type: object
+            properties:
+              userPublicKey:
+                allOf:
+                  - type: string
+              payer:
+                allOf:
+                  - description: >
+                      - Allow a custom payer to pay for the transaction fees and
+                      rent of token accounts
+
+                      - Note that users can close their ATAs elsewhere and have
+                      you reopen them again, your fees should account for this
+                    type: string
+              wrapAndUnwrapSol:
+                allOf:
+                  - description: >
+                      - To automatically wrap/unwrap SOL in the transaction, as
+                      WSOL is an SPL token while native SOL is not
+
+                      - When true, it will strictly use SOL amount to wrap it to
+                      swap, and each time after you swap, it will unwrap all
+                      WSOL back to SOL
+
+                      - When false, it will strictly use WSOL amount to swap,
+                      and each time after you swap, it will not unwrap the WSOL
+                      back to SOL
+
+                      - To set this parameter to false, you need to have the
+                      WSOL token account initialized
+
+                      - Parameter will be ignored if `destinationTokenAccount`
+                      is set because the `destinationTokenAccount` may belong to
+                      a different user that we have no authority to close
+                    type: boolean
+                    default: true
+              useSharedAccounts:
+                allOf:
+                  - description: >
+                      - The default is determined dynamically by the routing
+                      engine, allowing us to optimize for compute units, etc
+
+                      - This enables the usage of shared program accounts, this
+                      is essential as complex routing will require multiple
+                      intermediate token accounts which the user might not have
+
+                      - If true, you do not need to handle the creation of
+                      intermediate token accounts for the user
+
+                      - Do note, shared accounts route will fail on some new
+                      AMMs (low liquidity token)
+                    type: boolean
+              feeAccount:
+                allOf:
+                  - description: >
+                      - An initialized token account that will be used to
+                      collect fees
+
+                      - The mint of the token account **can only be either the
+                      input or output mint of the swap**
+
+                      - Swap API no longer requires the use of the Referral
+                      Program
+
+                      - If `platformFeeBps` is passed in `/quote`, the
+                      `feeAccount` must be passed as well
+                    type: string
+              trackingAccount:
+                allOf:
+                  - description: >
+                      - Specify any public key that belongs to you to track the
+                      transactions
+
+                      - Useful for integrators to get all the swap transactions
+                      from this public key
+
+                      - Query the data using a block explorer like
+                      Solscan/SolanaFM or query like Dune/Flipside
+                    type: string
+              prioritizationFeeLamports:
+                allOf:
+                  - description: >
+                      - To specify a level or amount of additional fees to
+                      prioritize the transaction
+
+                      - It can be used for EITHER priority fee OR Jito tip (not
+                      both at the same time)
+
+                      - If you want to include both, you will need to use
+                      `/swap-instructions` to add both at the same time
+
+                      - Defaults to `auto`, but preferred to use
+                      `priorityLevelWithMaxLamports` as it may be more accurate
+                      when accounting local fee market
+
+                      - Fixed lamports can be passed in as an integer in the
+                      `prioritizationFeeLamports` parameter
+                    oneOf:
+                      - $ref: '#/components/schemas/PriorityLevelWithMaxLamports'
+                      - $ref: '#/components/schemas/JitoTipLamports'
+                      - $ref: '#/components/schemas/JitoTipLamportsWithPayer'
+              asLegacyTransaction:
+                allOf:
+                  - description: >
+                      - Builds a legacy transaction rather than the default
+                      versioned transaction
+
+                      - Used together with `asLegacyTransaction` in `/quote`,
+                      otherwise the transaction might be too large
+                    type: boolean
+                    default: false
+              destinationTokenAccount:
+                allOf:
+                  - description: >
+                      - Public key of a token account that will be used to
+                      receive the token out of the swap
+
+                      - If not provided, the signer's token account will be used
+
+                      - If provided, we assume that the token account is already
+                      initialized
+                    type: string
+              dynamicComputeUnitLimit:
+                allOf:
+                  - description: >
+                      - When enabled, it will do a swap simulation to get the
+                      compute unit used and set it in ComputeBudget's compute
+                      unit limit
+
+                      - This incurs one extra RPC call to simulate this
+
+                      - We recommend to enable this to estimate compute unit
+                      correctly and reduce priority fees needed or have higher
+                      chance to be included in a block
+                    type: boolean
+                    default: false
+              skipUserAccountsRpcCalls:
+                allOf:
+                  - description: >
+                      - When enabled, it will not do any additional RPC calls to
+                      check on required accounts
+
+                      - The returned swap transaction will still attempt to
+                      create required accounts regardless if it exists or not
+                    type: boolean
+                    default: false
+              dynamicSlippage:
+                allOf:
+                  - description: >
+                      - When enabled, it estimates slippage and apply it in the
+                      swap transaction directly, overwriting the `slippageBps`
+                      parameter in the quote response.
+
+                      - This is no longer maintained, we are focusing efforts on
+                      RTSE on Ultra Swap API
+                    type: boolean
+                    default: false
+              computeUnitPriceMicroLamports:
+                allOf:
+                  - description: >
+                      - To use an exact compute unit price to calculate priority
+                      fee
+
+                      - `computeUnitLimit (1400000) *
+                      computeUnitPriceMicroLamports`
+
+                      - We recommend using `prioritizationFeeLamports` and
+                      `dynamicComputeUnitLimit` instead of passing in your own
+                      compute unit price
+                    type: integer
+                    format: uint64
+              blockhashSlotsToExpiry:
+                allOf:
+                  - description: >
+                      - Pass in the number of slots we want the transaction to
+                      be valid for
+
+                      - Example: If you pass in 10 slots, the transaction will
+                      be valid for ~400ms * 10 = approximately 4 seconds before
+                      it expires
+                    type: integer
+                    format: uint8
+              quoteResponse:
+                allOf:
+                  - $ref: '#/components/schemas/QuoteResponse'
+            required: true
+            refIdentifier: '#/components/schemas/SwapRequest'
+            requiredProperties:
+              - userPublicKey
+              - quoteResponse
+            example:
+              userPublicKey: jdocuPgEAjMfihABsPgKEvYtsmMzjUHeq9LX4Hvs7f3
+              quoteResponse:
+                inputMint: So11111111111111111111111111111111111111112
+                inAmount: '1000000'
+                outputMint: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+                outAmount: '125630'
+                otherAmountThreshold: '125002'
+                swapMode: ExactIn
+                slippageBps: 50
+                platformFee: null
+                priceImpactPct: '0'
+                routePlan:
+                  - swapInfo:
+                      ammKey: AvBSC1KmFNceHpD6jyyXBV6gMXFxZ8BJJ3HVUN8kCurJ
+                      label: Obric V2
+                      inputMint: So11111111111111111111111111111111111111112
+                      outputMint: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+                      inAmount: '1000000'
+                      outAmount: '125630'
+                      feeAmount: '5'
+                      feeMint: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+                    percent: 100
+              prioritizationFeeLamports:
+                priorityLevelWithMaxLamports:
+                  maxLamports: 10000000
+                  priorityLevel: veryHigh
+              dynamicComputeUnitLimit: true
+        examples:
+          example:
+            value:
+              userPublicKey: jdocuPgEAjMfihABsPgKEvYtsmMzjUHeq9LX4Hvs7f3
+              quoteResponse:
+                inputMint: So11111111111111111111111111111111111111112
+                inAmount: '1000000'
+                outputMint: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+                outAmount: '125630'
+                otherAmountThreshold: '125002'
+                swapMode: ExactIn
+                slippageBps: 50
+                platformFee: null
+                priceImpactPct: '0'
+                routePlan:
+                  - swapInfo:
+                      ammKey: AvBSC1KmFNceHpD6jyyXBV6gMXFxZ8BJJ3HVUN8kCurJ
+                      label: Obric V2
+                      inputMint: So11111111111111111111111111111111111111112
+                      outputMint: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+                      inAmount: '1000000'
+                      outAmount: '125630'
+                      feeAmount: '5'
+                      feeMint: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+                    percent: 100
+              prioritizationFeeLamports:
+                priorityLevelWithMaxLamports:
+                  maxLamports: 10000000
+                  priorityLevel: veryHigh
+              dynamicComputeUnitLimit: true
+  response:
+    '200':
+      application/json:
+        schemaArray:
+          - type: object
+            properties:
+              otherInstructions:
+                allOf:
+                  - description: >
+                      - If you set jito tips using the
+                      `prioritizationFeeLamports` parameter, you will see a
+                      custom tip instruction to Jito here.
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Instruction'
+              computeBudgetInstructions:
+                allOf:
+                  - description: |
+                      - To setup the compute budget for the transaction.
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Instruction'
+              setupInstructions:
+                allOf:
+                  - description: |
+                      - To setup required token accounts for the users.
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Instruction'
+              swapInstruction:
+                allOf:
+                  - description: |
+                      - The actual swap instruction.
+                    $ref: '#/components/schemas/Instruction'
+              cleanupInstruction:
+                allOf:
+                  - description: |
+                      - To wrap and unwrap the SOL.
+                    $ref: '#/components/schemas/Instruction'
+              addressLookupTableAddresses:
+                allOf:
+                  - description: >
+                      - The lookup table addresses if you are using versioned
+                      transaction.
+                    type: array
+                    items:
+                      type: string
+            refIdentifier: '#/components/schemas/SwapInstructionsResponse'
+            requiredProperties:
+              - computeBudgetInstructions
+              - otherInstructions
+              - setupInstructions
+              - swapInstruction
+              - addressLookupTableAddresses
+        examples:
+          example:
+            value:
+              otherInstructions:
+                - programId: <string>
+                  accounts:
+                    - pubkey: <string>
+                      isSigner: true
+                      isWritable: true
+                  data: <string>
+              computeBudgetInstructions:
+                - programId: <string>
+                  accounts:
+                    - pubkey: <string>
+                      isSigner: true
+                      isWritable: true
+                  data: <string>
+              setupInstructions:
+                - programId: <string>
+                  accounts:
+                    - pubkey: <string>
+                      isSigner: true
+                      isWritable: true
+                  data: <string>
+              swapInstruction:
+                programId: <string>
+                accounts:
+                  - pubkey: <string>
+                    isSigner: true
+                    isWritable: true
+                data: <string>
+              cleanupInstruction:
+                programId: <string>
+                accounts:
+                  - pubkey: <string>
+                    isSigner: true
+                    isWritable: true
+                data: <string>
+              addressLookupTableAddresses:
+                - <string>
+        description: Successful response
+  deprecated: false
+  type: path
+components:
+  schemas:
+    Instruction:
+      type: object
+      properties:
+        programId:
+          type: string
+        accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccountMeta'
+        data:
+          type: string
+      required:
+        - programId
+        - accounts
+        - data
+    AccountMeta:
+      type: object
+      properties:
+        pubkey:
+          type: string
+        isSigner:
+          type: boolean
+        isWritable:
+          type: boolean
+      required:
+        - pubkey
+        - isSigner
+        - isWritable
+    QuoteResponse:
+      type: object
+      required:
+        - inputMint
+        - outputMint
+        - inAmount
+        - outAmount
+        - otherAmountThreshold
+        - swapMode
+        - slippageBps
+        - priceImpactPct
+        - routePlan
+      properties:
+        inputMint:
+          type: string
+        inAmount:
+          type: string
+        outputMint:
+          type: string
+        outAmount:
+          type: string
+          description: |
+            - Calculated output amount from routing engine
+            - The value includes platform fees and DEX fees, excluding slippage
+        otherAmountThreshold:
+          type: string
+          description: >
+            - Calculated minimum output amount after accounting for
+            `slippageBps` on the `outAmount` value
+
+            - Not used by `/swap` endpoint to build transaction
+        swapMode:
+          $ref: '#/components/schemas/SwapMode'
+          required: true
+        slippageBps:
+          type: integer
+          format: uint16
+          minimum: 0
+        platformFee:
+          $ref: '#/components/schemas/PlatformFee'
+        priceImpactPct:
+          type: string
+        routePlan:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutePlanStep'
+        contextSlot:
+          type: integer
+          format: uint64
+        timeTaken:
+          type: number
+    SwapMode:
+      type: string
+      enum:
+        - ExactIn
+        - ExactOut
+    PlatformFee:
+      type: object
+      properties:
+        amount:
+          type: string
+        feeBps:
+          type: integer
+          format: uint16
+    RoutePlanStep:
+      type: object
+      properties:
+        swapInfo:
+          $ref: '#/components/schemas/SwapInfo'
+        percent:
+          type: integer
+          format: uint8
+        bps:
+          type: integer
+          format: uint16
+      required:
+        - swapInfo
+    SwapInfo:
+      type: object
+      required:
+        - ammKey
+        - inputMint
+        - outputMint
+        - inAmount
+        - outAmount
+        - feeAmount
+        - feeMint
+      properties:
+        ammKey:
+          type: string
+        label:
+          type: string
+        inputMint:
+          type: string
+        outputMint:
+          type: string
+        inAmount:
+          type: string
+        outAmount:
+          type: string
+        feeAmount:
+          type: string
+        feeMint:
+          type: string
+    PriorityLevelWithMaxLamports:
+      title: priorityLevelWithMaxLamports
+      type: object
+      properties:
+        priorityLevelWithMaxLamports:
+          type: object
+          properties:
+            priorityLevel:
+              type: string
+              enum:
+                - medium
+                - high
+                - veryHigh
+            maxLamports:
+              type: integer
+              format: uint64
+              description: >
+                - Maximum lamports to cap the priority fee estimation, to
+                prevent overpaying
+            global:
+              type: boolean
+              default: false
+              description: >
+                - A boolean to choose between using a global or local fee market
+                to estimate. If `global` is set to `false`, the estimation
+                focuses on fees relevant to the **writable accounts** involved
+                in the instruction.
+          required:
+            - priorityLevel
+            - maxLamports
+          additionalProperties: false
+      required:
+        - priorityLevelWithMaxLamports
+      additionalProperties: false
+    JitoTipLamports:
+      title: jitoTipLamports
+      type: object
+      properties:
+        jitoTipLamports:
+          type: integer
+          format: uint64
+          description: >
+            - Exact amount of tip to use in a tip instruction
+
+            - Refer to Jito docs on how to estimate the tip amount based on
+            percentiles
+
+            - It has to be used together with a connection to a Jito RPC
+
+            - See their docs at https://docs.jito.wtf/
+      required:
+        - jitoTipLamports
+      additionalProperties: false
+    JitoTipLamportsWithPayer:
+      title: jitoTipLamportsWithPayer
+      type: object
+      properties:
+        jitoTipLamportsWithPayer:
+          type: object
+          properties:
+            lamports:
+              type: integer
+              format: uint64
+              description: Exact amount of lamports to use for the tip
+            payer:
+              type: string
+              description: Public key of an account that will be used to pay for the tip
+          required:
+            - lamports
+            - payer
+          additionalProperties: false
+      required:
+        - jitoTipLamportsWithPayer
+      additionalProperties: false
+
+````

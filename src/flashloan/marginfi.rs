@@ -15,8 +15,8 @@ use solana_sdk::sysvar;
 use solana_sdk::transaction::Transaction;
 use tracing::{debug, info, warn};
 
+use super::compute_associated_token_address;
 use crate::engine::EngineIdentity;
-use crate::strategy::compute_associated_token_address;
 
 use super::error::{FlashloanError, FlashloanResult};
 use super::{FlashloanMetadata, FlashloanOutcome, FlashloanProtocol};

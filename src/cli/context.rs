@@ -10,11 +10,10 @@ use time::{UtcOffset, macros::format_description};
 use tracing::error;
 use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::{EnvFilter, fmt};
-use url::Url;
 
 use crate::config::{
-    AppConfig, BotConfig, ConfigError, GlobalConfig, IntermediumConfig, JupiterConfig,
-    LaunchOverrides, LoggingProfile, RequestParamsConfig, TitanEngineConfig, YellowstoneConfig,
+    AppConfig, BotConfig, ConfigError, EngineConfig, GlobalConfig, IntermediumConfig,
+    JupiterConfig, JupiterEngineConfig, LaunchOverrides, LoggingProfile, YellowstoneConfig,
     load_config,
 };
 use crate::jupiter::{BinaryStatus, JupiterBinaryManager, JupiterError};
@@ -125,6 +124,16 @@ pub fn resolve_jupiter_base_url(_bot: &BotConfig, jupiter: &JupiterConfig) -> St
     format!("http://{}:{}", host, jupiter.core.port)
 }
 
+pub fn resolve_jupiter_api_proxy(engine: &EngineConfig) -> Option<String> {
+    engine
+        .jupiter
+        .api_proxy
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
 fn sanitize_jupiter_host(host: &str) -> String {
     let trimmed = host.trim();
     if trimmed.is_empty() {
@@ -155,63 +164,8 @@ pub fn should_bypass_proxy(base_url: &str) -> bool {
     false
 }
 
-pub fn resolve_titan_ws_endpoint(titan: &TitanEngineConfig) -> Result<Option<Url>> {
-    if !titan.enable {
-        return Ok(None);
-    }
-
-    let jwt = titan
-        .jwt
-        .as_ref()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            std::env::var("TITAN_JWT")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-        });
-
-    let Some(jwt) = jwt else {
-        return Ok(None);
-    };
-
-    let base = titan
-        .ws_url
-        .as_ref()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            std::env::var("TITAN_WS_URL")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-        })
-        .unwrap_or_else(|| "wss://api.titan.exchange/api/v1/ws".to_string());
-
-    let mut url =
-        Url::parse(&base).map_err(|err| anyhow!("Titan WebSocket 地址无效 {base}: {err}"))?;
-
-    let mut params: Vec<(String, String)> = url
-        .query_pairs()
-        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-        .collect();
-    params.retain(|(key, _)| key != "auth");
-    params.push(("auth".to_string(), jwt));
-
-    {
-        let mut serializer = url.query_pairs_mut();
-        serializer.clear();
-        for (key, value) in params {
-            serializer.append_pair(&key, &value);
-        }
-    }
-
-    Ok(Some(url))
-}
-
 pub fn build_launch_overrides(
-    params: &RequestParamsConfig,
+    engine: &JupiterEngineConfig,
     intermedium: &IntermediumConfig,
 ) -> LaunchOverrides {
     let mut overrides = LaunchOverrides::default();
@@ -225,8 +179,8 @@ pub fn build_launch_overrides(
         overrides.filter_markets_with_mints = mint_set.into_iter().collect();
     }
 
-    overrides.exclude_dex_program_ids = params.excluded_dexes.clone();
-    overrides.include_dex_program_ids = params.included_dexes.clone();
+    overrides.exclude_dex_program_ids = Vec::new();
+    overrides.include_dex_program_ids = engine.args_included_dexes.clone();
 
     overrides
 }
@@ -326,6 +280,38 @@ pub fn resolve_instruction_memo(instruction: &crate::config::InstructionConfig) 
         None
     } else {
         Some(memo.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_jupiter_api_proxy_none_on_empty() {
+        let engine = EngineConfig {
+            jupiter: JupiterEngineConfig {
+                enable: true,
+                api_proxy: Some("   ".to_string()),
+                ..JupiterEngineConfig::default()
+            },
+        };
+        assert!(resolve_jupiter_api_proxy(&engine).is_none());
+    }
+
+    #[test]
+    fn test_resolve_jupiter_api_proxy_trims_value() {
+        let engine = EngineConfig {
+            jupiter: JupiterEngineConfig {
+                enable: false,
+                api_proxy: Some("  http://127.0.0.1:8888  ".to_string()),
+                ..JupiterEngineConfig::default()
+            },
+        };
+        assert_eq!(
+            resolve_jupiter_api_proxy(&engine).as_deref(),
+            Some("http://127.0.0.1:8888")
+        );
     }
 }
 

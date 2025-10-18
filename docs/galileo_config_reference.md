@@ -27,6 +27,7 @@
 - `jupiter_webserver` → `[jupiter.performance].webserver_thread_count`
 - `jupiter_update` → `[jupiter.performance].update_thread_count`
 - `jupiter_skip_user_accounts_rpc_calls` → `[jupiter.launch].skip_user_accounts_rpc`
+- Bot/节点共机隔离 → `[galileo.bot.cpu_affinity]`（`enable`、`worker_cores`、`max_blocking_threads`、`strict` 分别控制是否启用绑定、Tokio worker 对应的核心列表、阻塞线程池上限以及拓扑校验策略）
 - `random_engine`、`max_concurrent` 等策略参数仍由套利逻辑控制，`galileo` 侧保留 `jupiter.extra_args` 以便继续传入实验性开关。
 
 ## 守护与监控

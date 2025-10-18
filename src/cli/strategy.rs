@@ -1,17 +1,14 @@
 use std::collections::BTreeSet;
 use std::str::FromStr;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use tracing::{info, warn};
 
 use crate::api::JupiterApiClient;
-use crate::cli::context::{
-    resolve_instruction_memo, resolve_rpc_client, resolve_titan_ws_endpoint,
-};
+use crate::cli::context::{resolve_instruction_memo, resolve_rpc_client};
 use crate::config;
-use crate::config::{AppConfig, IntermediumConfig, RequestParamsConfig};
+use crate::config::{AppConfig, IntermediumConfig};
 use crate::engine::{
     AccountPrechecker, BuilderConfig, EngineError, EngineIdentity, EngineResult, EngineSettings,
     ProfitConfig, ProfitEvaluator, QuoteConfig, QuoteExecutor, Scheduler, StrategyEngine,
@@ -19,13 +16,9 @@ use crate::engine::{
 };
 use crate::flashloan::FlashloanManager;
 use crate::jupiter::{JupiterBinaryManager, JupiterError};
-use crate::lander::{Deadline, LanderFactory};
+use crate::lander::LanderFactory;
 use crate::monitoring::events;
-use crate::strategy::{
-    BlindStrategy, CopyStrategy, CopySwapParams, Strategy, StrategyEvent,
-    compute_associated_token_address, usdc_mint, wsol_mint,
-};
-use crate::titan::{TitanStreamConfig, spawn_quote_streams};
+use crate::strategy::{BlindStrategy, Strategy, StrategyEvent};
 use solana_sdk::pubkey::Pubkey;
 
 /// 控制策略以正式模式还是 dry-run 模式运行。
@@ -42,18 +35,11 @@ pub async fn run_strategy(
     mode: StrategyMode,
 ) -> Result<()> {
     let dry_run = matches!(mode, StrategyMode::DryRun) || config.galileo.bot.dry_run;
-    let blind_enabled = config.galileo.blind_strategy.enable;
-    let copy_enabled = config.galileo.copy_strategy.enable;
-
-    match (blind_enabled, copy_enabled) {
-        (true, false) => run_blind_engine(config, manager, api_client, dry_run).await,
-        (false, true) => run_copy_strategy(config, dry_run).await,
-        (false, false) => {
-            warn!(target: "strategy", "未启用任何策略，直接退出");
-            Ok(())
-        }
-        (true, true) => Err(anyhow!("暂不支持同时启用 blind_strategy 与 copy_strategy")),
+    if !config.galileo.blind_strategy.enable {
+        warn!(target: "strategy", "盲发策略未启用，直接退出");
+        return Ok(());
     }
+    run_blind_engine(config, manager, api_client, dry_run).await
 }
 
 async fn run_blind_engine(
@@ -63,7 +49,6 @@ async fn run_blind_engine(
     dry_run: bool,
 ) -> Result<()> {
     let blind_config = &config.galileo.blind_strategy;
-    let titan_settings = &config.galileo.engine.titan;
 
     if !blind_config.enable {
         warn!(target: "strategy", "盲发策略未启用，直接退出");
@@ -71,9 +56,7 @@ async fn run_blind_engine(
     }
 
     let mut jupiter_started = false;
-    let use_jupiter_binary = !titan_settings.enable;
-
-    if use_jupiter_binary && !manager.disable_local_binary {
+    if !manager.disable_local_binary {
         match manager.start(false).await {
             Ok(()) => {
                 info!(target: "strategy", "已启动本地 Jupiter 二进制");
@@ -85,15 +68,10 @@ async fn run_blind_engine(
             }
             Err(err) => return Err(err.into()),
         }
-    } else if use_jupiter_binary {
-        info!(
-            target: "strategy",
-            "已禁用本地 Jupiter 二进制，将使用远端 API"
-        );
     } else {
         info!(
             target: "strategy",
-            "Titan engine 启用，跳过启动 Jupiter 二进制"
+            "已禁用本地 Jupiter 二进制，将使用远端 API"
         );
     }
 
@@ -101,13 +79,19 @@ async fn run_blind_engine(
     let mut identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
     identity.set_skip_user_accounts_rpc_calls(
-        config.galileo.request_params.skip_user_accounts_rpc_calls,
+        config
+            .galileo
+            .engine
+            .jupiter
+            .swap_config
+            .skip_user_accounts_rpc_calls,
     );
     let trade_pairs = build_blind_trade_pairs(blind_config, &config.galileo.intermedium)?;
     let trade_amounts = build_blind_trade_amounts(blind_config)?;
     let profit_config = build_blind_profit_config(blind_config);
     let scheduler_delay = resolve_blind_scheduler_delay(blind_config);
-    let quote_config = build_blind_quote_config(blind_config, &config.galileo.request_params);
+    let quote_defaults = config.galileo.engine.jupiter.quote_config.clone();
+    let quote_config = build_blind_quote_config(blind_config, &quote_defaults);
     tracing::info!(
         target: "engine::config",
         dex_whitelist = ?quote_config.dex_whitelist,
@@ -117,7 +101,7 @@ async fn run_blind_engine(
 
     let builder_config =
         BuilderConfig::new(resolve_instruction_memo(&config.galileo.global.instruction));
-    let request_defaults = config.galileo.request_params.clone();
+    let swap_defaults = config.galileo.engine.jupiter.swap_config.clone();
     let submission_client = reqwest::Client::builder().build()?;
 
     let marginfi_cfg = &config.galileo.flashloan.marginfi;
@@ -167,49 +151,6 @@ async fn run_blind_engine(
     }
     let flashloan = flashloan_manager.try_into_enabled();
 
-    let titan_stream = if titan_settings.enable {
-        if let Some(endpoint) = resolve_titan_ws_endpoint(titan_settings)? {
-            let pubkey_str = titan_settings
-                .default_pubkey
-                .as_deref()
-                .map(|value| value.trim())
-                .filter(|value| !value.is_empty())
-                .unwrap_or("Titan11111111111111111111111111111111111111");
-            let titan_stream_user = Pubkey::from_str(pubkey_str)
-                .map_err(|err| anyhow!("Titan default_pubkey 无效 {pubkey_str}: {err}"))?;
-            let titan_config = TitanStreamConfig {
-                endpoint,
-                user_pubkey: titan_stream_user,
-                trade_pairs: &trade_pairs,
-                trade_amounts: &trade_amounts,
-                quote: &quote_config,
-                strategy_label: "blind",
-                providers: &titan_settings.providers,
-                reverse_slippage_bps: titan_settings.reverse_slippage_bps,
-                update_interval_ms: titan_settings.interval_ms,
-                update_num_quotes: titan_settings.num_quotes,
-            };
-            match spawn_quote_streams(titan_config).await {
-                Ok(stream) => {
-                    info!(
-                        target: "strategy",
-                        "Titan quote stream enabled for blind strategy"
-                    );
-                    Some(stream)
-                }
-                Err(err) => return Err(anyhow!(err)),
-            }
-        } else {
-            warn!(
-                target: "strategy",
-                "Titan quote stream 未启用：缺少 jwt 或 ws_url 配置"
-            );
-            None
-        }
-    } else {
-        None
-    };
-
     let lander_factory = LanderFactory::new(rpc_client.clone(), submission_client.clone());
     let default_landers = ["rpc"];
 
@@ -222,26 +163,24 @@ async fn run_blind_engine(
         )
         .map_err(|err| anyhow!(err))?;
 
-    let lander_settings = Arc::new(config.lander.lander.clone());
     let compute_unit_price_override = identity.compute_unit_price_override();
 
     let strategy_engine = StrategyEngine::new(
         BlindStrategy::new(),
         lander_stack,
         identity,
-        QuoteExecutor::new(api_client.clone(), request_defaults.clone()),
+        QuoteExecutor::new(api_client.clone(), quote_defaults),
         ProfitEvaluator::new(profit_config),
-        SwapInstructionFetcher::new(api_client.clone(), request_defaults),
+        SwapInstructionFetcher::new(api_client.clone(), swap_defaults),
         TransactionBuilder::new(rpc_client.clone(), builder_config),
         Scheduler::new(scheduler_delay),
         flashloan,
-        EngineSettings::new(quote_config, lander_settings)
+        EngineSettings::new(quote_config)
             .with_landing_timeout(landing_timeout)
             .with_dry_run(dry_run)
             .with_compute_unit_price_override(compute_unit_price_override),
         trade_pairs,
         trade_amounts,
-        titan_stream,
     );
     drive_engine(strategy_engine)
         .await
@@ -255,158 +194,6 @@ async fn run_blind_engine(
                 "停止 Jupiter 二进制失败"
             );
         }
-    }
-
-    Ok(())
-}
-
-async fn run_copy_strategy(config: &AppConfig, dry_run: bool) -> Result<()> {
-    use tokio::time::sleep;
-
-    let copy_cfg = &config.galileo.copy_strategy;
-    let mut plans = build_copy_plan_states(copy_cfg).map_err(|err| anyhow!(err))?;
-
-    let rpc_client = resolve_rpc_client(&config.galileo.global)?;
-    let mut identity =
-        EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
-    identity.set_skip_user_accounts_rpc_calls(
-        config.galileo.request_params.skip_user_accounts_rpc_calls,
-    );
-
-    let wsol_mint = wsol_mint();
-    let usdc_mint = usdc_mint();
-    let wsol_ata = compute_associated_token_address(&identity.pubkey, &wsol_mint);
-    let usdc_ata = compute_associated_token_address(&identity.pubkey, &usdc_mint);
-
-    let compute_unit_limit = 450_000u32;
-    let compute_unit_price_micro_lamports = crate::lander::compute_priority_fee_micro_lamports(
-        &config.lander.lander,
-        compute_unit_limit,
-    );
-    let strategy = CopyStrategy::new(
-        identity.pubkey,
-        wsol_ata,
-        usdc_ata,
-        compute_unit_limit,
-        compute_unit_price_micro_lamports,
-    );
-
-    let submission_client = reqwest::Client::builder().build()?;
-    let lander_factory = LanderFactory::new(rpc_client.clone(), submission_client.clone());
-    let default_landers = ["rpc"];
-    let lander_stack = lander_factory
-        .build_stack(
-            &config.lander.lander,
-            &copy_cfg.enable_landers,
-            &default_landers,
-            0,
-        )
-        .map_err(|err| anyhow!(err))?;
-
-    if lander_stack.is_empty() {
-        return Err(anyhow!("未配置可用的落地器"));
-    }
-
-    let builder_config =
-        BuilderConfig::new(resolve_instruction_memo(&config.galileo.global.instruction));
-    let tx_builder = TransactionBuilder::new(rpc_client.clone(), builder_config);
-    let landing_timeout = resolve_landing_timeout(&config.galileo.bot);
-
-    let mut idx = 0usize;
-    loop {
-        if plans.is_empty() {
-            warn!(target: "strategy::copy", "没有可执行的交易规模，退出");
-            break;
-        }
-        if idx >= plans.len() {
-            idx = 0;
-        }
-
-        let wait_duration = {
-            let plan = &plans[idx];
-            if Instant::now() < plan.next_ready_at {
-                plan.next_ready_at - Instant::now()
-            } else {
-                Duration::ZERO
-            }
-        };
-
-        if !wait_duration.is_zero() {
-            sleep(wait_duration).await;
-        }
-
-        let (amount_in, reverse_amount, process_delay, sending_cooldown) = {
-            let plan = &plans[idx];
-            (
-                plan.amount_in,
-                plan.reverse_amount,
-                plan.process_delay,
-                plan.sending_cooldown,
-            )
-        };
-
-        if dry_run {
-            // dry-run 下仅校验规模是否合理，不走构建与落地流程。
-            info!(
-                target: "strategy::copy",
-                amount_in,
-                reverse_amount,
-                "dry-run：仅构建 copy 策略交易，不发送"
-            );
-        } else {
-            let response = strategy.build_swap_instructions(CopySwapParams {
-                amount_in,
-                reverse_amount,
-            });
-            match tx_builder
-                .build(&identity, &response, 0)
-                .await
-                .map_err(|err| anyhow!(err))
-            {
-                Ok(prepared) => {
-                    let tx_signature = prepared
-                        .transaction
-                        .signatures
-                        .get(0)
-                        .map(|sig| sig.to_string())
-                        .unwrap_or_default();
-                    let deadline = Deadline::from_instant(Instant::now() + landing_timeout);
-                    match lander_stack.submit(&prepared, deadline, "copy").await {
-                        Ok(receipt) => {
-                            info!(
-                                target: "strategy::copy",
-                                slot = receipt.slot,
-                                signature = receipt.signature.as_deref().unwrap_or(&tx_signature),
-                                "copy 策略 transaction 已发送"
-                            );
-                        }
-                        Err(err) => {
-                            let summary = err.to_string();
-                            let short = summary.lines().next().unwrap_or_else(|| summary.as_str());
-                            warn!(
-                                target: "strategy::copy",
-                                signature = %tx_signature,
-                                error = %short,
-                                "copy 策略落地失败"
-                            );
-                        }
-                    }
-                }
-                Err(err) => {
-                    let summary = err.to_string();
-                    let short = summary.lines().next().unwrap_or_else(|| summary.as_str());
-                    warn!(
-                        target: "strategy::copy",
-                        error = %short,
-                        "构建 copy 策略交易失败"
-                    );
-                }
-            }
-        }
-
-        plans[idx].next_ready_at = Instant::now() + sending_cooldown;
-        sleep(process_delay).await;
-        idx = (idx + 1) % plans.len();
     }
 
     Ok(())
@@ -562,7 +349,7 @@ fn resolve_blind_scheduler_delay(config: &config::BlindStrategyConfig) -> Durati
 
 fn build_blind_quote_config(
     config: &config::BlindStrategyConfig,
-    request_defaults: &RequestParamsConfig,
+    defaults: &config::JupiterQuoteConfig,
 ) -> QuoteConfig {
     let only_direct_routes = if config.base_mints.iter().any(|mint| {
         mint.route_types
@@ -571,78 +358,16 @@ fn build_blind_quote_config(
     }) {
         true
     } else {
-        request_defaults.only_direct_routes
+        defaults.only_direct_routes
     };
 
     QuoteConfig {
         slippage_bps: 0,
         only_direct_routes,
-        restrict_intermediate_tokens: request_defaults.restrict_intermediate_tokens,
+        restrict_intermediate_tokens: defaults.restrict_intermediate_tokens,
         quote_max_accounts: None,
         dex_whitelist: config.enable_dexs.clone(),
     }
-}
-
-struct CopyPlanState {
-    amount_in: u64,
-    reverse_amount: u64,
-    process_delay: Duration,
-    sending_cooldown: Duration,
-    next_ready_at: Instant,
-}
-
-fn build_copy_plan_states(config: &config::CopyStrategyConfig) -> EngineResult<Vec<CopyPlanState>> {
-    let mut plans = Vec::new();
-    for base in &config.base_mints {
-        let reverse_amount = base.reverse_amount.unwrap_or(200_000_000_000);
-        let process_delay = Duration::from_millis(base.process_delay.unwrap_or(1_000).max(1));
-        let sending_cooldown = Duration::from_millis(base.sending_cooldown.unwrap_or(1_000).max(1));
-        for amount in generate_amounts_for_copy(base) {
-            plans.push(CopyPlanState {
-                amount_in: amount,
-                reverse_amount,
-                process_delay,
-                sending_cooldown,
-                next_ready_at: Instant::now(),
-            });
-        }
-    }
-
-    if plans.is_empty() {
-        return Err(EngineError::InvalidConfig(
-            "copy_strategy 未配置有效的交易规模".into(),
-        ));
-    }
-
-    Ok(plans)
-}
-
-fn generate_amounts_for_copy(base: &config::CopyBaseMintConfig) -> Vec<u64> {
-    if base.trade_size_range.is_empty() {
-        return Vec::new();
-    }
-
-    let mut values: BTreeSet<u64> = base.trade_size_range.iter().copied().collect();
-    if base.trade_size_range.len() >= 2 {
-        if let Some(count) = base.trade_range_count {
-            if count >= 2 {
-                let mut sorted = base.trade_size_range.clone();
-                sorted.sort_unstable();
-                let min = sorted.first().copied().unwrap_or(0);
-                let max = sorted.last().copied().unwrap_or(min);
-                let strategy = base
-                    .trade_range_strategy
-                    .as_deref()
-                    .map(|s| s.to_ascii_lowercase())
-                    .unwrap_or_else(|| "linear".to_string());
-                for amount in generate_amounts(min, max, count, &strategy) {
-                    values.insert(amount);
-                }
-            }
-        }
-    }
-
-    values.into_iter().collect()
 }
 
 fn generate_amounts(min: u64, max: u64, count: u32, strategy: &str) -> Vec<u64> {

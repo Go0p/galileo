@@ -1,8 +1,9 @@
-use crate::api::serde_helpers::field_as_string;
-use crate::api::transaction_config::TransactionConfig;
+use crate::api::quote::QuoteResponsePayload;
+use crate::api::serde_helpers::{field_as_string, option_field_as_string};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use solana_account_decoder::UiAccount;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -12,19 +13,66 @@ use solana_sdk::{
 #[serde(rename_all = "camelCase")]
 pub struct SwapInstructionsRequest {
     #[serde(rename = "quoteResponse")]
-    pub quote_response: Value,
+    pub quote_response: QuoteResponsePayload,
     #[serde(with = "field_as_string")]
     pub user_public_key: Pubkey,
-    #[serde(flatten)]
-    pub config: TransactionConfig,
+    pub wrap_and_unwrap_sol: bool,
+    pub allow_optimized_wrapped_sol_token_account: bool,
+    #[serde(with = "option_field_as_string")]
+    pub fee_account: Option<Pubkey>,
+    #[serde(with = "option_field_as_string")]
+    pub destination_token_account: Option<Pubkey>,
+    #[serde(with = "option_field_as_string")]
+    pub tracking_account: Option<Pubkey>,
+    pub compute_unit_price_micro_lamports: Option<ComputeUnitPriceMicroLamports>,
+    pub prioritization_fee_lamports: Option<PrioritizationFeeLamports>,
+    pub dynamic_compute_unit_limit: bool,
+    pub as_legacy_transaction: bool,
+    pub use_shared_accounts: Option<bool>,
+    pub use_token_ledger: bool,
+    pub skip_user_accounts_rpc_calls: bool,
+    pub keyed_ui_accounts: Option<Vec<KeyedUiAccount>>,
+    pub program_authority_id: Option<u8>,
+    pub dynamic_slippage: Option<DynamicSlippageSettings>,
+    pub blockhash_slots_to_expiry: Option<u8>,
+    pub correct_last_valid_block_height: bool,
 }
 
 impl SwapInstructionsRequest {
     pub fn new(quote_response: Value, user_public_key: Pubkey) -> Self {
+        Self::try_from_value(quote_response, user_public_key)
+            .expect("invalid quote response payload")
+    }
+
+    pub fn try_from_value(
+        quote_response: Value,
+        user_public_key: Pubkey,
+    ) -> Result<Self, serde_json::Error> {
+        let payload = QuoteResponsePayload::try_from_value(quote_response)?;
+        Ok(Self::from_payload(payload, user_public_key))
+    }
+
+    pub fn from_payload(quote_response: QuoteResponsePayload, user_public_key: Pubkey) -> Self {
         Self {
             quote_response,
             user_public_key,
-            config: TransactionConfig::default(),
+            wrap_and_unwrap_sol: true,
+            allow_optimized_wrapped_sol_token_account: false,
+            fee_account: None,
+            destination_token_account: None,
+            tracking_account: None,
+            compute_unit_price_micro_lamports: None,
+            prioritization_fee_lamports: None,
+            dynamic_compute_unit_limit: false,
+            as_legacy_transaction: false,
+            use_shared_accounts: None,
+            use_token_ledger: false,
+            skip_user_accounts_rpc_calls: false,
+            keyed_ui_accounts: None,
+            program_authority_id: None,
+            dynamic_slippage: None,
+            blockhash_slots_to_expiry: None,
+            correct_last_valid_block_height: false,
         }
     }
 }
@@ -234,4 +282,144 @@ impl TryFrom<Value> for SwapInstructionsResponse {
         let internal: SwapInstructionsResponseInternal = serde_json::from_value(value)?;
         Ok(SwapInstructionsResponse::from_internal(raw, internal))
     }
+}
+
+#[derive(Deserialize, Serialize, Debug, PartialEq, Clone)]
+#[serde(rename_all = "camelCase")]
+#[serde(untagged)]
+pub enum ComputeUnitPriceMicroLamports {
+    MicroLamports(u64),
+    #[serde(deserialize_with = "auto")]
+    Auto,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Copy, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum PriorityLevel {
+    Medium,
+    High,
+    VeryHigh,
+}
+
+#[derive(Deserialize, Debug, PartialEq, Copy, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum PrioritizationFeeLamports {
+    AutoMultiplier(u32),
+    JitoTipLamports(u64),
+    #[serde(rename_all = "camelCase")]
+    PriorityLevelWithMaxLamports {
+        priority_level: PriorityLevel,
+        max_lamports: u64,
+        #[serde(default)]
+        global: bool,
+    },
+    #[default]
+    #[serde(untagged, deserialize_with = "auto")]
+    Auto,
+    #[serde(untagged)]
+    Lamports(u64),
+    #[serde(untagged, deserialize_with = "disabled")]
+    Disabled,
+}
+
+impl Serialize for PrioritizationFeeLamports {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct AutoMultiplier {
+            auto_multiplier: u32,
+        }
+
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PriorityLevelWrapper<'a> {
+            priority_level_with_max_lamports: PriorityLevelWithMaxLamports<'a>,
+        }
+
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PriorityLevelWithMaxLamports<'a> {
+            priority_level: &'a PriorityLevel,
+            max_lamports: &'a u64,
+            global: &'a bool,
+        }
+
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct JitoTipLamports {
+            jito_tip_lamports: u64,
+        }
+
+        match self {
+            Self::AutoMultiplier(auto_multiplier) => AutoMultiplier {
+                auto_multiplier: *auto_multiplier,
+            }
+            .serialize(serializer),
+            Self::JitoTipLamports(lamports) => JitoTipLamports {
+                jito_tip_lamports: *lamports,
+            }
+            .serialize(serializer),
+            Self::Auto => serializer.serialize_str("auto"),
+            Self::Lamports(lamports) => serializer.serialize_u64(*lamports),
+            Self::Disabled => serializer.serialize_str("disabled"),
+            Self::PriorityLevelWithMaxLamports {
+                priority_level,
+                max_lamports,
+                global,
+            } => PriorityLevelWrapper {
+                priority_level_with_max_lamports: PriorityLevelWithMaxLamports {
+                    priority_level,
+                    max_lamports,
+                    global,
+                },
+            }
+            .serialize(serializer),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, PartialEq, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicSlippageSettings {
+    pub min_bps: Option<u16>,
+    pub max_bps: Option<u16>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+pub struct KeyedUiAccount {
+    pub pubkey: String,
+    #[serde(flatten)]
+    pub ui_account: UiAccount,
+    pub params: Option<Value>,
+}
+
+fn auto<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    enum Helper {
+        #[serde(rename = "auto")]
+        Variant,
+    }
+
+    Helper::deserialize(deserializer)?;
+    Ok(())
+}
+
+fn disabled<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    enum Helper {
+        #[serde(rename = "disabled")]
+        Variant,
+    }
+
+    Helper::deserialize(deserializer)?;
+    Ok(())
 }
