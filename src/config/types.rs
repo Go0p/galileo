@@ -175,12 +175,12 @@ pub struct BotConfig {
     pub disable_running: bool,
     #[serde(default)]
     pub cpu_affinity: CpuAffinityConfig,
-    #[serde(default = "super::default_request_timeout_ms")]
-    pub request_timeout_ms: u64,
+    #[serde(default = "super::default_quote_timeout_ms")]
+    pub quote_ms: u64,
     #[serde(default)]
-    pub swap_request_timeout_ms: Option<u64>,
+    pub swap_ms: Option<u64>,
     #[serde(default)]
-    pub landing_timeout_ms: Option<u64>,
+    pub landing_ms: Option<u64>,
     #[serde(default)]
     pub auto_restart_minutes: u64,
     #[serde(default)]

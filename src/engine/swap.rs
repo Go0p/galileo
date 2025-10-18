@@ -32,9 +32,7 @@ impl SwapInstructionFetcher {
         let mut request =
             SwapInstructionsRequest::new(opportunity.merged_quote.clone(), identity.pubkey);
 
-        let wrap_and_unwrap =
-            self.request_defaults.wrap_and_unwrap_sol || identity.wrap_and_unwrap_sol();
-        request.wrap_and_unwrap_sol = wrap_and_unwrap;
+        request.wrap_and_unwrap_sol = self.request_defaults.wrap_and_unwrap_sol;
         request.dynamic_compute_unit_limit = self.request_defaults.dynamic_compute_unit_limit;
         request.use_shared_accounts = Some(identity.use_shared_accounts());
         request.skip_user_accounts_rpc_calls = identity.skip_user_accounts_rpc_calls();

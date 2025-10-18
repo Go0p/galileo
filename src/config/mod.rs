@@ -38,7 +38,7 @@ pub(crate) fn default_max_tokens_limit() -> u32 {
     20
 }
 
-pub(crate) fn default_request_timeout_ms() -> u64 {
+pub(crate) fn default_quote_timeout_ms() -> u64 {
     2_000
 }
 
@@ -255,9 +255,9 @@ impl Default for cfg::BotConfig {
             disable_local_binary: false,
             disable_running: false,
             cpu_affinity: cfg::CpuAffinityConfig::default(),
-            request_timeout_ms: default_request_timeout_ms(),
-            swap_request_timeout_ms: None,
-            landing_timeout_ms: None,
+            quote_ms: default_quote_timeout_ms(),
+            swap_ms: None,
+            landing_ms: None,
             auto_restart_minutes: 30,
             get_block_hash_by_grpc: true,
             enable_simulation: false,

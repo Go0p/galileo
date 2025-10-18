@@ -39,10 +39,8 @@ impl JupiterApiClient {
         bot_config: &BotConfig,
         logging: &LoggingConfig,
     ) -> Self {
-        let quote_timeout = Duration::from_millis(bot_config.request_timeout_ms);
-        let swap_ms = bot_config
-            .swap_request_timeout_ms
-            .unwrap_or(bot_config.request_timeout_ms);
+        let quote_timeout = Duration::from_millis(bot_config.quote_ms);
+        let swap_ms = bot_config.swap_ms.unwrap_or(bot_config.quote_ms);
         let swap_timeout = Duration::from_millis(swap_ms);
         Self {
             base_url,

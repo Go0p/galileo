@@ -401,7 +401,7 @@ fn generate_amounts(min: u64, max: u64, count: u32, strategy: &str) -> Vec<u64> 
 }
 
 fn resolve_landing_timeout(bot: &config::BotConfig) -> Duration {
-    let ms = bot.landing_timeout_ms.unwrap_or(2_000).max(1);
+    let ms = bot.landing_ms.unwrap_or(2_000).max(1);
     Duration::from_millis(ms)
 }
 

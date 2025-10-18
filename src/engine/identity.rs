@@ -14,7 +14,6 @@ use super::error::{EngineError, EngineResult};
 pub struct EngineIdentity {
     pub pubkey: Pubkey,
     fee_account: Option<String>,
-    wrap_and_unwrap_sol: bool,
     use_shared_accounts: bool,
     compute_unit_price_micro_lamports: Option<u64>,
     skip_user_accounts_rpc_calls: bool,
@@ -39,8 +38,6 @@ impl EngineIdentity {
         let fee_account = env::var("GALILEO_FEE_ACCOUNT")
             .ok()
             .filter(|s| !s.trim().is_empty());
-
-        let wrap_and_unwrap_sol = wallet.warp_or_unwrap_sol.wrap_and_unwrap_sol;
 
         let compute_unit_price_micro_lamports =
             match env::var("GALILEO_COMPUTE_UNIT_PRICE_MICROLAMPORTS") {
@@ -74,7 +71,6 @@ impl EngineIdentity {
         Ok(Self {
             pubkey,
             fee_account,
-            wrap_and_unwrap_sol,
             use_shared_accounts,
             compute_unit_price_micro_lamports,
             skip_user_accounts_rpc_calls,
@@ -84,10 +80,6 @@ impl EngineIdentity {
 
     pub fn fee_account(&self) -> Option<&str> {
         self.fee_account.as_deref()
-    }
-
-    pub fn wrap_and_unwrap_sol(&self) -> bool {
-        self.wrap_and_unwrap_sol
     }
 
     pub fn use_shared_accounts(&self) -> bool {

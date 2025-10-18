@@ -2,7 +2,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum JupiterError {
-    #[error("failed to call GitHub API: {0}")]
+    #[error("failed to call Jupiter API: {0}")]
     Http(#[from] reqwest::Error),
     #[error("failed to parse response body: {0}")]
     Json(#[from] serde_json::Error),
