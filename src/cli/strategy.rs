@@ -10,9 +10,9 @@ use crate::cli::context::{resolve_instruction_memo, resolve_rpc_client};
 use crate::config;
 use crate::config::{AppConfig, IntermediumConfig};
 use crate::engine::{
-    AccountPrechecker, BuilderConfig, EngineError, EngineIdentity, EngineResult, EngineSettings,
-    ProfitConfig, ProfitEvaluator, QuoteConfig, QuoteExecutor, Scheduler, StrategyEngine,
-    SwapInstructionFetcher, TipConfig, TransactionBuilder,
+    AccountPrechecker, BuilderConfig, ComputeUnitPriceMode, EngineError, EngineIdentity,
+    EngineResult, EngineSettings, ProfitConfig, ProfitEvaluator, QuoteConfig, QuoteExecutor,
+    Scheduler, StrategyEngine, SwapInstructionFetcher, TipConfig, TransactionBuilder,
 };
 use crate::flashloan::FlashloanManager;
 use crate::jupiter::{JupiterBinaryManager, JupiterError};
@@ -163,7 +163,7 @@ async fn run_blind_engine(
         )
         .map_err(|err| anyhow!(err))?;
 
-    let compute_unit_price_override = identity.compute_unit_price_override();
+    let compute_unit_price_mode = derive_compute_unit_price_mode(&config.lander.lander);
 
     let strategy_engine = StrategyEngine::new(
         BlindStrategy::new(),
@@ -171,14 +171,13 @@ async fn run_blind_engine(
         identity,
         QuoteExecutor::new(api_client.clone(), quote_defaults),
         ProfitEvaluator::new(profit_config),
-        SwapInstructionFetcher::new(api_client.clone(), swap_defaults),
+        SwapInstructionFetcher::new(api_client.clone(), swap_defaults, compute_unit_price_mode),
         TransactionBuilder::new(rpc_client.clone(), builder_config),
         Scheduler::new(scheduler_delay),
         flashloan,
         EngineSettings::new(quote_config)
             .with_landing_timeout(landing_timeout)
-            .with_dry_run(dry_run)
-            .with_compute_unit_price_override(compute_unit_price_override),
+            .with_dry_run(dry_run),
         trade_pairs,
         trade_amounts,
     );
@@ -403,6 +402,51 @@ fn generate_amounts(min: u64, max: u64, count: u32, strategy: &str) -> Vec<u64> 
 fn resolve_landing_timeout(bot: &config::BotConfig) -> Duration {
     let ms = bot.landing_ms.unwrap_or(2_000).max(1);
     Duration::from_millis(ms)
+}
+
+fn derive_compute_unit_price_mode(
+    settings: &config::LanderSettings,
+) -> Option<ComputeUnitPriceMode> {
+    let strategy = settings
+        .compute_unit_price_strategy
+        .trim()
+        .to_ascii_lowercase();
+    match strategy.as_str() {
+        "" | "none" => None,
+        "fixed" => match settings.fixed_compute_unit_price {
+            Some(value) => Some(ComputeUnitPriceMode::Fixed(value)),
+            None => {
+                warn!(
+                    target: "strategy",
+                    "固定 compute unit price 策略需要提供 fixed_compute_unit_price，已忽略配置"
+                );
+                None
+            }
+        },
+        "random" => {
+            let range = &settings.random_compute_unit_price_range;
+            if range.len() >= 2 {
+                Some(ComputeUnitPriceMode::Random {
+                    min: range[0],
+                    max: range[1],
+                })
+            } else {
+                warn!(
+                    target: "strategy",
+                    "随机 compute unit price 需要提供上下限，已忽略配置"
+                );
+                None
+            }
+        }
+        other => {
+            warn!(
+                target: "strategy",
+                strategy = other,
+                "未知的 compute_unit_price_strategy，已忽略配置"
+            );
+            None
+        }
+    }
 }
 
 fn parse_marginfi_account(cfg: &config::FlashloanMarginfiConfig) -> Result<Option<Pubkey>> {

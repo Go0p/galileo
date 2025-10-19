@@ -7,7 +7,7 @@ use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 
-use crate::config::{FlashloanMarginfiConfig, WalletConfig, WarpOrUnwrapSolConfig};
+use crate::config::{AutoUnwrapConfig, FlashloanMarginfiConfig, WalletConfig};
 use crate::engine::{EngineIdentity, SwapOpportunity};
 use crate::strategy::types::TradePair;
 
@@ -19,12 +19,7 @@ fn make_identity() -> EngineIdentity {
         serde_json::to_string(&signer.to_bytes().to_vec()).expect("serialize keypair");
     let wallet = WalletConfig {
         private_key,
-        min_sol_balance: String::new(),
-        warp_or_unwrap_sol: WarpOrUnwrapSolConfig {
-            wrap_and_unwrap_sol: false,
-            compute_unit_price_micro_lamports: 0,
-            skip_user_accounts_rpc_calls: true,
-        },
+        auto_unwrap: AutoUnwrapConfig::default(),
     };
     EngineIdentity::from_wallet(&wallet).expect("build engine identity")
 }

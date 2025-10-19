@@ -14,6 +14,7 @@
 - `--enable-markets --enable-tokens`：启动启动阶段健康检查，确保市场与代币数据准备完成。
 - `--allow-circular-arbitrage`：允许环形套利路径。
 - `--enable-new-dexes`：在 Jupiter 侧新增交易所后自动拾取。
+- `--enable-add-market`：允许运行时通过 Jupiter API 注册新的市场（实验特性，默认关闭）。
 - `--filter-markets-with-mints <mintA,mintB,...>`：限制市场集合，第三方脚本通过 `token-cache.json` 自动生成。
 - `--exclude-dex-program-ids <dexA,dexB>`：排除不想参与的 DEX。
 

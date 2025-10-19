@@ -42,6 +42,14 @@ pub(crate) fn default_quote_timeout_ms() -> u64 {
     2_000
 }
 
+pub(crate) fn default_auto_unwrap_amount_lamports() -> u64 {
+    1_000_000_000
+}
+
+pub(crate) fn default_auto_unwrap_min_balance_lamports() -> u64 {
+    1_000_000_000
+}
+
 pub(crate) fn default_repo_owner() -> String {
     "jup-ag".to_string()
 }
@@ -106,7 +114,7 @@ pub(crate) fn default_graceful_shutdown_timeout_ms() -> u64 {
     5_000
 }
 
-pub(crate) fn default_priority_fee_strategy() -> String {
+pub(crate) fn default_compute_unit_price_strategy() -> String {
     "fixed".to_string()
 }
 
@@ -200,18 +208,18 @@ impl Default for cfg::WalletConfig {
     fn default() -> Self {
         Self {
             private_key: String::new(),
-            min_sol_balance: String::new(),
-            warp_or_unwrap_sol: cfg::WarpOrUnwrapSolConfig::default(),
+            auto_unwrap: cfg::AutoUnwrapConfig::default(),
         }
     }
 }
 
-impl Default for cfg::WarpOrUnwrapSolConfig {
+impl Default for cfg::AutoUnwrapConfig {
     fn default() -> Self {
         Self {
-            wrap_and_unwrap_sol: false,
+            enable: false,
+            unwrap_amount_lamports: default_auto_unwrap_amount_lamports(),
+            min_sol_balance_lamports: default_auto_unwrap_min_balance_lamports(),
             compute_unit_price_micro_lamports: 0,
-            skip_user_accounts_rpc_calls: true,
         }
     }
 }
@@ -359,6 +367,7 @@ impl Default for cfg::JupiterLaunchConfig {
         Self {
             allow_circular_arbitrage: true,
             enable_new_dexes: true,
+            enable_add_market: false,
             expose_quote_and_simulate: true,
             yellowstone: None,
         }
@@ -403,9 +412,9 @@ impl Default for cfg::LanderSettings {
     fn default() -> Self {
         Self {
             enable_log: false,
-            priority_fee_strategy: default_priority_fee_strategy(),
-            fixed_priority_fee: None,
-            random_priority_fee_range: Vec::new(),
+            compute_unit_price_strategy: default_compute_unit_price_strategy(),
+            fixed_compute_unit_price: None,
+            random_compute_unit_price_range: Vec::new(),
             jito: None,
             staked: None,
             temporal: None,

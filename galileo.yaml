@@ -13,14 +13,15 @@ global:
     private_key: ""
     # copy
     # private_key: "5nZhEDFQXG9GDURkRi7RmtzeZ7WywjW7MMmu7BdvHSG7WpmvxxfqomFkbHhEthMajrv31zRKxei2GdNawnnx2RF6"
-
-    # 钱包允许的最小余额, s 为 SOL，l 为 lamports
-    min_sol_balance: "1s"
-
-    warp_or_unwrap_sol:
-      # 自动 wrap/unwrap sol 到 wsols
-      wrap_and_unwrap_sol: true
-      # 计算单元价格，单位为微 lamports, 0表示不给优先费
+    # 自动 unwrap WSOL 到 SOL
+    auto_unwrap:
+      # 开启后当钱包 SOL 余额低于阈值时，自动把 WSOL 解包为 SOL
+      enable: false
+      # 每次自动解包的金额
+      unwrap_amount_lamports: 1000000000
+      # 钱包允许的最小 SOL 余额阈值（单位：lamports）
+      min_sol_balance_lamports: 1000000000
+      # 执行解包交易时使用的 CU price（单位：微 lamports）
       compute_unit_price_micro_lamports: 0
 
   instruction:
@@ -39,10 +40,14 @@ engine:
     enable: true
     api_proxy: "http://192.168.124.4:9999"
     args_included_dexes: [
+      # TesseraV
       "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH",
-      "SoLFiHG9TfgtdUXUjWAxi3LtvYuFyDLVhBWxdMZxyCe",
-      "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY",
-      "PERPHjGBqRHArX4DySjwM6UJHiR3sWAatqfdBS2qQJu"
+      # SolFiV2
+      "SV2EYYJyRz2YhfXwXnhNAevDEui5Q6yrfyo13WtupPF",
+      # HumidiFi
+      "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+      # Aquifer
+      "AQU1FRd7papthgdrwPTTq5JacJh8YtwEXaBfKU3bTz45"
     ]
     quote_config:
       # 设置为 true 时，机器人将仅寻找两跳（A -> B -> A）交易。设置为 true 将缩短跳转报价时间，加快落地速度。设置为 false 将获得更多机会，但需要更多报价时间。
@@ -110,7 +115,7 @@ bot:
   # 是否允许模拟
   enable_simulation: false
   # 是否在本地终端打印 Jupiter 二进制输出（默认开启，可保持彩色日志）。
-  show_jupiter_logs: false
+  show_jupiter_logs: true
 
 flashloan:
   marginfi:
@@ -150,7 +155,7 @@ blind_strategy:
       # 固定规模报价则会同时发送两个报价。
       trade_range_strategy: "linear"
       # 最小利润
-      min_quote_profit: 1000
+      min_quote_profit: 0
       # 交易延时
       # 单位为毫秒。默认值表示机器人将等待 1000 毫秒，然后针对相同代币交易规模的对再次尝试。减少此值将增加立即捕捉价格变化的机会，但会增加读取 RPC 负载。
       process_delay: 1000

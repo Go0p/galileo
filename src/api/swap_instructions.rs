@@ -287,9 +287,14 @@ impl TryFrom<Value> for SwapInstructionsResponse {
 #[derive(Deserialize, Serialize, Debug, PartialEq, Clone)]
 #[serde(rename_all = "camelCase")]
 #[serde(untagged)]
+/// 计算单价设置：
+/// - `MicroLamports`：直接指定微 lamports；
+/// - `Auto`：使用 Jupiter 侧的自动估算（JSON 字段写 `"auto"`）。
 pub enum ComputeUnitPriceMicroLamports {
+    /// 固定的 compute unit price（单位：微 lamports）。
     MicroLamports(u64),
     #[serde(deserialize_with = "auto")]
+    /// 让 Jupiter 自动推算 compute unit price。
     Auto,
 }
 
@@ -303,22 +308,37 @@ pub enum PriorityLevel {
 
 #[derive(Deserialize, Debug, PartialEq, Copy, Clone, Default)]
 #[serde(rename_all = "camelCase")]
+/// 优先费/Tip 配置入口，对应多种 JSON 结构：
+/// - `AutoMultiplier`：`{"autoMultiplier": <u32>}`；
+/// - `JitoTipLamports`：`{"jitoTipLamports": <u64>}`；
+/// - `PriorityLevelWithMaxLamports`：`{"priorityLevelWithMaxLamports": {...}}`；
+/// - `Auto`：`"auto"`；
+/// - `Lamports`：直接填整数 lamports；
+/// - `Disabled`：`"disabled"`（仅 `/swap` 可用）。
 pub enum PrioritizationFeeLamports {
+    /// 在 Jupiter 估算基础上乘以倍率。
     AutoMultiplier(u32),
+    /// 固定 Jito tip（由用户钱包支付）。
     JitoTipLamports(u64),
     #[serde(rename_all = "camelCase")]
     PriorityLevelWithMaxLamports {
+        /// 预设优先级（medium/high/veryHigh）。
         priority_level: PriorityLevel,
+        /// 估算优先费的最大上限。
         max_lamports: u64,
         #[serde(default)]
+        /// 是否按全局费市估算；默认为局部（相关写入账户）。
         global: bool,
     },
     #[default]
     #[serde(untagged, deserialize_with = "auto")]
+    /// 让 Jupiter 自动决定优先费。
     Auto,
     #[serde(untagged)]
+    /// 直接填入固定的额外 lamports。
     Lamports(u64),
     #[serde(untagged, deserialize_with = "disabled")]
+    /// 显式关闭优先费（仅在 `/swap` 请求可用）。
     Disabled,
 }
 

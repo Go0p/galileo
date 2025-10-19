@@ -17,7 +17,7 @@ pub use precheck::AccountPrechecker;
 pub use profit::{ProfitConfig, ProfitEvaluator, TipConfig};
 pub use quote::{QuoteConfig, QuoteExecutor};
 pub use scheduler::Scheduler;
-pub use swap::SwapInstructionFetcher;
+pub use swap::{ComputeUnitPriceMode, SwapInstructionFetcher};
 pub use types::{ExecutionPlan, QuoteTask, StrategyTick, SwapOpportunity};
 
 use std::time::{Duration, Instant};
@@ -34,7 +34,6 @@ use crate::strategy::{Strategy, StrategyEvent};
 pub struct EngineSettings {
     pub landing_timeout: Duration,
     pub quote: QuoteConfig,
-    pub compute_unit_price_override: Option<u64>,
     pub dry_run: bool,
 }
 
@@ -43,7 +42,6 @@ impl EngineSettings {
         Self {
             landing_timeout: Duration::from_secs(2),
             quote,
-            compute_unit_price_override: None,
             dry_run: false,
         }
     }
@@ -55,11 +53,6 @@ impl EngineSettings {
 
     pub fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
-        self
-    }
-
-    pub fn with_compute_unit_price_override(mut self, value: Option<u64>) -> Self {
-        self.compute_unit_price_override = value;
         self
     }
 }
@@ -204,11 +197,7 @@ where
 
         let instructions = self
             .swap_fetcher
-            .fetch(
-                &opportunity,
-                &self.identity,
-                self.settings.compute_unit_price_override,
-            )
+            .fetch(&opportunity, &self.identity)
             .await?;
         events::swap_fetched(
             strategy_name,

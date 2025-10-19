@@ -10,7 +10,6 @@ use sha2::{Digest, Sha256};
 use super::ConfigError;
 
 const ENC_FILE_NAME: &str = "wallet.enc";
-const AES_KEY_ENV: &str = "GALILEO_AES_KEY";
 const DEFAULT_KEY_SEED: &str = "galileo_fixed_key";
 const NONCE_SIZE: usize = 12;
 
@@ -126,8 +125,7 @@ pub(crate) fn encrypted_wallet_path(config_path: Option<&Path>) -> PathBuf {
 }
 
 fn derive_key() -> [u8; 32] {
-    let seed = std::env::var(AES_KEY_ENV).ok();
-    let material = seed.unwrap_or_else(|| DEFAULT_KEY_SEED.to_string());
+    let material = DEFAULT_KEY_SEED.to_string();
     let digest = Sha256::digest(material.as_bytes());
     digest.into()
 }
@@ -214,39 +212,8 @@ mod tests {
     use super::*;
     use crate::config::WalletConfig;
 
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let previous = std::env::var(key).ok();
-            unsafe {
-                std::env::set_var(key, value);
-            }
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(value) = &self.previous {
-                unsafe {
-                    std::env::set_var(self.key, value);
-                }
-            } else {
-                unsafe {
-                    std::env::remove_var(self.key);
-                }
-            }
-        }
-    }
-
     #[test]
     fn process_wallet_encrypts_and_decrypts() {
-        let _guard = EnvGuard::set(AES_KEY_ENV, "unit-test-key");
-
         let dir = tempdir().expect("temp dir");
         let config_path = dir.path().join("galileo.yaml");
         fs::write(&config_path, sample_config("SOME_PRIVATE_KEY")).expect("write config");

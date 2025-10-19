@@ -55,7 +55,7 @@ impl ProfitEvaluator {
 
         let profit = second_out.saturating_sub(amount_in as u128);
         let profit_u64 = profit.min(u128::from(u64::MAX)) as u64;
-        if profit_u64 <= self.config.min_profit_threshold_lamports {
+        if profit_u64 < self.config.min_profit_threshold_lamports {
             debug!(
                 target: "engine::profit",
                 profit = profit_u64,

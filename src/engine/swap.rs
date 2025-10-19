@@ -7,18 +7,52 @@ use super::identity::EngineIdentity;
 use super::types::SwapOpportunity;
 use crate::api::{ComputeUnitPriceMicroLamports, JupiterApiClient, SwapInstructionsRequest};
 use crate::config::JupiterSwapConfig;
+use rand::Rng;
+
+#[derive(Clone, Debug)]
+pub enum ComputeUnitPriceMode {
+    Fixed(u64),
+    Random { min: u64, max: u64 },
+}
+
+impl ComputeUnitPriceMode {
+    fn sample(&self) -> u64 {
+        match self {
+            ComputeUnitPriceMode::Fixed(value) => *value,
+            ComputeUnitPriceMode::Random { min, max } => {
+                let (low, high) = if min <= max {
+                    (*min, *max)
+                } else {
+                    (*max, *min)
+                };
+                if low == high {
+                    low
+                } else {
+                    let mut rng = rand::rng();
+                    rng.random_range(low..=high)
+                }
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct SwapInstructionFetcher {
     client: JupiterApiClient,
     request_defaults: JupiterSwapConfig,
+    compute_unit_price: Option<ComputeUnitPriceMode>,
 }
 
 impl SwapInstructionFetcher {
-    pub fn new(client: JupiterApiClient, request_defaults: JupiterSwapConfig) -> Self {
+    pub fn new(
+        client: JupiterApiClient,
+        request_defaults: JupiterSwapConfig,
+        compute_unit_price: Option<ComputeUnitPriceMode>,
+    ) -> Self {
         Self {
             client,
             request_defaults,
+            compute_unit_price,
         }
     }
 
@@ -27,7 +61,6 @@ impl SwapInstructionFetcher {
         &self,
         opportunity: &SwapOpportunity,
         identity: &EngineIdentity,
-        compute_unit_price_override: Option<u64>,
     ) -> EngineResult<crate::api::SwapInstructionsResponse> {
         let mut request =
             SwapInstructionsRequest::new(opportunity.merged_quote.clone(), identity.pubkey);
@@ -49,8 +82,8 @@ impl SwapInstructionFetcher {
                 }
             }
         }
-        if let Some(price) = compute_unit_price_override.or(identity.compute_unit_price_override())
-        {
+        if let Some(strategy) = &self.compute_unit_price {
+            let price = strategy.sample();
             request.compute_unit_price_micro_lamports =
                 Some(ComputeUnitPriceMicroLamports::MicroLamports(price));
         }

@@ -55,19 +55,20 @@ pub struct WalletConfig {
     #[serde(default)]
     pub private_key: String,
     #[serde(default)]
-    pub min_sol_balance: String,
-    #[serde(default)]
-    pub warp_or_unwrap_sol: WarpOrUnwrapSolConfig,
+    pub auto_unwrap: AutoUnwrapConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct WarpOrUnwrapSolConfig {
+pub struct AutoUnwrapConfig {
     #[serde(default)]
-    pub wrap_and_unwrap_sol: bool,
+    pub enable: bool,
+    #[serde(default = "super::default_auto_unwrap_amount_lamports")]
+    #[serde(alias = "unwarp_amount_lamports")]
+    pub unwrap_amount_lamports: u64,
+    #[serde(default = "super::default_auto_unwrap_min_balance_lamports")]
+    pub min_sol_balance_lamports: u64,
     #[serde(default)]
     pub compute_unit_price_micro_lamports: u64,
-    #[serde(default = "super::default_true")]
-    pub skip_user_accounts_rpc_calls: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -426,6 +427,8 @@ pub struct JupiterLaunchConfig {
     pub allow_circular_arbitrage: bool,
     #[serde(default = "super::default_true")]
     pub enable_new_dexes: bool,
+    #[serde(default)]
+    pub enable_add_market: bool,
     #[serde(default = "super::default_true")]
     pub expose_quote_and_simulate: bool,
     #[serde(default)]
@@ -537,6 +540,9 @@ impl JupiterConfig {
         if launch.enable_new_dexes {
             args.push("--enable-new-dexes".to_string());
         }
+        if launch.enable_add_market {
+            args.push("--enable-add-market".to_string());
+        }
         if launch.expose_quote_and_simulate {
             args.push("--expose-quote-and-simulate".to_string());
         }
@@ -609,12 +615,12 @@ pub struct LanderConfig {
 pub struct LanderSettings {
     #[serde(default)]
     pub enable_log: bool,
-    #[serde(default = "super::default_priority_fee_strategy")]
-    pub priority_fee_strategy: String,
+    #[serde(default = "super::default_compute_unit_price_strategy")]
+    pub compute_unit_price_strategy: String,
     #[serde(default)]
-    pub fixed_priority_fee: Option<u64>,
+    pub fixed_compute_unit_price: Option<u64>,
     #[serde(default)]
-    pub random_priority_fee_range: Vec<u64>,
+    pub random_compute_unit_price_range: Vec<u64>,
     #[serde(default)]
     pub jito: Option<LanderJitoConfig>,
     #[serde(default)]

@@ -19,6 +19,7 @@
 - `jup_exclude_dex_program_ids` → `[jupiter.tokens].exclude_dex_program_ids`
 - `intermediate_tokens`/`intermediate_tokens_file`/`load_mints_from_url` → 结合脚本生成 `filter_markets_with_mints`，填入 `[jupiter.tokens].filter_markets_with_mints`
 - `not_support_tokens` → 可并入 `exclude_dex_program_ids` 或下游白名单管理
+- 运行时动态添加市场 → `[jupiter.launch].enable_add_market`
 
 生成 `token-cache.json` 的流程可继续沿用 `third_party/mints-query.sh`，执行后把输出写入 `galileo` 的白名单列表。
 
@@ -41,7 +42,7 @@
   - `timezone_offset_hours`：日志时间的 UTC 偏移量（单位：小时），默认 `0`；例如填写 `8` 即输出为北京时间。
 
 ## 上链器与小费
-上链器（Jito、Staked、Temporal、Astralane 等）以及优先费、tip 策略已拆分到独立的 `lander.yaml`，程序会在 `galileo.yaml` 所在目录或 `config/` 目录中自动加载该文件，可直接复制模板并按需扩展字段。
+上链器（Jito、Staked、Temporal、Astralane 等）以及 compute unit price/tip 策略已拆分到独立的 `lander.yaml`，程序会在 `galileo.yaml` 所在目录或 `config/` 目录中自动加载该文件，可直接复制模板并按需扩展字段。
 
 ## 高性能默认值
 `galileo` 会自动生成以下核心启动参数：
@@ -51,6 +52,7 @@
 --market-mode remote
 --allow-circular-arbitrage
 --enable-new-dexes
+--enable-add-market（当 `[jupiter.launch].enable_add_market = true` 时添加）
 --expose-quote-and-simulate
 --enable-markets --enable-tokens
 --skip-user-accounts-rpc-calls

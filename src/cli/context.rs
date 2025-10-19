@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::env;
 use std::fs;
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -113,13 +112,6 @@ pub async fn ensure_running(manager: &JupiterBinaryManager) -> Result<(), Jupite
 }
 
 pub fn resolve_jupiter_base_url(_bot: &BotConfig, jupiter: &JupiterConfig) -> String {
-    if let Ok(url) = std::env::var("JUPITER_URL") {
-        let trimmed = url.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-
     let host = sanitize_jupiter_host(&jupiter.core.host);
     format!("http://{}:{}", host, jupiter.core.port)
 }
@@ -318,15 +310,10 @@ mod tests {
 pub fn resolve_rpc_client(
     global: &GlobalConfig,
 ) -> Result<Arc<solana_client::nonblocking::rpc_client::RpcClient>> {
-    let url = env::var("GALILEO_RPC_URL")
-        .ok()
+    let url = global
+        .rpc_url
+        .clone()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            global
-                .rpc_url
-                .clone()
-                .filter(|value| !value.trim().is_empty())
-        })
         .unwrap_or_else(|| "https://api.mainnet-beta.solana.com".to_string());
 
     Ok(Arc::new(
