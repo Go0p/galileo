@@ -1,6 +1,6 @@
-use std::convert::TryInto;
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use solana_sdk::pubkey::Pubkey;
+use std::convert::TryInto;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoolState {

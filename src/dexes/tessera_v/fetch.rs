@@ -1,22 +1,19 @@
 use std::str::FromStr;
 
 use anyhow::{Context, Result};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use solana_client::{
-    rpc_client::RpcClient,
-    rpc_config::RpcAccountInfoConfig,
-    rpc_request::TokenAccountsFilter,
+    rpc_client::RpcClient, rpc_request::TokenAccountsFilter, rpc_response::RpcKeyedAccount,
 };
-use solana_sdk::{pubkey, pubkey::Pubkey, sysvar};
+use solana_sdk::{pubkey::Pubkey, sysvar};
+use std::convert::TryInto;
 
-use super::types::PoolState;
+use super::decoder::TESSERA_V_GLOBAL_STATE;
 
-pub const TESSERA_V_PROGRAM_ID: Pubkey =
-    pubkey!("TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH");
-const TESSERA_V_GLOBAL_STATE: Pubkey =
-    pubkey!("8ekCy2jHHUbW2yeNGFWYJT9Hm9FW7SvZcZK66dSZCDiF");
 const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
-    pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+    solana_sdk::pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+use super::types::PoolState;
 
 /// 0. global_state          8ekCy2jHHUbW2yeNGFWYJT9Hm9FW7SvZcZK66dSZCDiF
 /// 1. pool_state            FLckHLGMJy5gEoXWwcE68Nprde1D4araK4TGLw4pQq2n
@@ -30,6 +27,7 @@ const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
 /// 9. base_token_program
 /// 10. quote_token_program
 /// 11. sysvar_instructions
+#[derive(Debug, Clone)]
 pub struct TesseraVSwapInfo {
     pub global_state: Pubkey,
     pub pool_state: Pubkey,
@@ -57,21 +55,19 @@ pub fn fetch_tessera_v_swap_info(
         .with_context(|| format!("fetch Tessera V pool account {market}"))?;
     let pool_state = PoolState::parse(&pool_account)?;
 
-    let (base_token_program, _base_decimals) =
-        load_mint_info(client, &pool_state.base_mint)?;
-    let (quote_token_program, _quote_decimals) =
-        load_mint_info(client, &pool_state.quote_mint)?;
+    let (base_token_program, _base_decimals) = load_mint_info(client, &pool_state.base_mint)?;
+    let (quote_token_program, _quote_decimals) = load_mint_info(client, &pool_state.quote_mint)?;
 
     let base_vault = fetch_vault_account(client, &pool_state.base_mint)?;
     let quote_vault = fetch_vault_account(client, &pool_state.quote_mint)?;
 
     let user_authority = payer;
-    let resolved_base_token = if user_base_account == Pubkey::default() && payer != Pubkey::default()
-    {
-        derive_associated_token_address(&payer, &pool_state.base_mint, &base_token_program)
-    } else {
-        user_base_account
-    };
+    let resolved_base_token =
+        if user_base_account == Pubkey::default() && payer != Pubkey::default() {
+            derive_associated_token_address(&payer, &pool_state.base_mint, &base_token_program)
+        } else {
+            user_base_account
+        };
     let resolved_quote_token =
         if user_quote_account == Pubkey::default() && payer != Pubkey::default() {
             derive_associated_token_address(&payer, &pool_state.quote_mint, &quote_token_program)
@@ -109,16 +105,8 @@ fn load_mint_info(client: &RpcClient, mint: &Pubkey) -> Result<(Pubkey, u8)> {
 }
 
 fn fetch_vault_account(client: &RpcClient, mint: &Pubkey) -> Result<Pubkey> {
-    let accounts = client
-        .get_token_accounts_by_owner_with_config(
-            &TESSERA_V_GLOBAL_STATE,
-            TokenAccountsFilter::Mint(*mint),
-            RpcAccountInfoConfig {
-                encoding: Some(UiAccountEncoding::JsonParsed),
-                commitment: Some(client.commitment()),
-                ..RpcAccountInfoConfig::default()
-            },
-        )
+    let accounts: Vec<RpcKeyedAccount> = client
+        .get_token_accounts_by_owner(&TESSERA_V_GLOBAL_STATE, TokenAccountsFilter::Mint(*mint))
         .with_context(|| format!("fetch Tessera vault accounts for mint {mint}"))?;
 
     let mut best: Option<(Pubkey, u64)> = None;
@@ -132,8 +120,7 @@ fn fetch_vault_account(client: &RpcClient, mint: &Pubkey) -> Result<Pubkey> {
         }
     }
 
-    best
-        .map(|(pubkey, _)| pubkey)
+    best.map(|(pubkey, _)| pubkey)
         .with_context(|| format!("owner {TESSERA_V_GLOBAL_STATE} has no vault for mint {mint}"))
 }
 
@@ -145,8 +132,20 @@ fn parse_token_amount(data: &UiAccountData) -> Option<u64> {
             let amount = token_amount.get("amount")?.as_str()?.parse().ok()?;
             Some(amount)
         }
+        UiAccountData::Binary(encoded, UiAccountEncoding::Base64) => {
+            let raw = BASE64.decode(encoded.as_bytes()).ok()?;
+            parse_amount_from_raw(&raw)
+        }
         _ => None,
     }
+}
+
+fn parse_amount_from_raw(data: &[u8]) -> Option<u64> {
+    const AMOUNT_OFFSET: usize = 64;
+    const AMOUNT_LEN: usize = 8;
+    let slice = data.get(AMOUNT_OFFSET..AMOUNT_OFFSET + AMOUNT_LEN)?;
+    let bytes: [u8; AMOUNT_LEN] = slice.try_into().ok()?;
+    Some(u64::from_le_bytes(bytes))
 }
 
 fn derive_associated_token_address(
@@ -154,9 +153,10 @@ fn derive_associated_token_address(
     mint: &Pubkey,
     token_program: &Pubkey,
 ) -> Pubkey {
+    let program_id = Pubkey::new_from_array(ASSOCIATED_TOKEN_PROGRAM_ID.to_bytes());
     let (address, _) = Pubkey::find_program_address(
         &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
-        &ASSOCIATED_TOKEN_PROGRAM_ID,
+        &program_id,
     );
     address
 }
@@ -170,8 +170,7 @@ mod tests {
     #[test]
     fn fetch_live_swap_info() {
         let client = RpcClient::new("http://127.0.0.1:8899".to_string());
-        let market =
-            Pubkey::from_str("FLckHLGMJy5gEoXWwcE68Nprde1D4araK4TGLw4pQq2n").unwrap();
+        let market = Pubkey::from_str("FLckHLGMJy5gEoXWwcE68Nprde1D4araK4TGLw4pQq2n").unwrap();
         let swap_info = fetch_tessera_v_swap_info(
             &client,
             market,

@@ -4,6 +4,7 @@ use std::str::FromStr;
 use solana_sdk::pubkey::Pubkey;
 
 use crate::dexes::solfi_v2::SolfiV2MarketMeta;
+use crate::dexes::tessera_v::TesseraVMarketMeta;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TradePair {
@@ -60,7 +61,11 @@ impl FromStr for BlindDex {
 pub struct BlindStep {
     pub dex: BlindDex,
     pub market: Pubkey,
-    pub meta: SolfiV2MarketMeta,
+    pub base_mint: Pubkey,
+    pub quote_mint: Pubkey,
+    pub base_token_program: Pubkey,
+    pub quote_token_program: Pubkey,
+    pub meta: BlindMarketMeta,
     pub direction: BlindSwapDirection,
 }
 
@@ -80,4 +85,10 @@ pub enum BlindSwapDirection {
 pub struct BlindRoutePlan {
     pub forward: Vec<BlindStep>,
     pub reverse: Vec<BlindStep>,
+}
+
+#[derive(Debug, Clone)]
+pub enum BlindMarketMeta {
+    SolFiV2(SolfiV2MarketMeta),
+    TesseraV(TesseraVMarketMeta),
 }

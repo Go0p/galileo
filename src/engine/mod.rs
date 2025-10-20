@@ -23,6 +23,7 @@ pub use types::{ExecutionPlan, QuoteTask, StrategyTick, SwapOpportunity};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use borsh::BorshSerialize;
 use serde_json::Value;
 use solana_sdk::instruction::AccountMeta;
 use solana_sdk::pubkey::Pubkey;
@@ -32,9 +33,12 @@ use crate::api::SwapInstructionsResponse;
 use crate::flashloan::{FlashloanManager, FlashloanOutcome};
 use crate::lander::{Deadline, LanderStack};
 use crate::monitoring::events;
-use crate::strategy::types::{BlindDex, BlindOrder, BlindStep, BlindSwapDirection, TradePair};
+use crate::strategy::types::{
+    BlindDex, BlindMarketMeta, BlindOrder, BlindStep, BlindSwapDirection, TradePair,
+};
 use crate::txs::jupiter::route_v2::{RouteV2Accounts, RouteV2InstructionBuilder};
 use crate::txs::jupiter::types::{EncodedSwap, RoutePlanStepV2};
+use crate::{dexes::solfi_v2::SolfiV2MarketMeta, dexes::tessera_v::TesseraVMarketMeta};
 
 const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
     solana_sdk::pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
@@ -197,7 +201,7 @@ where
             .last()
             .ok_or_else(|| EngineError::InvalidConfig("盲发订单缺少末尾步骤".to_string()))?;
 
-        ensure_solfi_pair(first_step, last_step)?;
+        ensure_route_pair(first_step, last_step)?;
 
         let mut ata_resolver = AtaResolver::new(self.identity.pubkey);
 
@@ -286,30 +290,48 @@ where
             return Err(EngineError::InvalidConfig("盲发订单缺少步骤".to_string()));
         }
 
-        let base_mint = order.steps[0].meta.base_mint;
-        let quote_mint = order.steps[0].meta.quote_mint;
+        let first = &order.steps[0];
+        let base_mint = first.base_mint;
+        let quote_mint = first.quote_mint;
 
         let mut route_plan = Vec::with_capacity(order.steps.len());
         let mut remaining_accounts = Vec::with_capacity(order.steps.len() * 12);
 
         for (idx, step) in order.steps.iter().enumerate() {
-            if step.dex != BlindDex::SolFiV2 {
+            if step.base_mint != base_mint || step.quote_mint != quote_mint {
                 return Err(EngineError::InvalidConfig(
-                    "纯盲发目前仅支持 SolFiV2".to_string(),
+                    "纯盲发路由中的市场 base/quote mint 不一致".to_string(),
                 ));
             }
 
-            if step.meta.base_mint != base_mint || step.meta.quote_mint != quote_mint {
-                return Err(EngineError::InvalidConfig(
-                    "纯盲发路由中的 SolFiV2 市场配置不一致".to_string(),
-                ));
-            }
+            let user_base = resolver.get(step.base_mint, step.base_token_program);
+            let user_quote = resolver.get(step.quote_mint, step.quote_token_program);
 
-            let encoded_swap = EncodedSwap::from_name(
-                "SolFiV2",
-                &matches!(step.direction, BlindSwapDirection::QuoteToBase),
-            )
-            .map_err(|err| EngineError::InvalidConfig(format!("构造 SolFiV2 swap 失败: {err}")))?;
+            let encoded_swap = match (&step.meta, step.dex) {
+                (BlindMarketMeta::SolFiV2(_), BlindDex::SolFiV2) => EncodedSwap::from_name(
+                    "SolFiV2",
+                    &matches!(step.direction, BlindSwapDirection::QuoteToBase),
+                )
+                .map_err(|err| {
+                    EngineError::InvalidConfig(format!("构造 SolFiV2 swap 失败: {err}"))
+                })?,
+                (BlindMarketMeta::TesseraV(_), BlindDex::TesseraV) => {
+                    let payload = TesseraSwapPayload {
+                        side: match step.direction {
+                            BlindSwapDirection::QuoteToBase => TesseraSide::Bid,
+                            BlindSwapDirection::BaseToQuote => TesseraSide::Ask,
+                        },
+                    };
+                    EncodedSwap::from_name("TesseraV", &payload).map_err(|err| {
+                        EngineError::InvalidConfig(format!("构造 TesseraV swap 失败: {err}"))
+                    })?
+                }
+                _ => {
+                    return Err(EngineError::InvalidConfig(
+                        "纯盲发暂未支持该 DEX".to_string(),
+                    ));
+                }
+            };
 
             route_plan.push(RoutePlanStepV2 {
                 swap: encoded_swap,
@@ -318,10 +340,20 @@ where
                 output_index: if idx == 0 { 1 } else { 0 },
             });
 
-            let user_base = resolver.get(step.meta.base_mint, step.meta.base_token_program);
-            let user_quote = resolver.get(step.meta.quote_mint, step.meta.quote_token_program);
-
-            remaining_accounts.extend(build_solfi_remaining_accounts(step, user_base, user_quote));
+            match &step.meta {
+                BlindMarketMeta::SolFiV2(meta) => remaining_accounts.extend(
+                    build_solfi_remaining_accounts(meta, step.market, user_base, user_quote),
+                ),
+                BlindMarketMeta::TesseraV(meta) => {
+                    remaining_accounts.extend(build_tessera_remaining_accounts(
+                        meta,
+                        step.market,
+                        self.identity.pubkey,
+                        user_base,
+                        user_quote,
+                    ))
+                }
+            }
         }
 
         Ok((route_plan, remaining_accounts))
@@ -488,14 +520,8 @@ where
     }
 }
 
-fn ensure_solfi_pair(first: &BlindStep, last: &BlindStep) -> EngineResult<()> {
-    if first.dex != BlindDex::SolFiV2 || last.dex != BlindDex::SolFiV2 {
-        return Err(EngineError::InvalidConfig(
-            "纯盲发目前仅支持 SolFiV2".to_string(),
-        ));
-    }
-    if first.meta.base_mint != last.meta.base_mint || first.meta.quote_mint != last.meta.quote_mint
-    {
+fn ensure_route_pair(first: &BlindStep, last: &BlindStep) -> EngineResult<()> {
+    if first.base_mint != last.base_mint || first.quote_mint != last.quote_mint {
         return Err(EngineError::InvalidConfig(
             "纯盲发路由 base/quote mint 不一致".to_string(),
         ));
@@ -534,36 +560,71 @@ impl AtaResolver {
 }
 
 fn build_solfi_remaining_accounts(
-    step: &BlindStep,
+    meta: &SolfiV2MarketMeta,
+    market: Pubkey,
     user_base: Pubkey,
     user_quote: Pubkey,
 ) -> Vec<AccountMeta> {
     vec![
-        AccountMeta::new(step.market, false),
-        AccountMeta::new_readonly(step.meta.oracle, false),
-        AccountMeta::new_readonly(step.meta.config, false),
-        AccountMeta::new(step.meta.base_vault, false),
-        AccountMeta::new(step.meta.quote_vault, false),
+        AccountMeta::new(market, false),
+        AccountMeta::new_readonly(meta.oracle, false),
+        AccountMeta::new_readonly(meta.config, false),
+        AccountMeta::new(meta.base_vault, false),
+        AccountMeta::new(meta.quote_vault, false),
         AccountMeta::new(user_base, false),
         AccountMeta::new(user_quote, false),
-        AccountMeta::new_readonly(step.meta.base_mint, false),
-        AccountMeta::new_readonly(step.meta.quote_mint, false),
-        AccountMeta::new_readonly(step.meta.base_token_program, false),
-        AccountMeta::new_readonly(step.meta.quote_token_program, false),
+        AccountMeta::new_readonly(meta.base_mint, false),
+        AccountMeta::new_readonly(meta.quote_mint, false),
+        AccountMeta::new_readonly(meta.base_token_program, false),
+        AccountMeta::new_readonly(meta.quote_token_program, false),
+        AccountMeta::new_readonly(solana_sdk::sysvar::instructions::ID, false),
+    ]
+}
+
+fn build_tessera_remaining_accounts(
+    meta: &TesseraVMarketMeta,
+    market: Pubkey,
+    user_authority: Pubkey,
+    user_base: Pubkey,
+    user_quote: Pubkey,
+) -> Vec<AccountMeta> {
+    vec![
+        AccountMeta::new_readonly(meta.global_state, false),
+        AccountMeta::new(market, false),
+        AccountMeta::new(user_authority, true),
+        AccountMeta::new(meta.base_vault, false),
+        AccountMeta::new(meta.quote_vault, false),
+        AccountMeta::new(user_base, false),
+        AccountMeta::new(user_quote, false),
+        AccountMeta::new_readonly(meta.base_mint, false),
+        AccountMeta::new_readonly(meta.quote_mint, false),
+        AccountMeta::new_readonly(meta.base_token_program, false),
+        AccountMeta::new_readonly(meta.quote_token_program, false),
         AccountMeta::new_readonly(solana_sdk::sysvar::instructions::ID, false),
     ]
 }
 
 fn resolve_step_input(step: &BlindStep) -> (Pubkey, Pubkey) {
     match step.direction {
-        BlindSwapDirection::QuoteToBase => (step.meta.quote_mint, step.meta.quote_token_program),
-        BlindSwapDirection::BaseToQuote => (step.meta.base_mint, step.meta.base_token_program),
+        BlindSwapDirection::QuoteToBase => (step.quote_mint, step.quote_token_program),
+        BlindSwapDirection::BaseToQuote => (step.base_mint, step.base_token_program),
     }
 }
 
 fn resolve_step_output(step: &BlindStep) -> (Pubkey, Pubkey) {
     match step.direction {
-        BlindSwapDirection::QuoteToBase => (step.meta.base_mint, step.meta.base_token_program),
-        BlindSwapDirection::BaseToQuote => (step.meta.quote_mint, step.meta.quote_token_program),
+        BlindSwapDirection::QuoteToBase => (step.base_mint, step.base_token_program),
+        BlindSwapDirection::BaseToQuote => (step.quote_mint, step.quote_token_program),
     }
+}
+
+#[derive(BorshSerialize)]
+struct TesseraSwapPayload {
+    side: TesseraSide,
+}
+
+#[derive(BorshSerialize)]
+enum TesseraSide {
+    Bid,
+    Ask,
 }
