@@ -229,6 +229,8 @@ pub struct BlindStrategyConfig {
     #[serde(default)]
     pub enable: bool,
     #[serde(default)]
+    pub pure_mode: bool,
+    #[serde(default)]
     pub memo: String,
     #[serde(default)]
     pub enable_dexs: Vec<String>,
@@ -236,6 +238,8 @@ pub struct BlindStrategyConfig {
     pub enable_landers: Vec<String>,
     #[serde(default)]
     pub base_mints: Vec<BlindBaseMintConfig>,
+    #[serde(default)]
+    pub pure_routes: Vec<PureBlindRouteConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -258,6 +262,12 @@ pub struct BlindBaseMintConfig {
     pub route_types: Vec<String>,
     #[serde(default)]
     pub three_hop_mints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PureBlindRouteConfig {
+    pub buy_market: String,
+    pub sell_market: String,
 }
 
 fn deserialize_trade_size_range<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>

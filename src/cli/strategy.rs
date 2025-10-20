@@ -9,6 +9,7 @@ use crate::api::JupiterApiClient;
 use crate::cli::context::{resolve_instruction_memo, resolve_rpc_client};
 use crate::config;
 use crate::config::{AppConfig, IntermediumConfig};
+use crate::dexes::solfi_v2::decode_market_meta;
 use crate::engine::{
     AccountPrechecker, BuilderConfig, ComputeUnitPriceMode, EngineError, EngineIdentity,
     EngineResult, EngineSettings, ProfitConfig, ProfitEvaluator, QuoteConfig, QuoteExecutor,
@@ -18,13 +19,109 @@ use crate::flashloan::FlashloanManager;
 use crate::jupiter::{JupiterBinaryManager, JupiterError};
 use crate::lander::LanderFactory;
 use crate::monitoring::events;
-use crate::strategy::{BlindStrategy, Strategy, StrategyEvent};
+use crate::strategy::types::{BlindDex, BlindRoutePlan, BlindStep, BlindSwapDirection};
+use crate::strategy::{BlindStrategy, PureBlindStrategy, Strategy, StrategyEvent};
 use solana_sdk::pubkey::Pubkey;
 
 /// 控制策略以正式模式还是 dry-run 模式运行。
 pub enum StrategyMode {
     Live,
     DryRun,
+}
+
+async fn build_pure_blind_routes(
+    config: &config::BlindStrategyConfig,
+    rpc_client: &solana_client::nonblocking::rpc_client::RpcClient,
+) -> EngineResult<Vec<BlindRoutePlan>> {
+    if config.pure_routes.is_empty() {
+        return Err(EngineError::InvalidConfig(
+            "pure_mode 已开启，但 blind_strategy.pure_routes 为空".into(),
+        ));
+    }
+
+    let mut plans = Vec::with_capacity(config.pure_routes.len());
+
+    for route in &config.pure_routes {
+        let buy_market = Pubkey::from_str(route.buy_market.trim()).map_err(|err| {
+            EngineError::InvalidConfig(format!(
+                "blind_strategy.pure_routes.buy_market `{}` 解析失败: {err}",
+                route.buy_market
+            ))
+        })?;
+        let sell_market = Pubkey::from_str(route.sell_market.trim()).map_err(|err| {
+            EngineError::InvalidConfig(format!(
+                "blind_strategy.pure_routes.sell_market `{}` 解析失败: {err}",
+                route.sell_market
+            ))
+        })?;
+
+        let accounts = rpc_client
+            .get_multiple_accounts(&[buy_market, sell_market])
+            .await
+            .map_err(EngineError::Rpc)?;
+
+        let buy_account = accounts
+            .get(0)
+            .and_then(|acc| acc.as_ref())
+            .ok_or_else(|| {
+                EngineError::InvalidConfig(format!("SolFiV2 市场 {} 不存在", buy_market))
+            })?;
+        let sell_account = accounts
+            .get(1)
+            .and_then(|acc| acc.as_ref())
+            .ok_or_else(|| {
+                EngineError::InvalidConfig(format!("SolFiV2 市场 {} 不存在", sell_market))
+            })?;
+
+        let buy_meta = decode_market_meta(buy_market, &buy_account.data).map_err(|err| {
+            EngineError::InvalidConfig(format!("SolFiV2 市场 {} 解码失败: {err}", buy_market))
+        })?;
+        let sell_meta = decode_market_meta(sell_market, &sell_account.data).map_err(|err| {
+            EngineError::InvalidConfig(format!("SolFiV2 市场 {} 解码失败: {err}", sell_market))
+        })?;
+
+        if buy_meta.base_mint != sell_meta.base_mint || buy_meta.quote_mint != sell_meta.quote_mint
+        {
+            return Err(EngineError::InvalidConfig(format!(
+                "SolFiV2 市场 {} 与 {} 的基础/计价代币不一致",
+                buy_market, sell_market
+            )));
+        }
+
+        let forward = vec![
+            BlindStep {
+                dex: BlindDex::SolFiV2,
+                market: sell_market,
+                meta: sell_meta.clone(),
+                direction: BlindSwapDirection::BaseToQuote,
+            },
+            BlindStep {
+                dex: BlindDex::SolFiV2,
+                market: buy_market,
+                meta: buy_meta.clone(),
+                direction: BlindSwapDirection::QuoteToBase,
+            },
+        ];
+
+        let reverse = vec![
+            BlindStep {
+                dex: BlindDex::SolFiV2,
+                market: buy_market,
+                meta: buy_meta.clone(),
+                direction: BlindSwapDirection::QuoteToBase,
+            },
+            BlindStep {
+                dex: BlindDex::SolFiV2,
+                market: sell_market,
+                meta: sell_meta.clone(),
+                direction: BlindSwapDirection::BaseToQuote,
+            },
+        ];
+
+        plans.push(BlindRoutePlan { forward, reverse });
+    }
+
+    Ok(plans)
 }
 
 /// 主策略入口，按配置在盲发与 copy 之间切换。
@@ -55,8 +152,14 @@ async fn run_blind_engine(
         return Ok(());
     }
 
+    let pure_mode = blind_config.pure_mode;
     let mut jupiter_started = false;
-    if !manager.disable_local_binary {
+    if pure_mode {
+        info!(
+            target: "strategy",
+            "纯盲发模式已开启，不启动本地 Jupiter 二进制"
+        );
+    } else if !manager.disable_local_binary {
         match manager.start(false).await {
             Ok(()) => {
                 info!(target: "strategy", "已启动本地 Jupiter 二进制");
@@ -164,28 +267,52 @@ async fn run_blind_engine(
         .map_err(|err| anyhow!(err))?;
 
     let compute_unit_price_mode = derive_compute_unit_price_mode(&config.lander.lander);
+    let engine_settings = EngineSettings::new(quote_config)
+        .with_landing_timeout(landing_timeout)
+        .with_dry_run(dry_run);
 
-    let strategy_engine = StrategyEngine::new(
-        BlindStrategy::new(),
-        lander_stack,
-        identity,
-        QuoteExecutor::new(api_client.clone(), quote_defaults),
-        ProfitEvaluator::new(profit_config),
-        SwapInstructionFetcher::new(api_client.clone(), swap_defaults, compute_unit_price_mode),
-        TransactionBuilder::new(rpc_client.clone(), builder_config),
-        Scheduler::new(scheduler_delay),
-        flashloan,
-        EngineSettings::new(quote_config)
-            .with_landing_timeout(landing_timeout)
-            .with_dry_run(dry_run),
-        trade_pairs,
-        trade_amounts,
-    );
-    drive_engine(strategy_engine)
-        .await
-        .map_err(|err| anyhow!(err))?;
+    if pure_mode {
+        let routes = build_pure_blind_routes(blind_config, &rpc_client)
+            .await
+            .map_err(|err| anyhow!(err))?;
+        let strategy_engine = StrategyEngine::new(
+            PureBlindStrategy::new(routes).map_err(|err| anyhow!(err))?,
+            lander_stack,
+            identity,
+            QuoteExecutor::new(api_client.clone(), quote_defaults),
+            ProfitEvaluator::new(profit_config),
+            SwapInstructionFetcher::new(api_client.clone(), swap_defaults, compute_unit_price_mode),
+            TransactionBuilder::new(rpc_client.clone(), builder_config),
+            Scheduler::new(scheduler_delay),
+            flashloan,
+            engine_settings,
+            trade_pairs,
+            trade_amounts,
+        );
+        drive_engine(strategy_engine)
+            .await
+            .map_err(|err| anyhow!(err))?;
+    } else {
+        let strategy_engine = StrategyEngine::new(
+            BlindStrategy::new(),
+            lander_stack,
+            identity,
+            QuoteExecutor::new(api_client.clone(), quote_defaults),
+            ProfitEvaluator::new(profit_config),
+            SwapInstructionFetcher::new(api_client.clone(), swap_defaults, compute_unit_price_mode),
+            TransactionBuilder::new(rpc_client.clone(), builder_config),
+            Scheduler::new(scheduler_delay),
+            flashloan,
+            engine_settings,
+            trade_pairs,
+            trade_amounts,
+        );
+        drive_engine(strategy_engine)
+            .await
+            .map_err(|err| anyhow!(err))?;
+    }
 
-    if jupiter_started {
+    if !pure_mode && jupiter_started {
         if let Err(err) = manager.stop().await {
             warn!(
                 target: "strategy",

@@ -131,6 +131,7 @@ flashloan:
 # 盲发策略
 blind_strategy:
   enable: true
+  pure_mode: true
   memo: ""
   # 只允许交易这些 dex
   enable_dexs: [
@@ -173,6 +174,9 @@ blind_strategy:
       # 三跳交易中，中间的铸币厂
       three_hop_mints:
         - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+  pure_routes:
+    - buy_market: "HYKRMKiXfs1CedDsUHNyaVmEyuw7gj3E3uY6gJgUeMr6"
+      sell_market: "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc"
 
 # 后跑策略
 # Backrun 策略的工作原理如下：

@@ -288,10 +288,12 @@ impl Default for cfg::BlindStrategyConfig {
     fn default() -> Self {
         Self {
             enable: false,
+            pure_mode: false,
             memo: String::new(),
             enable_dexs: Vec::new(),
             enable_landers: Vec::new(),
             base_mints: Vec::new(),
+            pure_routes: Vec::new(),
         }
     }
 }

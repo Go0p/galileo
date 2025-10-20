@@ -9,12 +9,14 @@ use tracing::{debug, info, warn};
 mod api;
 mod cli;
 mod config;
+mod dexes;
 mod engine;
 mod flashloan;
 mod jupiter;
 mod lander;
 mod monitoring;
 mod strategy;
+mod txs;
 
 use crate::cli::args::Cli;
 use crate::cli::context::{init_tracing, load_configuration};
@@ -25,6 +27,7 @@ async fn async_entry(cli: Cli, config: AppConfig) -> Result<()> {
     crate::cli::run(cli, config).await
 }
 
+#[derive(Debug)]
 struct RuntimeOptions {
     plan: Option<Arc<AffinityPlan>>,
     worker_threads: Option<usize>,
@@ -41,6 +44,7 @@ impl Default for RuntimeOptions {
     }
 }
 
+#[derive(Debug)]
 struct AffinityPlan {
     cores: Vec<usize>,
     cursor: AtomicUsize,

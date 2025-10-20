@@ -50,6 +50,7 @@ url = "2.5.7"
 aes-gcm = { version = "0.10.3", features = ["aes"] }
 sha2 = "0.10.9"
 core_affinity = "0.8.3"
+bytemuck = { version = "1.15.0", features = ["derive"] }
 
 [features]
 default = []

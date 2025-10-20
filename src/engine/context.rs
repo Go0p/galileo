@@ -6,6 +6,7 @@ use super::types::QuoteTask;
 pub enum Action {
     Idle,
     Quote(Vec<QuoteTask>),
+    DispatchBlind(Vec<crate::strategy::types::BlindOrder>),
 }
 
 pub struct StrategyResources<'a> {
@@ -28,6 +29,10 @@ impl<'a> StrategyContext<'a> {
 
     pub fn trade_pairs(&self) -> &'a [TradePair] {
         self.resources.pairs
+    }
+
+    pub fn trade_amounts(&self) -> &'a [u64] {
+        self.resources.trade_amounts
     }
 
     pub fn schedule_pair_all_amounts(&mut self, pair: &TradePair) {

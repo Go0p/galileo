@@ -1,0 +1,95 @@
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "slot": 374559435,
+    "transaction": {
+      "signatures": [
+        "5jSgoGizCspMoWingBwTqBjYTdURS3HUXRMAM8kBDP6epM74aNriUVmg9NskkA1Fig8WrVD65mnTygBwuYN6Zb5p"
+      ],
+      "message": {
+        "header": {
+          "numRequiredSignatures": 1,
+          "numReadonlySignedAccounts": 0,
+          "numReadonlyUnsignedAccounts": 2
+        },
+        "accountKeys": [
+          "Ch9bHRa7ga5VpQrLkahU1P7dcrHCvUc8No5hCxfwiStY",
+          "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
+          "HeDpLVZDrsG3UeoBff86cw2S8CgTJNdWNgqafqaprmFN",
+          "11111111111111111111111111111111",
+          "ComputeBudget111111111111111111111111111111"
+        ],
+        "recentBlockhash": "5NRw2uuAmEg9Enro8vijVQQE5RDXXUL8QvstvRRVF5tw",
+        "instructions": [
+          {
+            "programIdIndex": 4,
+            "accounts": [],
+            "data": "LKoyXd",
+            "stackHeight": 1
+          },
+          {
+            "programIdIndex": 3,
+            "accounts": [
+              0,
+              1
+            ],
+            "data": "3Bxs4BzYyWBLN8Js",
+            "stackHeight": 1
+          },
+          {
+            "programIdIndex": 3,
+            "accounts": [
+              0,
+              2
+            ],
+            "data": "3Bxs4Bc3VYuGVB19",
+            "stackHeight": 1
+          }
+        ],
+        "addressTableLookups": []
+      }
+    },
+    "meta": {
+      "err": null,
+      "status": {
+        "Ok": null
+      },
+      "fee": 5000,
+      "preBalances": [
+        1305098,
+        1804770,
+        605960495,
+        1,
+        1
+      ],
+      "postBalances": [
+        0,
+        2104868,
+        606960495,
+        1,
+        1
+      ],
+      "innerInstructions": [],
+      "logMessages": [
+        "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+        "Program ComputeBudget111111111111111111111111111111 success",
+        "Program 11111111111111111111111111111111 invoke [1]",
+        "Program 11111111111111111111111111111111 success",
+        "Program 11111111111111111111111111111111 invoke [1]",
+        "Program 11111111111111111111111111111111 success"
+      ],
+      "preTokenBalances": [],
+      "postTokenBalances": [],
+      "rewards": [],
+      "loadedAddresses": {
+        "writable": [],
+        "readonly": []
+      },
+      "computeUnitsConsumed": 450
+    },
+    "version": 0,
+    "blockTime": 1760940138
+  },
+  "id": 1,
+  "signature": "5jSgoGizCspMoWingBwTqBjYTdURS3HUXRMAM8kBDP6epM74aNriUVmg9NskkA1Fig8WrVD65mnTygBwuYN6Zb5p"
+}

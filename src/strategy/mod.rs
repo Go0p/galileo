@@ -1,7 +1,9 @@
 pub mod blind_strategy;
+pub mod pure_blind_strategy;
 pub mod types;
 
 pub use blind_strategy::BlindStrategy;
+pub use pure_blind_strategy::PureBlindStrategy;
 
 use crate::engine::{Action, StrategyContext, StrategyTick};
 

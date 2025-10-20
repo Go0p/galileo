@@ -1474,6 +1474,7 @@ dependencies = [
  "bincode 2.0.1",
  "borsh",
  "bs58",
+ "bytemuck",
  "bytes",
  "clap",
  "core_affinity",

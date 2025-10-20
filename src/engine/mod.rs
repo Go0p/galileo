@@ -20,14 +20,24 @@ pub use scheduler::Scheduler;
 pub use swap::{ComputeUnitPriceMode, SwapInstructionFetcher};
 pub use types::{ExecutionPlan, QuoteTask, StrategyTick, SwapOpportunity};
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use serde_json::Value;
+use solana_sdk::instruction::AccountMeta;
+use solana_sdk::pubkey::Pubkey;
 use tracing::{debug, info, trace, warn};
 
+use crate::api::SwapInstructionsResponse;
 use crate::flashloan::{FlashloanManager, FlashloanOutcome};
 use crate::lander::{Deadline, LanderStack};
 use crate::monitoring::events;
-use crate::strategy::types::TradePair;
+use crate::strategy::types::{BlindDex, BlindOrder, BlindStep, BlindSwapDirection, TradePair};
+use crate::txs::jupiter::route_v2::{RouteV2Accounts, RouteV2InstructionBuilder};
+use crate::txs::jupiter::types::{EncodedSwap, RoutePlanStepV2};
+
+const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
+    solana_sdk::pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 use crate::strategy::{Strategy, StrategyEvent};
 
 #[derive(Clone)]
@@ -142,7 +152,179 @@ where
                 }
                 Ok(())
             }
+            Action::DispatchBlind(batch) => self.process_blind_batch(batch).await,
         }
+    }
+
+    async fn process_blind_batch(
+        &mut self,
+        batch: Vec<crate::strategy::types::BlindOrder>,
+    ) -> EngineResult<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        let mut last_error: Option<EngineError> = None;
+        for order in batch {
+            if let Err(err) = self.execute_blind_order(&order).await {
+                warn!(
+                    target: "engine::blind",
+                    error = %err,
+                    "执行盲发交易失败"
+                );
+                last_error = Some(err);
+            }
+        }
+
+        if let Some(err) = last_error {
+            Err(err)
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn execute_blind_order(&mut self, order: &BlindOrder) -> EngineResult<()> {
+        if order.steps.is_empty() {
+            return Err(EngineError::InvalidConfig("盲发订单缺少步骤".to_string()));
+        }
+
+        let first_step = order
+            .steps
+            .first()
+            .ok_or_else(|| EngineError::InvalidConfig("盲发订单缺少首个步骤".to_string()))?;
+        let last_step = order
+            .steps
+            .last()
+            .ok_or_else(|| EngineError::InvalidConfig("盲发订单缺少末尾步骤".to_string()))?;
+
+        ensure_solfi_pair(first_step, last_step)?;
+
+        let mut ata_resolver = AtaResolver::new(self.identity.pubkey);
+
+        let (route_plan, remaining_accounts) = self.build_route_plan(order, &mut ata_resolver)?;
+
+        let (source_mint, source_program) = resolve_step_input(first_step);
+        let (destination_mint, destination_program) = resolve_step_output(last_step);
+        let source_account = ata_resolver.get(source_mint, source_program);
+        let destination_account = ata_resolver.get(destination_mint, destination_program);
+
+        let mut accounts = RouteV2Accounts::with_defaults(
+            self.identity.pubkey,
+            source_account,
+            destination_account,
+            source_mint,
+            destination_mint,
+            source_program,
+            destination_program,
+        );
+        accounts.remaining_accounts = remaining_accounts;
+
+        let quoted_out_amount = order.amount_in.saturating_add(1);
+
+        let instruction = RouteV2InstructionBuilder {
+            accounts,
+            route_plan,
+            in_amount: order.amount_in,
+            quoted_out_amount,
+            slippage_bps: 0,
+            platform_fee_bps: 0,
+            positive_slippage_bps: 0,
+        }
+        .build()
+        .map_err(|err| EngineError::Transaction(err.into()))?;
+
+        let response = SwapInstructionsResponse {
+            raw: Value::Null,
+            token_ledger_instruction: None,
+            compute_budget_instructions: Vec::new(),
+            setup_instructions: Vec::new(),
+            swap_instruction: instruction,
+            cleanup_instruction: None,
+            other_instructions: Vec::new(),
+            address_lookup_table_addresses: Vec::new(),
+            prioritization_fee_lamports: 0,
+            compute_unit_limit: 0,
+            prioritization_type: None,
+            dynamic_slippage_report: None,
+            simulation_error: None,
+        };
+
+        let prepared = self.tx_builder.build(&self.identity, &response, 0).await?;
+
+        let deadline = Deadline::from_instant(Instant::now() + self.settings.landing_timeout);
+
+        let strategy_name = self.strategy.name();
+        match self
+            .landers
+            .submit(&prepared, deadline, strategy_name)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                let tx_signature = prepared
+                    .transaction
+                    .signatures
+                    .get(0)
+                    .map(|sig| sig.to_string());
+                warn!(
+                    target: "engine::blind",
+                    signature = tx_signature.as_deref().unwrap_or(""),
+                    error = %err,
+                    "盲发落地失败"
+                );
+                Err(EngineError::Landing(err.to_string()))
+            }
+        }
+    }
+
+    fn build_route_plan(
+        &self,
+        order: &BlindOrder,
+        resolver: &mut AtaResolver,
+    ) -> EngineResult<(Vec<RoutePlanStepV2>, Vec<AccountMeta>)> {
+        if order.steps.is_empty() {
+            return Err(EngineError::InvalidConfig("盲发订单缺少步骤".to_string()));
+        }
+
+        let base_mint = order.steps[0].meta.base_mint;
+        let quote_mint = order.steps[0].meta.quote_mint;
+
+        let mut route_plan = Vec::with_capacity(order.steps.len());
+        let mut remaining_accounts = Vec::with_capacity(order.steps.len() * 12);
+
+        for (idx, step) in order.steps.iter().enumerate() {
+            if step.dex != BlindDex::SolFiV2 {
+                return Err(EngineError::InvalidConfig(
+                    "纯盲发目前仅支持 SolFiV2".to_string(),
+                ));
+            }
+
+            if step.meta.base_mint != base_mint || step.meta.quote_mint != quote_mint {
+                return Err(EngineError::InvalidConfig(
+                    "纯盲发路由中的 SolFiV2 市场配置不一致".to_string(),
+                ));
+            }
+
+            let encoded_swap = EncodedSwap::from_name(
+                "SolFiV2",
+                &matches!(step.direction, BlindSwapDirection::QuoteToBase),
+            )
+            .map_err(|err| EngineError::InvalidConfig(format!("构造 SolFiV2 swap 失败: {err}")))?;
+
+            route_plan.push(RoutePlanStepV2 {
+                swap: encoded_swap,
+                bps: 10_000,
+                input_index: if idx == 0 { 0 } else { 1 },
+                output_index: if idx == 0 { 1 } else { 0 },
+            });
+
+            let user_base = resolver.get(step.meta.base_mint, step.meta.base_token_program);
+            let user_quote = resolver.get(step.meta.quote_mint, step.meta.quote_token_program);
+
+            remaining_accounts.extend(build_solfi_remaining_accounts(step, user_base, user_quote));
+        }
+
+        Ok((route_plan, remaining_accounts))
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
@@ -303,5 +485,85 @@ where
         let ctx = StrategyContext::new(resources);
         let action = self.strategy.on_market_event(&event, ctx);
         self.handle_action(action).await
+    }
+}
+
+fn ensure_solfi_pair(first: &BlindStep, last: &BlindStep) -> EngineResult<()> {
+    if first.dex != BlindDex::SolFiV2 || last.dex != BlindDex::SolFiV2 {
+        return Err(EngineError::InvalidConfig(
+            "纯盲发目前仅支持 SolFiV2".to_string(),
+        ));
+    }
+    if first.meta.base_mint != last.meta.base_mint || first.meta.quote_mint != last.meta.quote_mint
+    {
+        return Err(EngineError::InvalidConfig(
+            "纯盲发路由 base/quote mint 不一致".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn derive_associated_token_address(
+    owner: &Pubkey,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+) -> Pubkey {
+    let seeds: [&[u8]; 3] = [owner.as_ref(), token_program.as_ref(), mint.as_ref()];
+    Pubkey::find_program_address(&seeds, &ASSOCIATED_TOKEN_PROGRAM_ID).0
+}
+
+struct AtaResolver {
+    owner: Pubkey,
+    cache: HashMap<(Pubkey, Pubkey), Pubkey>,
+}
+
+impl AtaResolver {
+    fn new(owner: Pubkey) -> Self {
+        Self {
+            owner,
+            cache: HashMap::new(),
+        }
+    }
+
+    fn get(&mut self, mint: Pubkey, token_program: Pubkey) -> Pubkey {
+        *self
+            .cache
+            .entry((mint, token_program))
+            .or_insert_with(|| derive_associated_token_address(&self.owner, &mint, &token_program))
+    }
+}
+
+fn build_solfi_remaining_accounts(
+    step: &BlindStep,
+    user_base: Pubkey,
+    user_quote: Pubkey,
+) -> Vec<AccountMeta> {
+    vec![
+        AccountMeta::new(step.market, false),
+        AccountMeta::new_readonly(step.meta.oracle, false),
+        AccountMeta::new_readonly(step.meta.config, false),
+        AccountMeta::new(step.meta.base_vault, false),
+        AccountMeta::new(step.meta.quote_vault, false),
+        AccountMeta::new(user_base, false),
+        AccountMeta::new(user_quote, false),
+        AccountMeta::new_readonly(step.meta.base_mint, false),
+        AccountMeta::new_readonly(step.meta.quote_mint, false),
+        AccountMeta::new_readonly(step.meta.base_token_program, false),
+        AccountMeta::new_readonly(step.meta.quote_token_program, false),
+        AccountMeta::new_readonly(solana_sdk::sysvar::instructions::ID, false),
+    ]
+}
+
+fn resolve_step_input(step: &BlindStep) -> (Pubkey, Pubkey) {
+    match step.direction {
+        BlindSwapDirection::QuoteToBase => (step.meta.quote_mint, step.meta.quote_token_program),
+        BlindSwapDirection::BaseToQuote => (step.meta.base_mint, step.meta.base_token_program),
+    }
+}
+
+fn resolve_step_output(step: &BlindStep) -> (Pubkey, Pubkey) {
+    match step.direction {
+        BlindSwapDirection::QuoteToBase => (step.meta.base_mint, step.meta.base_token_program),
+        BlindSwapDirection::BaseToQuote => (step.meta.quote_mint, step.meta.quote_token_program),
     }
 }

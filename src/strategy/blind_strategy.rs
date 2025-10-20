@@ -1,7 +1,6 @@
 use crate::engine::{Action, StrategyContext};
 
 use super::{Strategy, StrategyEvent};
-
 pub struct BlindStrategy {
     next_pair_index: usize,
 }
