@@ -2,8 +2,11 @@ global:
   # rpc url
   # rpc_url: "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
   # rpc_url: "https://mainnet.solana.validationcloud.io/v1/4YlOowpz6fTe6Jl31oWxYGSusOS12UzTxXkpdoC1I5A"
-  rpc_url: "http://127.0.0.1:8899"
+  rpc_url: "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
+  # rpc_url: "https://solana-rpc.publicnode.com"
+  # rpc_url: "http://127.0.0.1:8899"
   # yellowstone grpc url
+  proxy: "http://192.168.124.4:2080"
   yellowstone_grpc_url: ""
   # yellowstone grpc token
   yellowstone_grpc_token: ""
@@ -30,7 +33,7 @@ global:
 
   # 日志级别
   logging:
-    level: "debug"
+    level: "info"
     json: false
     # 日志输出的时区偏移（单位：小时）。示例：8 代表 UTC+8。
     timezone_offset_hours: 8
@@ -138,6 +141,7 @@ blind_strategy:
       "HumidiFi",
       "SolFiV2",
       "TesseraV",
+      "ZeroFi",
       "Perps",
       "GoonFi"
   ]
@@ -145,8 +149,8 @@ blind_strategy:
   base_mints:
     - mint: "So11111111111111111111111111111111111111112"
       trade_size_range:
-        - 10_000_000_000 # 10 SOL
-        - 100_000_000_000 # 100 SOL
+        - 2_000_000_000 # 10 SOL
+        - 10_000_000_000 # 100 SOL
       # 在范围内将生成多少种不同的交易规模
       trade_range_count: 3
       # 目前支持三个值： linear 、 random 、 exponential
@@ -175,9 +179,15 @@ blind_strategy:
       three_hop_mints:
         - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
   pure_routes:
-    - buy_market: "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc"
+      # SolFi V2
+    # - buy_market: "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc"
+    # HumidiFi
+    - buy_market: "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW"
+      # TesseraV 
       # sell_market: "FLckHLGMJy5gEoXWwcE68Nprde1D4araK4TGLw4pQq2n"
-      sell_market: "6n9VhCwQ7EwK6NqFDjnHPzEk6wZdRBTfh43RFgHQWHuQ"
+      # ZeroFi
+      sell_market: "DRciepTenS2bwfA9YJkZraZrFzcUpmVebR4aZgo2zj1k"
+
 
 # 后跑策略
 # Backrun 策略的工作原理如下：

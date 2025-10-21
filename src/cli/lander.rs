@@ -5,7 +5,7 @@ use tracing::info;
 
 use crate::api::SwapInstructionsResponse;
 use crate::cli::args::{LanderCmd, LanderSendArgs};
-use crate::cli::context::resolve_rpc_client;
+use crate::cli::context::{resolve_global_http_proxy, resolve_rpc_client};
 use crate::config;
 use crate::config::AppConfig;
 use crate::engine::{BuilderConfig, EngineIdentity, TransactionBuilder};
@@ -45,7 +45,15 @@ async fn send_transaction(
     let builder_config = BuilderConfig::new(memo);
     let builder = TransactionBuilder::new(rpc_client.clone(), builder_config);
 
-    let submission_client = reqwest::Client::builder().build()?;
+    let mut submission_builder = reqwest::Client::builder();
+    if let Some(proxy_url) = resolve_global_http_proxy(&config.galileo.global) {
+        let proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
+        submission_builder = submission_builder
+            .proxy(proxy)
+            .danger_accept_invalid_certs(true);
+    }
+    let submission_client = submission_builder.build()?;
     let lander_factory = LanderFactory::new(rpc_client.clone(), submission_client);
 
     let preferred: Vec<String> = if !args.landers.is_empty() {

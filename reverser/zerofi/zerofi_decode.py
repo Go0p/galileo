@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import json
 import sys
 import typing
@@ -45,13 +46,13 @@ AUTHORITY_WHITELIST = (
 )
 
 PAIR_OFFSETS = {
-    "vault_info_base": 0x0BA0,
-    "vault_base": 0x0BB8,
-    "vault_info_quote": 0x0BC8,
-    "vault_quote": 0x0BD8,
-    "base_mint": 0x0BE8,
-    "quote_mint": 0x0C18,
-    "swap_authority_pda": 0x1968,
+    "base_mint": 0x0048,
+    "quote_mint": 0x0068,
+    "vault_base": 0x0088,
+    "vault_info_base": 0x00A8,
+    "vault_quote": 0x00C8,
+    "vault_info_quote": 0x00E8,
+    "swap_authority_pda": 0x0100,
 }
 
 FLAG_OFFSET_TOKEN_2022 = 0x0791
@@ -228,8 +229,24 @@ def fetch_mint_owner(rpc_url: str, mint: str) -> tuple[str, int]:
     if not value:
         raise RpcError(f"mint {mint} 不存在或无法解析")
     owner = value["owner"]
-    parsed = value.get("data", {}).get("parsed", {})
-    decimals = int(parsed.get("info", {}).get("decimals", 0))
+    data = value.get("data")
+    decimals = 0
+    if isinstance(data, dict):
+        parsed = data.get("parsed", {})
+        info_doc = parsed.get("info", {}) if isinstance(parsed, dict) else {}
+        try:
+            decimals = int(info_doc.get("decimals", 0))
+        except (TypeError, ValueError):
+            decimals = 0
+    elif isinstance(data, list) and data:
+        encoded = data[0]
+        if isinstance(encoded, str):
+            try:
+                raw = base64.b64decode(encoded)
+                if len(raw) >= 45:
+                    decimals = raw[44]
+            except (ValueError, binascii.Error):  # pragma: no cover - 容错
+                pass
     return owner, decimals
 
 
@@ -259,6 +276,10 @@ def resolve_accounts(
     base_mint = layout["base_mint"]
     quote_mint = layout["quote_mint"]
     mint_meta = {}
+    sides = {
+        "left": "base" if layout["base_on_left"] else "quote",
+        "right": "quote" if layout["base_on_left"] else "base",
+    }
 
     try:
         base_owner, base_decimals = fetch_mint_owner(rpc_url, base_mint)
@@ -279,6 +300,7 @@ def resolve_accounts(
     if token_program not in {TOKEN_PROGRAM_V1, TOKEN_PROGRAM_2022}:
         token_program = TOKEN_PROGRAM_V1
 
+    user_tokens: dict[str, str]
     if user:
         try:
             user_base_token, _ = find_ata(user, base_mint, token_program)
@@ -288,16 +310,21 @@ def resolve_accounts(
             user_quote_token, _ = find_ata(user, quote_mint, token_program)
         except Exception as exc:
             raise RpcError(f"计算用户 quote ATA 失败: {exc}") from exc
+        user_tokens = {"base": user_base_token, "quote": user_quote_token}
         user_authority = user
     else:
-        user_base_token = "<user-base-token-account>"
-        user_quote_token = "<user-quote-token-account>"
-        user_authority = "<user-authority>"
+        user_tokens = {
+            "base": "<user-base-token-account>",
+            "quote": "<user-quote-token-account>",
+        }
+        user_authority = "<user-payer>"
 
-    authority = layout["swap_authority_pda"]
+    swap_authority_account = user if user else "<user-payer>"
+
+    stored_authority = layout["swap_authority_pda"]
     authority_warning = None
-    if authority not in AUTHORITY_WHITELIST:
-        authority_warning = f"解析出的 authority {authority} 不在白名单中"
+    if stored_authority not in AUTHORITY_WHITELIST:
+        authority_warning = f"pair 中记录的 authority {stored_authority} 不在白名单中"
 
     accounts = [
         ("pair", pair),
@@ -305,9 +332,9 @@ def resolve_accounts(
         ("vault_base", layout["vault_base"]),
         ("vault_info_quote", layout["vault_info_quote"]),
         ("vault_quote", layout["vault_quote"]),
-        ("user_base_token", user_base_token),
-        ("user_quote_token", user_quote_token),
-        ("swap_authority", authority),
+        ("user_base_token", user_tokens["base"]),
+        ("user_quote_token", user_tokens["quote"]),
+        ("swap_authority", swap_authority_account),
         ("token_program", token_program),
         ("sysvar_instructions", SYSVAR_INSTRUCTIONS),
     ]
@@ -322,11 +349,13 @@ def resolve_accounts(
             "quote": quote_mint,
         },
         "mint_meta": mint_meta,
+        "stored_swap_authority": stored_authority,
         "flags": {
             "uses_token2022": layout["uses_token2022"],
             "fast_flag": layout["fast_flag"],
             "base_on_left": layout["base_on_left"],
         },
+        "sides": sides,
         "authority_warning": authority_warning,
     }
 
@@ -336,6 +365,7 @@ def print_human_readable(result: dict[str, typing.Any]) -> None:
     print(f"- program_id: {result['program_id']}")
     print(f"- pair:       {result['pair']}")
     print(f"- user:       {result['user_authority']}")
+    sides = result.get("sides", {"left": "base", "right": "quote"})
     base = result["mints"]["base"]
     quote = result["mints"]["quote"]
     base_meta = result["mint_meta"]["base"]
@@ -350,6 +380,10 @@ def print_human_readable(result: dict[str, typing.Any]) -> None:
     print(
         f"- flags: uses_token2022={flags['uses_token2022']}, "
         f"fast_flag={flags['fast_flag']}, base_on_left={flags['base_on_left']}"
+    )
+    print(
+        f"- stored_swap_authority: {result['stored_swap_authority']} "
+        f"(pair记录), sides: left={sides['left']}, right={sides['right']}"
     )
     if result["authority_warning"]:
         print(f"- warning: {result['authority_warning']}")

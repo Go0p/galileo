@@ -11,6 +11,7 @@ use crate::dexes::{
     humidifi::{HUMIDIFI_PROGRAM_ID, HumidiFiAdapter},
     solfi_v2::{SOLFI_V2_PROGRAM_ID, SolFiV2Adapter},
     tessera_v::{TESSERA_V_PROGRAM_ID, TesseraVAdapter},
+    zerofi::{ZEROFI_PROGRAM_ID, ZeroFiAdapter},
 };
 use crate::engine::{Action, EngineError, EngineResult, StrategyContext};
 
@@ -79,15 +80,15 @@ impl<'a> PureBlindRouteBuilder<'a> {
                 )));
             }
 
-            let forward = vec![
-                build_blind_step(&sell_meta, sell_market, BlindSwapDirection::BaseToQuote),
-                build_blind_step(&buy_meta, buy_market, BlindSwapDirection::QuoteToBase),
-            ];
+        let forward = vec![
+            build_blind_step(&sell_meta, sell_market, BlindSwapDirection::BaseToQuote),
+            build_blind_step(&buy_meta, buy_market, BlindSwapDirection::QuoteToBase),
+        ];
 
-            let reverse = vec![
-                build_blind_step(&buy_meta, buy_market, BlindSwapDirection::QuoteToBase),
-                build_blind_step(&sell_meta, sell_market, BlindSwapDirection::BaseToQuote),
-            ];
+        let reverse = vec![
+            build_blind_step(&buy_meta, buy_market, BlindSwapDirection::BaseToQuote),
+            build_blind_step(&sell_meta, sell_market, BlindSwapDirection::QuoteToBase),
+        ];
 
             plans.push(BlindRoutePlan { forward, reverse });
         }
@@ -100,6 +101,24 @@ impl<'a> PureBlindRouteBuilder<'a> {
         market: Pubkey,
         account: &Account,
     ) -> EngineResult<ResolvedMarketMeta> {
+        if account.owner == ZEROFI_PROGRAM_ID {
+            let adapter = ZeroFiAdapter::shared();
+            let meta = adapter
+                .fetch_market_meta(self.rpc_client, market, account)
+                .await
+                .map_err(|err| {
+                    EngineError::InvalidConfig(format!("ZeroFi 市场 {market} 解码失败: {err}"))
+                })?;
+            return Ok(ResolvedMarketMeta {
+                dex: BlindDex::ZeroFi,
+                base_mint: meta.base_mint(),
+                quote_mint: meta.quote_mint(),
+                base_token_program: meta.base_token_program(),
+                quote_token_program: meta.quote_token_program(),
+                meta: BlindMarketMeta::ZeroFi(meta),
+            });
+        }
+
         if account.owner == SOLFI_V2_PROGRAM_ID {
             let adapter = SolFiV2Adapter::shared();
             let meta = adapter

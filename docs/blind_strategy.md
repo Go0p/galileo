@@ -13,7 +13,7 @@
 - 关联资料：  
   - Jupiter IDL：`idls/jup6.json`（用于获取 `route_v2`、`RoutePlanStepV2`、各 DEX variant 的精确字段）  
   - Program → Label 映射：`analyze_dex_accounts/program-id-to-label.json`（用于确认 DEX 标签与程序 id 的对应关系，避免手写错误）
-- 首批支持的 DEX 标签：`SolFiV2`、`HumidiFi`、`TesseraV`。后续新增需同步更新文档与映射表。
+- 首批支持的 DEX 标签：`SolFiV2`、`HumidiFi`、`TesseraV`、`ZeroFi`。后续新增需同步更新文档与映射表。
 
 ## 2. `route_v2` 指令手搓要点
 ### 2.1 指令数据字段
@@ -45,6 +45,7 @@
 | **SolFiV2** | `payer`, `market`, `oracle`, `config`, `base_vault`, `quote_vault`, `user_base_ata`, `user_quote_ata`, `base_mint`, `quote_mint`, `base_token_program`, `quote_token_program`, `Sysvar1nstructions1111111111111111111111111` |
 | **TesseraV** | `global_state`、`pool_state`、`user_authority`、`base_vault`、`quote_vault`、`user_base_token`、`user_quote_token`、`base_mint`、`quote_mint`、`base_token_program`、`quote_token_program`、`Sysvar1nstructions1111111111111111111111111` |
 | **HumidiFi** | 需调用现有解析工具或自建 decoder 获取 `swap_id` 对应账户；顺序同 Jupiter 规范 |
+| **ZeroFi** | `market (pair)`、`vault_info_in`、`vault_in`、`vault_info_out`、`vault_out`、`user_source_token`、`user_destination_token`、`swap_authority`（通常为 payer，自带签名）、`token_program`（Tokenkeg 或 Token-2022）、`Sysvar1nstructions1111111111111111111111111` |
 
 若某 DEX 需要 `remaining_accounts_info`（例如 `HumidiFi`），必须同步填入 `EncodedSwap` payload，保持与账户顺序一致。
 

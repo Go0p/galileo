@@ -8,9 +8,7 @@ use solana_sdk::account::Account;
 use solana_sdk::instruction::AccountMeta;
 use solana_sdk::pubkey::Pubkey;
 
-use crate::dexes::framework::{
-    DexMarketMeta, DexMetaProvider, SwapAccountAssembler, SwapAccountsContext, SwapFlow,
-};
+use crate::dexes::framework::{DexMarketMeta, DexMetaProvider, SwapAccountAssembler, SwapAccountsContext};
 
 use super::decoder::fetch_market_meta;
 use super::{TESSERA_V_PROGRAM_ID, TesseraVMarketMeta};
@@ -78,11 +76,6 @@ impl SwapAccountAssembler for TesseraVAdapter {
         ctx: SwapAccountsContext,
         output: &mut Vec<AccountMeta>,
     ) {
-        let (user_source, user_destination) = match ctx.flow {
-            SwapFlow::QuoteToBase => (ctx.user_quote, ctx.user_base),
-            SwapFlow::BaseToQuote => (ctx.user_base, ctx.user_quote),
-        };
-
         debug_assert_eq!(meta.pool_account.pubkey, ctx.market);
 
         output.push(AccountMeta::new_readonly(TESSERA_V_PROGRAM_ID, false));
@@ -92,8 +85,8 @@ impl SwapAccountAssembler for TesseraVAdapter {
             AccountMeta::new(ctx.payer, true),
             meta.base_vault.clone(),
             meta.quote_vault.clone(),
-            AccountMeta::new(user_source, false),
-            AccountMeta::new(user_destination, false),
+            AccountMeta::new(ctx.user_base, false),
+            AccountMeta::new(ctx.user_quote, false),
             meta.base_mint.clone(),
             meta.quote_mint.clone(),
             meta.base_token_program.clone(),

@@ -39,6 +39,8 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub rpc_url: Option<String>,
     #[serde(default)]
+    pub proxy: Option<String>,
+    #[serde(default)]
     pub yellowstone_grpc_url: Option<String>,
     #[serde(default)]
     pub yellowstone_grpc_token: Option<String>,

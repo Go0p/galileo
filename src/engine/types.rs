@@ -1,8 +1,6 @@
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
-
-use crate::api::QuoteResponse;
+use crate::api::{QuoteResponse, QuoteResponsePayload};
 use crate::strategy::types::TradePair;
 
 #[derive(Debug, Clone)]
@@ -40,7 +38,7 @@ pub struct SwapOpportunity {
     pub amount_in: u64,
     pub profit_lamports: u64,
     pub tip_lamports: u64,
-    pub merged_quote: Value,
+    pub merged_quote: Option<QuoteResponsePayload>,
 }
 
 impl SwapOpportunity {

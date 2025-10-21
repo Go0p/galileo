@@ -17,7 +17,7 @@ import typing
 import urllib.error
 import urllib.request
 
-RPC_DEFAULT = "http://127.0.0.1:8899"
+RPC_DEFAULT = "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
 HUMIDIFI_PROGRAM_ID = "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp"
 SYSVAR_CLOCK = "SysvarC1ock11111111111111111111111111111111"
 SYSVAR_INSTRUCTIONS = "Sysvar1nstructions1111111111111111111111111"

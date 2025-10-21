@@ -1,4 +1,3 @@
-use std::str::FromStr;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -51,15 +50,18 @@ fn sample_swap_response() -> crate::api::SwapInstructionsResponse {
 }
 
 fn sample_opportunity() -> SwapOpportunity {
+    let pair = TradePair::try_new(
+        "So11111111111111111111111111111111111111112",
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    )
+    .expect("valid trade pair");
+
     SwapOpportunity {
-        pair: TradePair {
-            input_mint: "So11111111111111111111111111111111111111112".to_string(),
-            output_mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(),
-        },
+        pair,
         amount_in: 1_000,
         profit_lamports: 0,
         tip_lamports: 0,
-        merged_quote: Value::Null,
+        merged_quote: None,
     }
 }
 
@@ -86,10 +88,7 @@ async fn marginfi_wraps_instructions() {
     assert!(outcome.metadata.is_some());
     let metadata = outcome.metadata.as_ref().unwrap();
     assert_eq!(metadata.protocol, FlashloanProtocol::Marginfi);
-    assert_eq!(
-        metadata.mint,
-        Pubkey::from_str(&opportunity.pair.input_mint).unwrap()
-    );
+    assert_eq!(metadata.mint, opportunity.pair.input_pubkey);
     assert_eq!(metadata.inner_instruction_count, 4);
 
     // compute budgets + begin + borrow + body(4) + repay + end

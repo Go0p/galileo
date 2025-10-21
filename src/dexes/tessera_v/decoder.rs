@@ -1,10 +1,6 @@
-use crate::rpc::batch::{RpcBatchRequest, send_batch as send_rpc_batch};
 use anyhow::{Context, Result};
-use serde_json::json;
-use solana_account_decoder::UiAccountEncoding;
-use solana_client::rpc_config::{RpcAccountInfoConfig, RpcTokenAccountsFilter};
-use solana_client::rpc_request::{RpcRequest, TokenAccountsFilter};
-use solana_client::rpc_response::{Response, RpcKeyedAccount};
+use solana_client::rpc_request::TokenAccountsFilter;
+use solana_client::rpc_response::RpcKeyedAccount;
 use solana_client::{
     nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as BlockingRpcClient,
 };
@@ -73,55 +69,32 @@ pub async fn fetch_market_meta(
         extract_mint_pair(accounts, pool_state.base_mint, pool_state.quote_mint)?
     };
 
-    let account_config = RpcAccountInfoConfig {
-        encoding: Some(UiAccountEncoding::JsonParsed),
-        commitment: Some(client.commitment()),
-        data_slice: None,
-        min_context_slot: None,
-    };
-
-    let batch_requests = [
-        RpcBatchRequest::new(
-            RpcRequest::GetTokenAccountsByOwner,
-            json!([
-                TESSERA_V_GLOBAL_STATE.to_string(),
-                RpcTokenAccountsFilter::Mint(pool_state.base_mint.to_string()),
-                account_config.clone(),
-            ]),
-        ),
-        RpcBatchRequest::new(
-            RpcRequest::GetTokenAccountsByOwner,
-            json!([
-                TESSERA_V_GLOBAL_STATE.to_string(),
-                RpcTokenAccountsFilter::Mint(pool_state.quote_mint.to_string()),
-                account_config.clone(),
-            ]),
-        ),
-    ];
-
-    let batch_responses = send_rpc_batch(client, &batch_requests)
+    let base_vault_accounts: Vec<RpcKeyedAccount> = client
+        .get_token_accounts_by_owner(
+            &TESSERA_V_GLOBAL_STATE,
+            TokenAccountsFilter::Mint(pool_state.base_mint),
+        )
         .await
         .map_err(|err| anyhow::Error::new(err))
-        .with_context(|| "batch fetch Tessera vault accounts")?;
-
-    let base_vault_accounts: Vec<RpcKeyedAccount> =
-        serde_json::from_value::<Response<Vec<RpcKeyedAccount>>>(batch_responses[0].clone())
-            .with_context(|| {
-                format!(
-                    "decode Tessera vault accounts for mint {}",
-                    pool_state.base_mint
-                )
-            })?
-            .value;
-    let quote_vault_accounts: Vec<RpcKeyedAccount> =
-        serde_json::from_value::<Response<Vec<RpcKeyedAccount>>>(batch_responses[1].clone())
-            .with_context(|| {
-                format!(
-                    "decode Tessera vault accounts for mint {}",
-                    pool_state.quote_mint
-                )
-            })?
-            .value;
+        .with_context(|| {
+            format!(
+                "fetch Tessera vault accounts for mint {}",
+                pool_state.base_mint
+            )
+        })?;
+    let quote_vault_accounts: Vec<RpcKeyedAccount> = client
+        .get_token_accounts_by_owner(
+            &TESSERA_V_GLOBAL_STATE,
+            TokenAccountsFilter::Mint(pool_state.quote_mint),
+        )
+        .await
+        .map_err(|err| anyhow::Error::new(err))
+        .with_context(|| {
+            format!(
+                "fetch Tessera vault accounts for mint {}",
+                pool_state.quote_mint
+            )
+        })?;
 
     build_market_meta(
         market,

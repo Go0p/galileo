@@ -156,6 +156,7 @@ impl Default for cfg::GlobalConfig {
     fn default() -> Self {
         Self {
             rpc_url: None,
+            proxy: None,
             yellowstone_grpc_url: None,
             yellowstone_grpc_token: None,
             wallet: cfg::WalletConfig::default(),

@@ -8,9 +8,7 @@ use solana_sdk::account::Account;
 use solana_sdk::instruction::AccountMeta;
 use solana_sdk::pubkey::Pubkey;
 
-use crate::dexes::framework::{
-    DexMarketMeta, DexMetaProvider, SwapAccountAssembler, SwapAccountsContext, SwapFlow,
-};
+use crate::dexes::framework::{DexMarketMeta, DexMetaProvider, SwapAccountAssembler, SwapAccountsContext};
 
 use super::decoder::{HUMIDIFI_PROGRAM_ID, HumidiFiMarketMeta, fetch_market_meta};
 
@@ -100,11 +98,6 @@ impl SwapAccountAssembler for HumidiFiAdapter {
         ctx: SwapAccountsContext,
         output: &mut Vec<AccountMeta>,
     ) {
-        let (user_source, user_destination) = match ctx.flow {
-            SwapFlow::QuoteToBase => (ctx.user_quote, ctx.user_base),
-            SwapFlow::BaseToQuote => (ctx.user_base, ctx.user_quote),
-        };
-
         debug_assert_eq!(meta.pool_account.pubkey, ctx.market);
 
         output.push(AccountMeta::new_readonly(HUMIDIFI_PROGRAM_ID, false));
@@ -113,8 +106,8 @@ impl SwapAccountAssembler for HumidiFiAdapter {
             meta.pool_account.clone(),
             meta.base_vault.clone(),
             meta.quote_vault.clone(),
-            AccountMeta::new(user_source, false),
-            AccountMeta::new(user_destination, false),
+            AccountMeta::new(ctx.user_base, false),
+            AccountMeta::new(ctx.user_quote, false),
             meta.sysvar_clock.clone(),
             meta.token_program.clone(),
             meta.sysvar_instructions.clone(),

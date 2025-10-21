@@ -3,6 +3,16 @@ use borsh::BorshSerialize;
 
 use super::types::EncodedSwap;
 
+/// ZeroFi swap 编码器封装。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ZeroFiSwap;
+
+impl ZeroFiSwap {
+    pub fn encode() -> Result<EncodedSwap> {
+        EncodedSwap::from_name("ZeroFi", &())
+    }
+}
+
 /// SolFiV2 swap 编码器封装。
 #[derive(Debug, Clone, Copy)]
 pub struct SolFiV2Swap {
@@ -84,6 +94,12 @@ mod tests {
         };
         let encoded = swap.encode().expect("encode solfi");
         assert_eq!(encoded.variant().unwrap(), "SolFiV2");
+    }
+
+    #[test]
+    fn encode_zero_fi_swap() {
+        let encoded = ZeroFiSwap::encode().expect("encode zerofi");
+        assert_eq!(encoded.variant().unwrap(), "ZeroFi");
     }
 
     #[test]

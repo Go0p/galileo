@@ -8,9 +8,7 @@ use solana_sdk::account::Account;
 use solana_sdk::instruction::AccountMeta;
 use solana_sdk::pubkey::Pubkey;
 
-use crate::dexes::framework::{
-    DexMarketMeta, DexMetaProvider, SwapAccountAssembler, SwapAccountsContext, SwapFlow,
-};
+use crate::dexes::framework::{DexMarketMeta, DexMetaProvider, SwapAccountAssembler, SwapAccountsContext};
 
 use super::decoder::decode_market_meta;
 use super::{SOLFI_V2_PROGRAM_ID, SolfiV2MarketMeta};
@@ -78,11 +76,6 @@ impl SwapAccountAssembler for SolFiV2Adapter {
         ctx: SwapAccountsContext,
         output: &mut Vec<AccountMeta>,
     ) {
-        let (user_source, user_destination) = match ctx.flow {
-            SwapFlow::QuoteToBase => (ctx.user_quote, ctx.user_base),
-            SwapFlow::BaseToQuote => (ctx.user_base, ctx.user_quote),
-        };
-
         debug_assert_eq!(meta.pair_account.pubkey, ctx.market);
 
         output.push(AccountMeta::new_readonly(SOLFI_V2_PROGRAM_ID, false));
@@ -93,8 +86,8 @@ impl SwapAccountAssembler for SolFiV2Adapter {
             meta.config_account.clone(),
             meta.base_vault.clone(),
             meta.quote_vault.clone(),
-            AccountMeta::new(user_source, false),
-            AccountMeta::new(user_destination, false),
+            AccountMeta::new(ctx.user_base, false),
+            AccountMeta::new(ctx.user_quote, false),
             meta.base_mint.clone(),
             meta.quote_mint.clone(),
             meta.base_token_program.clone(),

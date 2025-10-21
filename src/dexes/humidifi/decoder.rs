@@ -1,16 +1,13 @@
 use std::convert::TryInto;
 use std::str::FromStr;
 
-use crate::rpc::batch::{RpcBatchRequest, send_batch as send_rpc_batch};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use serde_json::json;
 use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_client::RpcClient as BlockingRpcClient;
-use solana_client::rpc_config::{RpcAccountInfoConfig, RpcTokenAccountsFilter};
-use solana_client::rpc_request::{RpcRequest, TokenAccountsFilter};
-use solana_client::rpc_response::{Response, RpcKeyedAccount};
+use solana_client::rpc_request::TokenAccountsFilter;
+use solana_client::rpc_response::RpcKeyedAccount;
 use solana_sdk::{account::Account, instruction::AccountMeta, pubkey::Pubkey, sysvar};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -129,55 +126,26 @@ pub async fn fetch_market_meta(
 
     let config = parse_config_account(market, account)?;
 
-    let account_config = RpcAccountInfoConfig {
-        encoding: Some(UiAccountEncoding::JsonParsed),
-        commitment: Some(client.commitment()),
-        data_slice: None,
-        min_context_slot: None,
-    };
-
-    let requests = [
-        RpcBatchRequest::new(
-            RpcRequest::GetTokenAccountsByOwner,
-            json!([
-                market.to_string(),
-                RpcTokenAccountsFilter::Mint(config.base_mint.to_string()),
-                account_config.clone(),
-            ]),
-        ),
-        RpcBatchRequest::new(
-            RpcRequest::GetTokenAccountsByOwner,
-            json!([
-                market.to_string(),
-                RpcTokenAccountsFilter::Mint(config.quote_mint.to_string()),
-                account_config.clone(),
-            ]),
-        ),
-    ];
-
-    let responses = send_rpc_batch(client, &requests)
+    let base_vault_accounts: Vec<RpcKeyedAccount> = client
+        .get_token_accounts_by_owner(&market, TokenAccountsFilter::Mint(config.base_mint))
         .await
         .map_err(|err| anyhow::Error::new(err))
-        .with_context(|| format!("批量拉取 HumidiFi 池 {market} 的 vault 账户"))?;
-
-    let base_vault_accounts: Vec<RpcKeyedAccount> =
-        serde_json::from_value::<Response<Vec<RpcKeyedAccount>>>(responses[0].clone())
-            .with_context(|| {
-                format!(
-                    "解码 HumidiFi 池 {market} base mint {} 的 vault 列表",
-                    config.base_mint
-                )
-            })?
-            .value;
-    let quote_vault_accounts: Vec<RpcKeyedAccount> =
-        serde_json::from_value::<Response<Vec<RpcKeyedAccount>>>(responses[1].clone())
-            .with_context(|| {
-                format!(
-                    "解码 HumidiFi 池 {market} quote mint {} 的 vault 列表",
-                    config.quote_mint
-                )
-            })?
-            .value;
+        .with_context(|| {
+            format!(
+                "获取 HumidiFi 池 {market} base mint {} 的 vault 列表",
+                config.base_mint
+            )
+        })?;
+    let quote_vault_accounts: Vec<RpcKeyedAccount> = client
+        .get_token_accounts_by_owner(&market, TokenAccountsFilter::Mint(config.quote_mint))
+        .await
+        .map_err(|err| anyhow::Error::new(err))
+        .with_context(|| {
+            format!(
+                "获取 HumidiFi 池 {market} quote mint {} 的 vault 列表",
+                config.quote_mint
+            )
+        })?;
 
     build_market_meta(market, &config, base_vault_accounts, quote_vault_accounts)
 }

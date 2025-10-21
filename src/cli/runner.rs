@@ -8,9 +8,9 @@ use crate::api::{
 };
 use crate::cli::args::{Cli, Command};
 use crate::cli::context::{
-    build_launch_overrides, ensure_running, init_configs, resolve_instruction_memo,
-    resolve_jupiter_api_proxy, resolve_jupiter_base_url, resolve_jupiter_defaults,
-    should_bypass_proxy,
+    build_launch_overrides, ensure_running, init_configs, resolve_global_http_proxy,
+    resolve_instruction_memo, resolve_jupiter_api_proxy, resolve_jupiter_base_url,
+    resolve_jupiter_defaults, should_bypass_proxy,
 };
 use crate::cli::jupiter::handle_jupiter_cmd;
 use crate::cli::lander::handle_lander_cmd;
@@ -26,19 +26,13 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
     }
 
     let jupiter_cfg = resolve_jupiter_defaults(config.jupiter.clone(), &config.galileo.global)?;
-    let needs_jupiter = matches!(
-        cli.command,
-        Command::Jupiter(_)
-            | Command::Quote(_)
-            | Command::SwapInstructions(_)
-            | Command::Strategy
-            | Command::StrategyDryRun
-    );
+    let needs_jupiter = command_needs_jupiter(&cli.command, &config);
 
     let launch_overrides =
         build_launch_overrides(&config.galileo.engine.jupiter, &config.galileo.intermedium);
     let base_url = resolve_jupiter_base_url(&config.galileo.bot, &jupiter_cfg);
     let api_proxy = resolve_jupiter_api_proxy(&config.galileo.engine);
+    let global_proxy = resolve_global_http_proxy(&config.galileo.global);
     let bypass_proxy = should_bypass_proxy(&base_url);
     let mut api_http_builder =
         reqwest::Client::builder().user_agent(crate::jupiter::updater::USER_AGENT);
@@ -52,7 +46,22 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 "Jupiter API 请求将通过配置的代理发送"
             );
         }
-        api_http_builder = api_http_builder.proxy(proxy);
+        api_http_builder = api_http_builder
+            .proxy(proxy)
+            .danger_accept_invalid_certs(true);
+    } else if let Some(proxy_url) = global_proxy.clone() {
+        let proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
+        if needs_jupiter {
+            info!(
+                target: "jupiter",
+                proxy = %proxy_url,
+                "Jupiter API 请求将通过 global.proxy 发送"
+            );
+        }
+        api_http_builder = api_http_builder
+            .proxy(proxy)
+            .danger_accept_invalid_certs(true);
     } else if bypass_proxy {
         if needs_jupiter {
             info!(
@@ -189,5 +198,16 @@ impl SwapArgsExt for crate::cli::args::SwapInstructionsCmd {
     fn parse_fee_pubkey(&self, src: &str) -> Result<solana_sdk::pubkey::Pubkey> {
         solana_sdk::pubkey::Pubkey::from_str(src)
             .map_err(|err| anyhow!("手续费账户无效 {}: {err}", src))
+    }
+}
+
+fn command_needs_jupiter(command: &Command, config: &AppConfig) -> bool {
+    match command {
+        Command::Strategy | Command::StrategyDryRun => {
+            let blind = &config.galileo.blind_strategy;
+            !(blind.enable && blind.pure_mode)
+        }
+        Command::Jupiter(_) | Command::Quote(_) | Command::SwapInstructions(_) => true,
+        _ => false,
     }
 }

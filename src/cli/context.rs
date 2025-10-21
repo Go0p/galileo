@@ -3,10 +3,13 @@ use std::fs;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use solana_client::rpc_client::RpcClientConfig;
+use solana_rpc_client::http_sender::HttpSender;
 use time::{UtcOffset, macros::format_description};
-use tracing::error;
+use tracing::{error, info};
 use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::{EnvFilter, fmt};
 
@@ -120,6 +123,15 @@ pub fn resolve_jupiter_api_proxy(engine: &EngineConfig) -> Option<String> {
     engine
         .jupiter
         .api_proxy
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+pub fn resolve_global_http_proxy(global: &GlobalConfig) -> Option<String> {
+    global
+        .proxy
         .as_ref()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
@@ -316,7 +328,32 @@ pub fn resolve_rpc_client(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "https://api.mainnet-beta.solana.com".to_string());
 
-    Ok(Arc::new(
-        solana_client::nonblocking::rpc_client::RpcClient::new(url),
-    ))
+    if let Some(proxy_url) = resolve_global_http_proxy(global) {
+        let proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
+        info!(
+            target: "rpc::client",
+            proxy = %proxy_url,
+            url = %url,
+            "RPC 客户端将通过 global.proxy 访问"
+        );
+        let client = reqwest::Client::builder()
+            .default_headers(HttpSender::default_headers())
+            .timeout(Duration::from_secs(30))
+            .pool_idle_timeout(Duration::from_secs(30))
+            .proxy(proxy)
+            .danger_accept_invalid_certs(true)
+            .build()
+            .map_err(|err| anyhow!("构建代理 RPC 客户端失败: {err}"))?;
+        let sender = HttpSender::new_with_client(url.clone(), client);
+        let rpc = solana_client::nonblocking::rpc_client::RpcClient::new_sender(
+            sender,
+            RpcClientConfig::with_commitment(solana_commitment_config::CommitmentConfig::default()),
+        );
+        Ok(Arc::new(rpc))
+    } else {
+        Ok(Arc::new(
+            solana_client::nonblocking::rpc_client::RpcClient::new(url),
+        ))
+    }
 }

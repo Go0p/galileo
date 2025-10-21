@@ -3,7 +3,6 @@ mod marginfi;
 
 use std::collections::HashMap;
 use std::fmt;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -137,12 +136,7 @@ impl FlashloanManager {
             });
         };
 
-        let base_mint = Pubkey::from_str(&opportunity.pair.input_mint).map_err(|err| {
-            FlashloanError::InvalidConfigDetail(format!(
-                "解析 base mint 失败 {}: {err}",
-                opportunity.pair.input_mint
-            ))
-        })?;
+        let base_mint = opportunity.pair.input_pubkey;
 
         if self.prefer_wallet_balance {
             let wallet_balance = self.wallet_balance(&identity.pubkey, &base_mint).await?;

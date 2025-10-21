@@ -62,8 +62,11 @@ impl SwapInstructionFetcher {
         opportunity: &SwapOpportunity,
         identity: &EngineIdentity,
     ) -> EngineResult<crate::api::SwapInstructionsResponse> {
-        let mut request =
-            SwapInstructionsRequest::new(opportunity.merged_quote.clone(), identity.pubkey);
+        let payload = opportunity
+            .merged_quote
+            .clone()
+            .ok_or_else(|| EngineError::InvalidConfig("套利机会缺少报价数据".into()))?;
+        let mut request = SwapInstructionsRequest::from_payload(payload, identity.pubkey);
 
         request.wrap_and_unwrap_sol = self.request_defaults.wrap_and_unwrap_sol;
         request.dynamic_compute_unit_limit = self.request_defaults.dynamic_compute_unit_limit;

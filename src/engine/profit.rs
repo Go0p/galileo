@@ -1,9 +1,9 @@
 use rand::prelude::IndexedRandom;
-use serde_json::Value;
+use rust_decimal::Decimal;
 use tracing::debug;
 
-use super::error::EngineResult;
 use super::types::{DoubleQuote, SwapOpportunity};
+use crate::api::{QuoteResponse, QuoteResponsePayload};
 
 #[derive(Debug, Clone)]
 pub struct TipConfig {
@@ -66,29 +66,19 @@ impl ProfitEvaluator {
         }
 
         let tip_lamports = self.tip_calculator.calculate(profit_u64);
-        let merged = match merge_quotes(
-            &double_quote.forward.raw,
-            &double_quote.reverse.raw,
+        let merged = merge_quotes(
+            &double_quote.forward,
+            &double_quote.reverse,
             amount_in,
             tip_lamports,
-        ) {
-            Ok(value) => value,
-            Err(err) => {
-                debug!(
-                    target: "engine::profit",
-                    error = %err,
-                    "合并 quote 失败"
-                );
-                return None;
-            }
-        };
+        );
 
         Some(SwapOpportunity {
             pair: pair.clone(),
             amount_in,
             profit_lamports: profit_u64,
             tip_lamports,
-            merged_quote: merged,
+            merged_quote: Some(merged),
         })
     }
 }
@@ -134,44 +124,26 @@ impl TipCalculator {
 }
 
 fn merge_quotes(
-    first: &Value,
-    second: &Value,
+    forward: &QuoteResponse,
+    reverse: &QuoteResponse,
     original_amount: u64,
     tip_lamports: u64,
-) -> EngineResult<Value> {
-    let mut merged = first.clone();
+) -> QuoteResponsePayload {
+    let mut merged = (**forward).clone();
     let total_out = (original_amount as u128)
         .saturating_add(tip_lamports as u128)
         .min(u128::from(u64::MAX)) as u64;
 
-    if let Some(obj) = merged.as_object_mut() {
-        obj.insert(
-            "outputMint".to_string(),
-            Value::String(
-                second
-                    .get("outputMint")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-            ),
-        );
-        obj.insert("priceImpactPct".to_string(), Value::String("0".into()));
-        obj.insert(
-            "outAmount".to_string(),
-            Value::String(total_out.to_string()),
-        );
-        obj.insert(
-            "otherAmountThreshold".to_string(),
-            Value::String(total_out.to_string()),
-        );
-        if let Some(route_plan) = obj.get_mut("routePlan") {
-            if let Some(route_array) = route_plan.as_array_mut() {
-                if let Some(second_plan) = second.get("routePlan").and_then(|v| v.as_array()) {
-                    route_array.extend(second_plan.iter().cloned());
-                }
-            }
-        }
+    merged.output_mint = reverse.output_mint;
+    merged.out_amount = total_out;
+    merged.other_amount_threshold = total_out;
+    merged.price_impact_pct = Decimal::ZERO;
+    merged.context_slot = merged.context_slot.max(reverse.context_slot);
+    merged.time_taken = merged.time_taken.max(reverse.time_taken);
+
+    if !reverse.route_plan.is_empty() {
+        merged.route_plan.extend(reverse.route_plan.iter().cloned());
     }
 
-    Ok(merged)
+    merged
 }

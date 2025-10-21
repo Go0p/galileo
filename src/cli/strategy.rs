@@ -6,7 +6,9 @@ use anyhow::{Result, anyhow};
 use tracing::{info, warn};
 
 use crate::api::JupiterApiClient;
-use crate::cli::context::{resolve_instruction_memo, resolve_rpc_client};
+use crate::cli::context::{
+    resolve_global_http_proxy, resolve_instruction_memo, resolve_rpc_client,
+};
 use crate::config;
 use crate::config::{AppConfig, IntermediumConfig};
 use crate::engine::{
@@ -110,7 +112,15 @@ async fn run_blind_engine(
     let builder_config =
         BuilderConfig::new(resolve_instruction_memo(&config.galileo.global.instruction));
     let swap_defaults = config.galileo.engine.jupiter.swap_config.clone();
-    let submission_client = reqwest::Client::builder().build()?;
+    let mut submission_builder = reqwest::Client::builder();
+    if let Some(proxy_url) = resolve_global_http_proxy(&config.galileo.global) {
+        let proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
+        submission_builder = submission_builder
+            .proxy(proxy)
+            .danger_accept_invalid_certs(true);
+    }
+    let submission_client = submission_builder.build()?;
 
     let marginfi_cfg = &config.galileo.flashloan.marginfi;
     let configured_marginfi = parse_marginfi_account(marginfi_cfg)?;
@@ -297,15 +307,16 @@ fn build_blind_trade_pairs(
         ));
     }
 
-    Ok(pairs_set
+    pairs_set
         .into_iter()
-        .map(
-            |(input_mint, output_mint)| crate::strategy::types::TradePair {
-                input_mint,
-                output_mint,
-            },
-        )
-        .collect())
+        .map(|(input_mint, output_mint)| {
+            crate::strategy::types::TradePair::try_new(&input_mint, &output_mint).map_err(|err| {
+                EngineError::InvalidConfig(format!(
+                    "盲发交易对配置无效 ({input_mint} -> {output_mint}): {err}"
+                ))
+            })
+        })
+        .collect()
 }
 
 fn build_blind_trade_amounts(config: &config::BlindStrategyConfig) -> EngineResult<Vec<u64>> {

@@ -1,7 +1,5 @@
 use std::convert::TryFrom;
-use std::str::FromStr;
 
-use solana_sdk::pubkey::Pubkey;
 use tracing::debug;
 
 use crate::api::{JupiterApiClient, QuoteRequest, QuoteResponse};
@@ -80,14 +78,12 @@ impl QuoteExecutor {
         amount: u64,
         config: &QuoteConfig,
     ) -> EngineResult<QuoteResponse> {
-        let input = Pubkey::from_str(&pair.input_mint).map_err(|err| {
-            EngineError::InvalidConfig(format!("输入 mint 无效 {}: {err}", pair.input_mint))
-        })?;
-        let output = Pubkey::from_str(&pair.output_mint).map_err(|err| {
-            EngineError::InvalidConfig(format!("输出 mint 无效 {}: {err}", pair.output_mint))
-        })?;
-
-        let mut request = QuoteRequest::new(input, output, amount, config.slippage_bps);
+        let mut request = QuoteRequest::new(
+            pair.input_pubkey,
+            pair.output_pubkey,
+            amount,
+            config.slippage_bps,
+        );
         request.only_direct_routes = Some(config.only_direct_routes);
         request.restrict_intermediate_tokens = Some(config.restrict_intermediate_tokens);
         if let Some(max_accounts) = config.quote_max_accounts {

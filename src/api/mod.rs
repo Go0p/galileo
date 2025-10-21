@@ -16,7 +16,7 @@ pub mod quote;
 pub mod serde_helpers;
 pub mod swap_instructions;
 
-pub use quote::{QuoteRequest, QuoteResponse};
+pub use quote::{QuoteRequest, QuoteResponse, QuoteResponsePayload};
 pub use swap_instructions::{
     ComputeUnitPriceMicroLamports, SwapInstructionsRequest, SwapInstructionsResponse,
 };

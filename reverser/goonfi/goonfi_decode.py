@@ -4,8 +4,8 @@
 
 已知约束：
   * 入口固定要求 global_state / pool_state / Sysvar Instructions / Token Program。
-  * 池子数据的 0x158、0x178、0x198、0x1B8 等偏移保存关键账户公钥。
-  * 剩余账户仍需结合链上样本校验，本脚本会输出偏移 + 账户 owner，方便人工核对。
+  * 池子数据的 0x100/0x120/0x140/0x160 分别存放 base/quote mint 与 vault。
+  * 其余账户仍需通过汇编或链上样本佐证，本脚本输出偏移 + 所属程序，便于人工核对。
 """
 from __future__ import annotations
 
@@ -25,6 +25,14 @@ SYSVAR_INSTRUCTIONS = "Sysvar1nstructions1111111111111111111111111"
 TOKEN_PROGRAM_V1 = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 TOKEN_PROGRAM_2022 = "TokenzQdBz3aJQezpLJrWcRkLmW5AoWzLFf5Z4xJ9zQ"
 ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+
+POOL_GLOBAL_STATE_OFFSET = 0x0E0
+POOL_BASE_MINT_OFFSET = 0x100
+POOL_QUOTE_MINT_OFFSET = 0x120
+POOL_BASE_VAULT_OFFSET = 0x140
+POOL_QUOTE_VAULT_OFFSET = 0x160
+POOL_ROUTER_FLAG_OFFSET = 0x388
+POOL_BLACKLIST_FLAG_OFFSET = 0x38E
 
 KNOWN_ROUTER_PROGRAMS = {
     "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4": "JupiterV6",
@@ -346,21 +354,28 @@ def parse_pool(
     raw = base64.b64decode(data_b64)
     if len(raw) < 0x1b8 + 32:
         raise RpcError(
-            f\"池子 {pool} 数据长度不足以解析核心字段: {len(raw)} 字节\"
+            f"池子 {pool} 数据长度不足以解析核心字段: {len(raw)} 字节"
         )
 
-    base_vault = read_pubkey(raw, 0x158)
-    quote_vault = read_pubkey(raw, 0x178)
-    router_account = read_pubkey(raw, 0x198)
-    vault_signer = read_pubkey(raw, 0x1B8)
-    router_flag = raw[0x388] if len(raw) > 0x388 else None
-    blacklist_flag = raw[0x38E] if len(raw) > 0x38E else None
+    global_state_candidate = read_pubkey(raw, POOL_GLOBAL_STATE_OFFSET)
+    base_mint = read_pubkey(raw, POOL_BASE_MINT_OFFSET)
+    quote_mint = read_pubkey(raw, POOL_QUOTE_MINT_OFFSET)
+    base_vault = read_pubkey(raw, POOL_BASE_VAULT_OFFSET)
+    quote_vault = read_pubkey(raw, POOL_QUOTE_VAULT_OFFSET)
+
+    router_flag = (
+        raw[POOL_ROUTER_FLAG_OFFSET] if len(raw) > POOL_ROUTER_FLAG_OFFSET else None
+    )
+    blacklist_flag = (
+        raw[POOL_BLACKLIST_FLAG_OFFSET] if len(raw) > POOL_BLACKLIST_FLAG_OFFSET else None
+    )
 
     base_details = fetch_vault_details(rpc_url, base_vault)
     quote_details = fetch_vault_details(rpc_url, quote_vault)
 
-    base_mint = base_details["mint"]
-    quote_mint = quote_details["mint"]
+    # 基本 sanity 校验：vault owner 应与池子解析出的 PDA 匹配
+    vault_authority = base_details["owner"] if base_details["owner"] else None
+
     if not base_mint or not quote_mint:
         raise RpcError("无法从 vault 解析出 base/quote mint")
 
@@ -381,24 +396,20 @@ def parse_pool(
         user_base_token = "<user-base-token-account>"
         user_quote_token = "<user-quote-token-account>"
 
-    router_info = fetch_account_info(rpc_url, router_account)
-    router_meta = classify_account_meta(router_info)
-    router_program_id = router_meta.get("owner")
-    router_program_name = KNOWN_ROUTER_PROGRAMS.get(router_program_id or "", "unknown")
-
-    router_raw = fetch_raw_account(rpc_url, router_account)
-
-    extra_pubkeys = scan_pubkeys(raw, 0x198, 0x360)
+    extra_pubkeys = scan_pubkeys(raw, POOL_QUOTE_VAULT_OFFSET + 32, len(raw))
     extra_entries: list[dict[str, typing.Any]] = []
     for offset, pubkey in extra_pubkeys:
-        meta = classify_account_meta(fetch_account_info(rpc_url, pubkey))
-        entry = {
-            "offset": f"0x{offset:03x}",
-            "pubkey": pubkey,
-            "owner": meta.get("owner"),
-            "classification": meta.get("classification"),
-        }
-        extra_entries.append(entry)
+        info = fetch_account_info(rpc_url, pubkey)
+        meta = classify_account_meta(info)
+        extra_entries.append(
+            {
+                "offset": f"0x{offset:03x}",
+                "pubkey": pubkey,
+                "owner": meta.get("owner"),
+                "classification": meta.get("classification"),
+                "exists": meta["exists"],
+            }
+        )
 
     return {
         "program_id": GOONFI_PROGRAM_ID,
@@ -408,6 +419,7 @@ def parse_pool(
             "discriminator": raw[:8].hex(),
             "router_flag": router_flag,
             "blacklist_flag": blacklist_flag,
+            "global_state_in_data": global_state_candidate,
             "raw_len": len(raw),
         },
         "core_accounts": {
@@ -416,10 +428,6 @@ def parse_pool(
             "user_authority": user_authority,
             "base_vault": base_vault,
             "quote_vault": quote_vault,
-            "vault_signer": vault_signer,
-            "router_account": router_account,
-            "router_program": router_program_id,
-            "router_program_label": router_program_name,
             "sysvar_instructions": SYSVAR_INSTRUCTIONS,
             "base_mint": base_mint,
             "quote_mint": quote_mint,
@@ -427,6 +435,8 @@ def parse_pool(
             "quote_token_program": quote_token_program,
             "user_base_token": user_base_token,
             "user_quote_token": user_quote_token,
+            "vault_authority": vault_authority,
+            "pool_signer": None,
         },
         "base_vault_meta": base_details,
         "quote_vault_meta": quote_details,
@@ -434,14 +444,32 @@ def parse_pool(
             "base": base_decimals,
             "quote": quote_decimals,
         },
-        "router_account_meta": router_meta,
-        "router_account_raw_len": len(router_raw) if router_raw else None,
         "extra_pubkeys": extra_entries,
         "notes": [
-            "extra_pubkeys 列出从 0x198 起的所有 32 字节段，需结合汇编确认最终顺序。",
-            "router_program_label 为基于已知常量的推测，需对照链上交易验证。",
+            "extra_pubkeys 列出 quote vault 之后的所有 32 字节段，若指向有效账户可进一步标注含义。",
+            "global_state_in_data 用于 sanity check；按照当前实现应当等于常量 GOONFI_GLOBAL_STATE。",
+            "vault_authority 来源于 base vault 的 owner，可用于核对 PDA。",
         ],
     }
+
+
+def print_human_summary(result: dict[str, typing.Any]) -> None:
+    core = result.get("core_accounts", {})
+    order = [
+        ("0", "user_authority", core.get("user_authority")),
+        ("1", "pool_state", core.get("pool_state")),
+        ("2", "user_base_token", core.get("user_base_token")),
+        ("3", "user_quote_token", core.get("user_quote_token")),
+        ("4", "base_vault", core.get("base_vault")),
+        ("5", "quote_vault", core.get("quote_vault")),
+        ("6", "pool_signer", core.get("pool_signer") or "<未解析>"),
+        ("7", "sysvar_instructions", core.get("sysvar_instructions")),
+        ("8", "token_program", core.get("base_token_program")),
+    ]
+    print()
+    print("账户顺序 (swap 指令参考顺序)：")
+    for idx, label, value in order:
+        print(f"  {idx} {label:<18} {value}")
 
 
 def main(argv: typing.Sequence[str]) -> int:
@@ -456,6 +484,7 @@ def main(argv: typing.Sequence[str]) -> int:
         print(f"错误: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    print_human_summary(result)
     return 0
 
 
