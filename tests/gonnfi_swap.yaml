@@ -1,0 +1,24 @@
+swap:
+  program: "goonERTdGsjnkZqWuVjs73BZ3Pb9qoCUdBUL17BnS5j"
+  accounts:
+    # user_authority
+    - "goopNoaJhhrzxi6oq2j4chcyHKGucAeVZSk4QBA7Gu1"
+    # market
+    - "4uWuh9fC7rrZKrN8ZdJf69MN1e2S7FPpMqcsyY1aof6K"
+    # user_base_token
+    - "3sGy7k7JfSektdq4A7MjtAdi4Ui1hmjnmVydkh8Ty7Sw"
+    # user_quote_token
+    - "DJ55BneMbwBrj5tBXoPUFkvRqc2uvmVChTjjWtsERcR2"
+    # base_vault
+    - "pKiUC9hDXv52xqU1p3BKypV9AQjAMgfZUGRnoBsdkKm"
+    # quote_vault
+    - "Gsy5Zr7Vxn5KckAbduPHHGR1qzPJ4w3GSYmcinWAkhrC"
+    # pool_signer
+    - "Ggrv4WCrXMH3F85zsayVZKiyUw47AESZq8pTgL7K81PY"
+    # sysvar_instructions
+    - "Sysvar1nstructions1111111111111111111111111"
+    # token_program
+    - "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+
+

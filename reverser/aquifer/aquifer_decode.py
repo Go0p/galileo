@@ -1,24 +1,42 @@
 #!/usr/bin/env python3
 """
-输入 Aquifer dex_instance 账户地址，解析 swap 所需的核心账户。
+输入 Aquifer 池子（`dex_instance` PDA）地址，解析该 swap 指令所需的核心账户。
 
-脚本流程：
-1. 拉取 dex_instance 数据并解析出 dex_owner / dex PDA / base & quote coin。
-2. 按推导的 PDA 公式校验 dex / dex_instance / coin / coin_managed_ta。
-3. 读取 coin 账户获取 mint / vault / oracle，并补充 mint 的 Token Program 与 decimals。
-4. 可选接收用户地址，计算其 base/quote ATA；否则使用占位符。
+功能：
+1. 读取 `dex_instance` 原始数据，解析 `dex_owner`、base/quote coin、oracle、做市风险账户等字段；
+2. 通过 PDA 公式校验 `dex`、`dex_instance`、`coin`、`coin_managed_ta` 等账户；
+3. 读取 `coin` 账户，补齐 mint、vault，并判断对应 Token Program / decimals；
+4. 可选 `--user`，自动推导 base / quote ATA；默认使用占位符；
+5. 支持 JSON 与人类可读两种输出格式（`--json`）。
 
-输出涵盖：
-- 程序 ID、dex、dex_instance、instance_id；
-- base/quote coin 账户、vault、mint、oracle、风险账户；
-- swap 指令常用系统账户 (clock / instructions)。
+账户顺序与 Swap 指令一致（常见 16 个账户）：
+ 0 `sysvar_instructions`
+ 1 `user_authority`（签名者 / 费支付者）
+ 2 `token_program_base`
+ 3 `mm_account`（做市 / 风控 PDA，来自 `dex_instance` 0xCC）
+ 4 `base_mint`
+ 5 `token_program_quote`
+ 6 `base_coin`（PDA：["coin", dex, base_mint]）
+ 7 `quote_mint`
+ 8 `dex`（PDA：["dex", dex_owner]）
+ 9 `dex_instance`（池子本体，PDA：["dex_instance", dex, [instance_id]]）
+10 `base_oracle`
+11 `quote_oracle`
+12 `base_vault_authority`（PDA：["coin_managed_ta", base_coin] 的 Token 账户 owner）
+13 `base_vault_token_account`（SPL Token 账户，mint=base_mint，owner=#12）
+14 `quote_vault_authority`（PDA：["coin_managed_ta", quote_coin]）
+15 `quote_vault_token_account`（SPL Token 账户，mint=quote_mint，owner=#14）
 
-注意：字段偏移基于 `reverser/aquifer/asm` 汇编推断，如链上结构更新需同步修改。
+脚本仍会返回额外信息（例如 `sysvar_clock` 建议、可选用户 ATA 等），可按需使用。
+
+注意：字段偏移和校验逻辑基于 `reverser/aquifer/asm` 汇编推断，如链上结构更新需同步维护。
 """
 from __future__ import annotations
 
 import argparse
 import base64
+import ctypes
+import ctypes.util
 import json
 import sys
 import typing
@@ -37,6 +55,7 @@ ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 BASE58_INDEX = {c: i for i, c in enumerate(BASE58_ALPHABET)}
 PROGRAM_ID_BYTES = None  # 在主函数初始化
+_ZSTD_LIB: ctypes.CDLL | None = None
 
 
 class RpcError(RuntimeError):
@@ -93,6 +112,49 @@ def rpc_request(rpc_url: str, method: str, params: typing.List[typing.Any]) -> t
     if "error" in doc:
         raise RpcError(f"{method} 返回错误: {doc['error']}")
     return doc.get("result")
+
+
+def _decompress_zstd(data: bytes) -> bytes:
+    global _ZSTD_LIB
+    if _ZSTD_LIB is None:
+        lib_name = ctypes.util.find_library("zstd")
+        if not lib_name:
+            raise RuntimeError("缺少 libzstd，无法解压 base64+zstd 数据")
+        _ZSTD_LIB = ctypes.CDLL(lib_name)
+        _ZSTD_LIB.ZSTD_getFrameContentSize.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        _ZSTD_LIB.ZSTD_getFrameContentSize.restype = ctypes.c_ulonglong
+        _ZSTD_LIB.ZSTD_decompress.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+        ]
+        _ZSTD_LIB.ZSTD_decompress.restype = ctypes.c_size_t
+        _ZSTD_LIB.ZSTD_isError.argtypes = [ctypes.c_size_t]
+        _ZSTD_LIB.ZSTD_isError.restype = ctypes.c_uint
+        _ZSTD_LIB.ZSTD_getErrorName.argtypes = [ctypes.c_size_t]
+        _ZSTD_LIB.ZSTD_getErrorName.restype = ctypes.c_char_p
+
+    src_buf = (ctypes.c_char * len(data)).from_buffer_copy(data)
+    src_ptr = ctypes.cast(src_buf, ctypes.c_void_p)
+    content_size = _ZSTD_LIB.ZSTD_getFrameContentSize(src_ptr, len(data))
+    ZSTD_CONTENTSIZE_ERROR = 2**64 - 1
+    ZSTD_CONTENTSIZE_UNKNOWN = 2**64 - 2
+    if content_size in (ZSTD_CONTENTSIZE_ERROR, ZSTD_CONTENTSIZE_UNKNOWN):
+        content_size = max(len(data) * 32, 8192)
+    dst_buf = (ctypes.c_char * content_size)()
+    result_size = _ZSTD_LIB.ZSTD_decompress(
+        ctypes.cast(dst_buf, ctypes.c_void_p),
+        content_size,
+        src_ptr,
+        len(data),
+    )
+    if _ZSTD_LIB.ZSTD_isError(result_size):
+        err_name = _ZSTD_LIB.ZSTD_getErrorName(result_size)
+        raise RuntimeError(
+            f"zstd 解压失败: {err_name.decode() if err_name else result_size}"
+        )
+    return bytes(dst_buf[: result_size])
 
 
 def is_on_curve(pubkey: bytes) -> bool:
@@ -176,14 +238,19 @@ def read_pubkey(data: bytes, offset: int) -> bytes:
 
 
 def decode_dex_instance(raw: bytes) -> dict[str, typing.Any]:
-    if len(raw) < 0xEC:
+    if len(raw) < 0xCC + 32:
         raise ValueError(f"dex_instance 数据长度过短: {len(raw)}")
-    owner = read_pubkey(raw, 0x08)
-    stored_dex = read_pubkey(raw, 0x28)
-    derived_dex, dex_bump = find_program_address_bytes((b"dex", owner), PROGRAM_ID_BYTES)
-    if stored_dex != derived_dex:
+
+    stored_dex = read_pubkey(raw, 0x00)
+    dex_owner = read_pubkey(raw, 0x20)
+    derived_dex, dex_bump = find_program_address_bytes((b"dex", dex_owner), PROGRAM_ID_BYTES)
+    if derived_dex != stored_dex:
         raise ValueError("dex PDA 校验失败")
-    instance_id = raw[0x49]
+
+    instance_id = raw[0x41]
+    base_coin_bump = raw[0x42]
+    quote_coin_bump = raw[0x43]
+
     base_coin = read_pubkey(raw, 0x4C)
     quote_coin = read_pubkey(raw, 0x6C)
     base_oracle = read_pubkey(raw, 0x8C)
@@ -191,7 +258,7 @@ def decode_dex_instance(raw: bytes) -> dict[str, typing.Any]:
     mm_account = read_pubkey(raw, 0xCC)
     return {
         "raw": raw,
-        "dex_owner": b58encode(owner),
+        "dex_owner": b58encode(dex_owner),
         "dex": b58encode(derived_dex),
         "dex_bump": dex_bump,
         "instance_id": instance_id,
@@ -200,10 +267,10 @@ def decode_dex_instance(raw: bytes) -> dict[str, typing.Any]:
         "base_oracle": b58encode(base_oracle),
         "quote_oracle": b58encode(quote_oracle),
         "mm_account": b58encode(mm_account),
-        "base_coin_bump": raw[0x4A],
-        "quote_coin_bump": raw[0x4B],
-        "dex_instance_bytes": raw[8:40],  # 供 coin 验证使用
-        "dex_bytes": derived_dex,
+        "base_coin_bump": base_coin_bump,
+        "quote_coin_bump": quote_coin_bump,
+        "dex_instance_bytes": raw[0x20:0x40],  # 供 coin 验证使用
+        "dex_bytes": stored_dex,
     }
 
 
@@ -248,7 +315,7 @@ def decode_coin_account(
     }
 
 
-def fetch_account_data(rpc_url: str, address: str) -> bytes:
+def fetch_account_record(rpc_url: str, address: str) -> dict[str, typing.Any]:
     resp = rpc_request(
         rpc_url,
         "getAccountInfo",
@@ -261,10 +328,38 @@ def fetch_account_data(rpc_url: str, address: str) -> bytes:
         ],
     )
     value = resp.get("value")
-    if not value or not value.get("data"):
+    if not value:
         raise RpcError(f"账户 {address} 数据为空")
-    data_b64, _encoding = value["data"]
-    return base64.b64decode(data_b64)
+    data_field = value.get("data")
+    if not data_field:
+        raise RpcError(f"账户 {address} 缺少 data 字段")
+    data_b64, _encoding = data_field
+    data = base64.b64decode(data_b64)
+    if data.startswith(b"\x28\xb5\x2f\xfd"):
+        data = _decompress_zstd(data)
+    return {
+        "data": data,
+        "owner": value.get("owner"),
+        "lamports": value.get("lamports"),
+        "executable": value.get("executable", False),
+    }
+
+
+def decode_token_account(raw: bytes) -> dict[str, typing.Any]:
+    if len(raw) < 165:
+        raise ValueError(f"SPL Token 账户数据长度过短: {len(raw)}")
+    mint = read_pubkey(raw, 0x00)
+    owner = read_pubkey(raw, 0x20)
+    amount = int.from_bytes(raw[0x40:0x48], "little")
+    delegate_present = int.from_bytes(raw[0x48:0x50], "little") != 0
+    close_authority_present = int.from_bytes(raw[0x78:0x80], "little") != 0
+    return {
+        "mint": b58encode(mint),
+        "owner": b58encode(owner),
+        "amount": amount,
+        "has_delegate": delegate_present,
+        "has_close_authority": close_authority_present,
+    }
 
 
 def fetch_mint_owner_and_decimals(
@@ -298,17 +393,20 @@ def resolve_accounts(
     dex_instance: str,
     user: str | None,
 ) -> dict[str, typing.Any]:
-    instance_raw = fetch_account_data(rpc_url, dex_instance)
+    instance_record = fetch_account_record(rpc_url, dex_instance)
+    instance_raw = instance_record["data"]
     instance = decode_dex_instance(instance_raw)
 
-    base_coin_raw = fetch_account_data(rpc_url, instance["base_coin"])
+    base_coin_record = fetch_account_record(rpc_url, instance["base_coin"])
+    base_coin_raw = base_coin_record["data"]
     base_coin = decode_coin_account(
         base_coin_raw,
         coin_address=instance["base_coin"],
         dex_instance_bytes=instance_raw[0x08:0x28],
         dex_bytes=b58decode(instance["dex"]),
     )
-    quote_coin_raw = fetch_account_data(rpc_url, instance["quote_coin"])
+    quote_coin_record = fetch_account_record(rpc_url, instance["quote_coin"])
+    quote_coin_raw = quote_coin_record["data"]
     quote_coin = decode_coin_account(
         quote_coin_raw,
         coin_address=instance["quote_coin"],
@@ -322,6 +420,32 @@ def resolve_accounts(
     quote_token_program, quote_decimals = fetch_mint_owner_and_decimals(
         rpc_url, quote_coin["mint"]
     )
+
+    base_vault_record = fetch_account_record(rpc_url, base_coin["vault"])
+    quote_vault_record = fetch_account_record(rpc_url, quote_coin["vault"])
+
+    if base_vault_record["owner"] not in (TOKEN_PROGRAM_V1, TOKEN_PROGRAM_2022):
+        raise RpcError(
+            f"base vault token account {base_coin['vault']} owner 非 SPL Token Program: {base_vault_record['owner']}"
+        )
+    if quote_vault_record["owner"] not in (TOKEN_PROGRAM_V1, TOKEN_PROGRAM_2022):
+        raise RpcError(
+            f"quote vault token account {quote_coin['vault']} owner 非 SPL Token Program: {quote_vault_record['owner']}"
+        )
+    base_vault_account = decode_token_account(base_vault_record["data"])
+    quote_vault_account = decode_token_account(quote_vault_record["data"])
+
+    if base_vault_account["mint"] != base_coin["mint"]:
+        raise RpcError(
+            f"base vault token account mint 不匹配: 期望 {base_coin['mint']}, 实际 {base_vault_account['mint']}"
+        )
+    if quote_vault_account["mint"] != quote_coin["mint"]:
+        raise RpcError(
+            f"quote vault token account mint 不匹配: 期望 {quote_coin['mint']}, 实际 {quote_vault_account['mint']}"
+        )
+
+    base_vault_authority = base_vault_account["owner"]
+    quote_vault_authority = quote_vault_account["owner"]
 
     user_authority = user or "<user-authority>"
     if user:
@@ -338,26 +462,22 @@ def resolve_accounts(
         user_quote_token = "<user-quote-token-account>"
 
     account_list = [
+        ("sysvar_instructions", SYSVAR_INSTRUCTIONS),
+        ("user_authority", user_authority),
+        ("token_program_base", base_token_program),
+        ("mm_account", instance["mm_account"]),
+        ("base_mint", base_coin["mint"]),
+        ("token_program_quote", quote_token_program),
+        ("base_coin", instance["base_coin"]),
+        ("quote_mint", quote_coin["mint"]),
         ("dex", instance["dex"]),
         ("dex_instance", dex_instance),
-        ("user_authority", user_authority),
-        ("base_coin", instance["base_coin"]),
-        ("quote_coin", instance["quote_coin"]),
-        ("base_vault", base_coin["vault"]),
-        ("quote_vault", quote_coin["vault"]),
-        ("base_mint", base_coin["mint"]),
-        ("quote_mint", quote_coin["mint"]),
-        ("base_token_program", base_token_program),
-        ("quote_token_program", quote_token_program),
         ("base_oracle", instance["base_oracle"]),
         ("quote_oracle", instance["quote_oracle"]),
-        ("mm_account", instance["mm_account"]),
-        ("risk_base", base_coin["risk"]),
-        ("risk_quote", quote_coin["risk"]),
-        ("sysvar_clock", SYSVAR_CLOCK),
-        ("sysvar_instructions", SYSVAR_INSTRUCTIONS),
-        ("user_base_token", user_base_token),
-        ("user_quote_token", user_quote_token),
+        ("base_vault_authority", base_vault_authority),
+        ("base_vault_token_account", base_coin["vault"]),
+        ("quote_vault_authority", quote_vault_authority),
+        ("quote_vault_token_account", quote_coin["vault"]),
     ]
 
     return {
@@ -369,20 +489,24 @@ def resolve_accounts(
         "base": {
             "coin": instance["base_coin"],
             "mint": base_coin["mint"],
-            "vault": base_coin["vault"],
+            "vault_authority": base_vault_authority,
+            "vault_token_account": base_coin["vault"],
             "oracle": instance["base_oracle"],
             "risk": base_coin["risk"],
             "token_program": base_token_program,
             "decimals": base_decimals,
+            "vault_amount": base_vault_account["amount"],
         },
         "quote": {
             "coin": instance["quote_coin"],
             "mint": quote_coin["mint"],
-            "vault": quote_coin["vault"],
+            "vault_authority": quote_vault_authority,
+            "vault_token_account": quote_coin["vault"],
             "oracle": instance["quote_oracle"],
             "risk": quote_coin["risk"],
             "token_program": quote_token_program,
             "decimals": quote_decimals,
+            "vault_amount": quote_vault_account["amount"],
         },
         "mm_account": instance["mm_account"],
         "user": {

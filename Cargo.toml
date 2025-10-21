@@ -47,7 +47,7 @@ indicatif = { version = "0.18.0", features = ["tokio"] }
 solana-address-lookup-table-interface = { version = "3.0.0", features = ["bincode", "bytemuck"] }
 rust_decimal = { version = "1.39.0", features = ["serde"] }
 solana-account-decoder = "3.0.7"
-hotpath = { version = "0.4.1", optional = true }
+hotpath = { version = "0.5.2", optional = true }
 metrics = "0.24.2"
 metrics-exporter-prometheus = { version = "0.17.2", default-features = false, features = ["http-listener"] }
 url = "2.5.7"
@@ -62,3 +62,6 @@ hotpath = ["dep:hotpath", "hotpath/hotpath"]
 hotpath-alloc-bytes-total = ["hotpath/hotpath-alloc-bytes-total"]
 hotpath-alloc-count-total = ["hotpath/hotpath-alloc-count-total"]
 hotpath-off = ["hotpath/hotpath-off"]
+
+[dev-dependencies]
+litesvm = "0.8.1"

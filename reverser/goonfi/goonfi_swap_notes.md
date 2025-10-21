@@ -54,6 +54,7 @@
 - `function_9031/9030` 的调用栈中会读取 `.rodata` 的压缩表（`0x1000172f0`、`0x100017378`、`0x100017b70` 等），同时配合常量 `"0x"`、`"0123456789abcdef"` 生成字符串，说明最终的 seed 片段很可能是十六进制文本。解码流程大致为：读取池上配置的位移 → 按表解码出 nibble/长度 → `function_7764` 将片段写入 `Vec<&[u8]>` → `sol_try_find_program_address`。
 - 为定位具体 seeds，当前计划是复刻 `function_9031` 的位运算解码逻辑；若能在本地模拟，便能直接 dump seed 列表并在 Python 中调用 `create_program_address` 校验 `CGDgsTDL...` 与 `3aypM9ab...`。另一条备选方案是利用 `solana_rbpf`/自定义 syscall 钩子，在执行 Jupiter 路径时截获传入 `sol_try_find_program_address` 的 seed 列表。
 - 解析 `function_9031` 需要重点还原三个辅助函数：`function_9880`（基于 `0x1000172f0` 的索引表进行二分查找）、`function_9449`（把 `u64` 格式化为 `"0x{..}"` 字符串）、`function_9362`（区间校验）。后续将先把这三段逻辑翻译成 Python，再围绕实际池子的输入跑通 `function_9031` 主流程，拿到完整 seeds。
+- 2025-02-14：评估了 `litesvm` 方案。框架初始化时直接把 `sol_try_find_program_address` 等 syscalls 注册到内部 `BuiltinProgram`，外部暂无安全接口可覆写，想偷梁换柱必须用 `unsafe` 操作底层函数表。下一步计划是在自定义 wrapper 内复用 `agave_syscalls` 的解析逻辑，记录 seeds 后再调用原 syscall，从而无需手翻 `function_9031`。
 
 > 推荐后续步骤：  
 > 1. 选取至少一条 GoonFi swap 成功交易，记录 26 个账户顺序，与 `function_6816` 的写入顺序比对，补完账户标签。  

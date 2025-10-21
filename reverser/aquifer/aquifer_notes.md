@@ -48,6 +48,28 @@
 4. 逐字段拷贝 `dex_instance` 中的 base/quote 结构，与实际传入账户比对；若缺少或错误即触发 `0x100060d02` 等错误信息。
 5. 完成账户验证后，进入价格、深度、风险等计算分支。
 
+### 实际 swap 账户顺序（样例交易校验）
+| 序号 | 账户 | 说明 | 汇编参考 |
+| ---- | ---- | ---- | ---- |
+| 0 | `Sysvar1nstructions1111111111111111111111111` | 指令 Sysvar | `function_26067` 调用 |
+| 1 | `user_authority` | 做市权限 / signer（例：`FG3B…`） | `Signer account is not a signer` |
+| 2 | `token_program_base` | Base 侧 Token Program（SPL v1 / Token-2022） | `Incorrect token program account provided` |
+| 3 | `mm_risk_account` | 做市风险 PDA（例：`HS3N…`） | `Market maker account must be a signer` |
+| 4 | `base_mint` | 例如 `So111…`（WSOL） | `Base token mint mismatch` |
+| 5 | `token_program_quote` | Quote 侧 Token Program | 同上 |
+| 6 | `base_coin` | PDA：`["coin", dex, base_mint]`（例：`5uUV…`） | `Coin PDA address derivation mismatch` |
+| 7 | `quote_mint` | 例如 `EPjF…`（USDC） | `Quote token mint mismatch` |
+| 8 | `dex` | PDA：`["dex", dex_owner]`（例：`5AVy…`，数据 8 552 字节） | `dexBump mismatch` |
+| 9 | `dex_instance` | 池子本体 PDA（例：`CNC5…`，数据 8 492 字节） | `Dex instance PDA address derivation mismatch` |
+| 10 | `base_oracle` | 预言机 PDA（例：`5bJj…`） | `Wrong oracle passed for coin account` |
+| 11 | `quote_oracle` | 同上（例：`8mZV…`） | 同上 |
+| 12 | `base_coin_managed_ta` | PDA：`["coin_managed_ta", base_coin]` | `coin_managed_ta… mismatch` |
+| 13 | `base_vault_token_account` | SPL Token Account，owner 为 #12 | Token account校验 |
+| 14 | `quote_coin_managed_ta` | PDA：`["coin_managed_ta", quote_coin]` | 同上 |
+| 15 | `quote_vault_token_account` | SPL Token Account，owner 为 #14 | Token account校验 |
+
+> 注意：Vault Token Account（#13/#15）不是用户 ATA，而是由 `coin_managed_ta` 作为 owner 的内部库存账户。用户侧 token 账户由外层路由负责。
+
 ## 实现 decode 脚本的关键要点
 - 仅需池子(`dex_instance`)地址即可拉取：
   1. 解析 `dex_owner`、`dex_bump`、`instance_id`；

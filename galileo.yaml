@@ -179,14 +179,14 @@ blind_strategy:
       three_hop_mints:
         - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
   pure_routes:
-      # SolFi V2
-    # - buy_market: "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc"
-    # HumidiFi
+      # HumidiFi
     - buy_market: "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW"
       # TesseraV 
       # sell_market: "FLckHLGMJy5gEoXWwcE68Nprde1D4araK4TGLw4pQq2n"
       # ZeroFi
       sell_market: "DRciepTenS2bwfA9YJkZraZrFzcUpmVebR4aZgo2zj1k"
+      # SolFi V2
+      # sell_market: "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc"
 
 
 # 后跑策略
