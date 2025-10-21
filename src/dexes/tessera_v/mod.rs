@@ -1,5 +1,7 @@
+pub mod adapter;
 pub mod decoder;
-pub mod fetch;
+pub(crate) mod shared;
 pub mod types;
 
-pub use decoder::{TESSERA_V_PROGRAM_ID, TesseraVMarketMeta, fetch_market_meta};
+pub use adapter::TesseraVAdapter;
+pub use decoder::{TESSERA_V_PROGRAM_ID, TesseraVMarketMeta};

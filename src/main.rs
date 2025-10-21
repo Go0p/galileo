@@ -15,6 +15,7 @@ mod flashloan;
 mod jupiter;
 mod lander;
 mod monitoring;
+mod rpc;
 mod strategy;
 mod txs;
 

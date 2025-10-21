@@ -21,28 +21,35 @@ pub use swap::{ComputeUnitPriceMode, SwapInstructionFetcher};
 pub use types::{ExecutionPlan, QuoteTask, StrategyTick, SwapOpportunity};
 
 use std::collections::HashMap;
+use std::mem;
 use std::time::{Duration, Instant};
 
-use borsh::BorshSerialize;
 use serde_json::Value;
-use solana_sdk::instruction::AccountMeta;
+use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::pubkey::Pubkey;
 use tracing::{debug, info, trace, warn};
 
 use crate::api::SwapInstructionsResponse;
+use crate::dexes::framework::{SwapAccountAssembler, SwapAccountsContext, SwapFlow};
+use crate::dexes::humidifi::HumidiFiAdapter;
+use crate::dexes::solfi_v2::SolFiV2Adapter;
+use crate::dexes::tessera_v::TesseraVAdapter;
 use crate::flashloan::{FlashloanManager, FlashloanOutcome};
 use crate::lander::{Deadline, LanderStack};
 use crate::monitoring::events;
 use crate::strategy::types::{
     BlindDex, BlindMarketMeta, BlindOrder, BlindStep, BlindSwapDirection, TradePair,
 };
+use crate::strategy::{Strategy, StrategyEvent};
 use crate::txs::jupiter::route_v2::{RouteV2Accounts, RouteV2InstructionBuilder};
-use crate::txs::jupiter::types::{EncodedSwap, RoutePlanStepV2};
-use crate::{dexes::solfi_v2::SolfiV2MarketMeta, dexes::tessera_v::TesseraVMarketMeta};
+use crate::txs::jupiter::swaps::{HumidiFiSwap, SolFiV2Swap, TesseraVSide, TesseraVSwap};
+use crate::txs::jupiter::types::{JUPITER_V6_PROGRAM_ID, RoutePlanStepV2};
 
 const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
     solana_sdk::pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
-use crate::strategy::{Strategy, StrategyEvent};
+const BLIND_COMPUTE_UNIT_LIMIT: u32 = 200_000;
+const COMPUTE_BUDGET_PROGRAM_ID: Pubkey =
+    solana_sdk::pubkey!("ComputeBudget111111111111111111111111111111");
 
 #[derive(Clone)]
 pub struct EngineSettings {
@@ -221,6 +228,7 @@ where
             source_program,
             destination_program,
         );
+        accounts.destination_token_account = Some(JUPITER_V6_PROGRAM_ID);
         accounts.remaining_accounts = remaining_accounts;
 
         let quoted_out_amount = order.amount_in.saturating_add(1);
@@ -237,27 +245,78 @@ where
         .build()
         .map_err(|err| EngineError::Transaction(err.into()))?;
 
+        let mut compute_budget_instructions =
+            vec![compute_unit_limit_instruction(BLIND_COMPUTE_UNIT_LIMIT)];
+        let mut prioritization_fee_lamports = 0u64;
+        if let Some(price) = self.swap_fetcher.sample_compute_unit_price() {
+            compute_budget_instructions.push(compute_unit_price_instruction(price));
+            prioritization_fee_lamports =
+                price.saturating_mul(BLIND_COMPUTE_UNIT_LIMIT as u64) / 1_000_000;
+        }
+
         let response = SwapInstructionsResponse {
             raw: Value::Null,
             token_ledger_instruction: None,
-            compute_budget_instructions: Vec::new(),
+            compute_budget_instructions,
             setup_instructions: Vec::new(),
             swap_instruction: instruction,
             cleanup_instruction: None,
             other_instructions: Vec::new(),
             address_lookup_table_addresses: Vec::new(),
-            prioritization_fee_lamports: 0,
-            compute_unit_limit: 0,
+            prioritization_fee_lamports,
+            compute_unit_limit: BLIND_COMPUTE_UNIT_LIMIT,
             prioritization_type: None,
             dynamic_slippage_report: None,
             simulation_error: None,
         };
 
-        let prepared = self.tx_builder.build(&self.identity, &response, 0).await?;
+        let (input_mint, _) = resolve_step_input(first_step);
+        let (output_mint, _) = resolve_step_output(last_step);
+        let pair = TradePair {
+            input_mint: input_mint.to_string(),
+            output_mint: output_mint.to_string(),
+        };
+        let flashloan_opportunity = SwapOpportunity {
+            pair,
+            amount_in: order.amount_in,
+            profit_lamports: 0,
+            tip_lamports: 0,
+            merged_quote: Value::Null,
+        };
+
+        let FlashloanOutcome {
+            instructions: final_instructions,
+            metadata: flashloan_meta,
+        } = match &self.flashloan {
+            Some(manager) => manager
+                .assemble(&self.identity, &flashloan_opportunity, &response)
+                .await
+                .map_err(EngineError::from)?,
+            None => FlashloanOutcome {
+                instructions: response.flatten_instructions(),
+                metadata: None,
+            },
+        };
+
+        let strategy_name = self.strategy.name();
+
+        if let Some(meta) = &flashloan_meta {
+            events::flashloan_applied(
+                strategy_name,
+                meta.protocol.as_str(),
+                &meta.mint,
+                meta.borrow_amount,
+                meta.inner_instruction_count,
+            );
+        }
+
+        let prepared = self
+            .tx_builder
+            .build_with_sequence(&self.identity, &response, final_instructions, 0)
+            .await?;
 
         let deadline = Deadline::from_instant(Instant::now() + self.settings.landing_timeout);
 
-        let strategy_name = self.strategy.name();
         match self
             .landers
             .submit(&prepared, deadline, strategy_name)
@@ -308,21 +367,34 @@ where
             let user_quote = resolver.get(step.quote_mint, step.quote_token_program);
 
             let encoded_swap = match (&step.meta, step.dex) {
-                (BlindMarketMeta::SolFiV2(_), BlindDex::SolFiV2) => EncodedSwap::from_name(
-                    "SolFiV2",
-                    &matches!(step.direction, BlindSwapDirection::QuoteToBase),
-                )
-                .map_err(|err| {
-                    EngineError::InvalidConfig(format!("构造 SolFiV2 swap 失败: {err}"))
-                })?,
+                (BlindMarketMeta::SolFiV2(_), BlindDex::SolFiV2) => {
+                    let swap = SolFiV2Swap {
+                        is_quote_to_base: matches!(step.direction, BlindSwapDirection::QuoteToBase),
+                    };
+                    swap.encode().map_err(|err| {
+                        EngineError::InvalidConfig(format!("构造 SolFiV2 swap 失败: {err}"))
+                    })?
+                }
+                (BlindMarketMeta::HumidiFi(meta), BlindDex::HumidiFi) => {
+                    let swap_id = meta.next_swap_id().map_err(|err| {
+                        EngineError::InvalidConfig(format!("生成 HumidiFi swap_id 失败: {err}"))
+                    })?;
+                    let swap = HumidiFiSwap {
+                        swap_id,
+                        is_base_to_quote: matches!(step.direction, BlindSwapDirection::BaseToQuote),
+                    };
+                    swap.encode().map_err(|err| {
+                        EngineError::InvalidConfig(format!("构造 HumidiFi swap 失败: {err}"))
+                    })?
+                }
                 (BlindMarketMeta::TesseraV(_), BlindDex::TesseraV) => {
-                    let payload = TesseraSwapPayload {
+                    let swap = TesseraVSwap {
                         side: match step.direction {
-                            BlindSwapDirection::QuoteToBase => TesseraSide::Bid,
-                            BlindSwapDirection::BaseToQuote => TesseraSide::Ask,
+                            BlindSwapDirection::QuoteToBase => TesseraVSide::Bid,
+                            BlindSwapDirection::BaseToQuote => TesseraVSide::Ask,
                         },
                     };
-                    EncodedSwap::from_name("TesseraV", &payload).map_err(|err| {
+                    swap.encode().map_err(|err| {
                         EngineError::InvalidConfig(format!("构造 TesseraV swap 失败: {err}"))
                     })?
                 }
@@ -340,18 +412,40 @@ where
                 output_index: if idx == 0 { 1 } else { 0 },
             });
 
+            let flow = match step.direction {
+                BlindSwapDirection::QuoteToBase => SwapFlow::QuoteToBase,
+                BlindSwapDirection::BaseToQuote => SwapFlow::BaseToQuote,
+            };
+
+            let ctx = SwapAccountsContext {
+                market: step.market,
+                payer: self.identity.pubkey,
+                user_base,
+                user_quote,
+                flow,
+            };
+
             match &step.meta {
-                BlindMarketMeta::SolFiV2(meta) => remaining_accounts.extend(
-                    build_solfi_remaining_accounts(meta, step.market, user_base, user_quote),
-                ),
+                BlindMarketMeta::SolFiV2(meta) => {
+                    SolFiV2Adapter::shared().assemble_remaining_accounts(
+                        meta.as_ref(),
+                        ctx,
+                        &mut remaining_accounts,
+                    );
+                }
+                BlindMarketMeta::HumidiFi(meta) => {
+                    HumidiFiAdapter::shared().assemble_remaining_accounts(
+                        meta.as_ref(),
+                        ctx,
+                        &mut remaining_accounts,
+                    );
+                }
                 BlindMarketMeta::TesseraV(meta) => {
-                    remaining_accounts.extend(build_tessera_remaining_accounts(
-                        meta,
-                        step.market,
-                        self.identity.pubkey,
-                        user_base,
-                        user_quote,
-                    ))
+                    TesseraVAdapter::shared().assemble_remaining_accounts(
+                        meta.as_ref(),
+                        ctx,
+                        &mut remaining_accounts,
+                    );
                 }
             }
         }
@@ -559,51 +653,6 @@ impl AtaResolver {
     }
 }
 
-fn build_solfi_remaining_accounts(
-    meta: &SolfiV2MarketMeta,
-    market: Pubkey,
-    user_base: Pubkey,
-    user_quote: Pubkey,
-) -> Vec<AccountMeta> {
-    vec![
-        AccountMeta::new(market, false),
-        AccountMeta::new_readonly(meta.oracle, false),
-        AccountMeta::new_readonly(meta.config, false),
-        AccountMeta::new(meta.base_vault, false),
-        AccountMeta::new(meta.quote_vault, false),
-        AccountMeta::new(user_base, false),
-        AccountMeta::new(user_quote, false),
-        AccountMeta::new_readonly(meta.base_mint, false),
-        AccountMeta::new_readonly(meta.quote_mint, false),
-        AccountMeta::new_readonly(meta.base_token_program, false),
-        AccountMeta::new_readonly(meta.quote_token_program, false),
-        AccountMeta::new_readonly(solana_sdk::sysvar::instructions::ID, false),
-    ]
-}
-
-fn build_tessera_remaining_accounts(
-    meta: &TesseraVMarketMeta,
-    market: Pubkey,
-    user_authority: Pubkey,
-    user_base: Pubkey,
-    user_quote: Pubkey,
-) -> Vec<AccountMeta> {
-    vec![
-        AccountMeta::new_readonly(meta.global_state, false),
-        AccountMeta::new(market, false),
-        AccountMeta::new(user_authority, true),
-        AccountMeta::new(meta.base_vault, false),
-        AccountMeta::new(meta.quote_vault, false),
-        AccountMeta::new(user_base, false),
-        AccountMeta::new(user_quote, false),
-        AccountMeta::new_readonly(meta.base_mint, false),
-        AccountMeta::new_readonly(meta.quote_mint, false),
-        AccountMeta::new_readonly(meta.base_token_program, false),
-        AccountMeta::new_readonly(meta.quote_token_program, false),
-        AccountMeta::new_readonly(solana_sdk::sysvar::instructions::ID, false),
-    ]
-}
-
 fn resolve_step_input(step: &BlindStep) -> (Pubkey, Pubkey) {
     match step.direction {
         BlindSwapDirection::QuoteToBase => (step.quote_mint, step.quote_token_program),
@@ -618,13 +667,24 @@ fn resolve_step_output(step: &BlindStep) -> (Pubkey, Pubkey) {
     }
 }
 
-#[derive(BorshSerialize)]
-struct TesseraSwapPayload {
-    side: TesseraSide,
+fn compute_unit_limit_instruction(limit: u32) -> Instruction {
+    let mut data = Vec::with_capacity(1 + mem::size_of::<u32>());
+    data.push(2);
+    data.extend_from_slice(&limit.to_le_bytes());
+    Instruction {
+        program_id: COMPUTE_BUDGET_PROGRAM_ID,
+        accounts: Vec::new(),
+        data,
+    }
 }
 
-#[derive(BorshSerialize)]
-enum TesseraSide {
-    Bid,
-    Ask,
+fn compute_unit_price_instruction(price_micro_lamports: u64) -> Instruction {
+    let mut data = Vec::with_capacity(1 + mem::size_of::<u64>());
+    data.push(3);
+    data.extend_from_slice(&price_micro_lamports.to_le_bytes());
+    Instruction {
+        program_id: COMPUTE_BUDGET_PROGRAM_ID,
+        accounts: Vec::new(),
+        data,
+    }
 }

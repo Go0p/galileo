@@ -1,8 +1,10 @@
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use solana_sdk::pubkey::Pubkey;
 
+use crate::dexes::humidifi::HumidiFiMarketMeta;
 use crate::dexes::solfi_v2::SolfiV2MarketMeta;
 use crate::dexes::tessera_v::TesseraVMarketMeta;
 
@@ -89,6 +91,7 @@ pub struct BlindRoutePlan {
 
 #[derive(Debug, Clone)]
 pub enum BlindMarketMeta {
-    SolFiV2(SolfiV2MarketMeta),
-    TesseraV(TesseraVMarketMeta),
+    HumidiFi(Arc<HumidiFiMarketMeta>),
+    SolFiV2(Arc<SolfiV2MarketMeta>),
+    TesseraV(Arc<TesseraVMarketMeta>),
 }

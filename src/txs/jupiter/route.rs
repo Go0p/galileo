@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 use anyhow::Result;
 use borsh::BorshSerialize;
 use solana_sdk::instruction::{AccountMeta, Instruction};

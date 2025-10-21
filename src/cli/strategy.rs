@@ -9,8 +9,6 @@ use crate::api::JupiterApiClient;
 use crate::cli::context::{resolve_instruction_memo, resolve_rpc_client};
 use crate::config;
 use crate::config::{AppConfig, IntermediumConfig};
-use crate::dexes::solfi_v2::{SOLFI_V2_PROGRAM_ID, decode_market_meta};
-use crate::dexes::tessera_v::{TESSERA_V_PROGRAM_ID, fetch_market_meta};
 use crate::engine::{
     AccountPrechecker, BuilderConfig, ComputeUnitPriceMode, EngineError, EngineIdentity,
     EngineResult, EngineSettings, ProfitConfig, ProfitEvaluator, QuoteConfig, QuoteExecutor,
@@ -20,150 +18,15 @@ use crate::flashloan::FlashloanManager;
 use crate::jupiter::{JupiterBinaryManager, JupiterError};
 use crate::lander::LanderFactory;
 use crate::monitoring::events;
-use crate::strategy::types::{
-    BlindDex, BlindMarketMeta, BlindRoutePlan, BlindStep, BlindSwapDirection,
+use crate::strategy::{
+    BlindStrategy, PureBlindRouteBuilder, PureBlindStrategy, Strategy, StrategyEvent,
 };
-use crate::strategy::{BlindStrategy, PureBlindStrategy, Strategy, StrategyEvent};
 use solana_sdk::pubkey::Pubkey;
 
 /// 控制策略以正式模式还是 dry-run 模式运行。
 pub enum StrategyMode {
     Live,
     DryRun,
-}
-
-async fn build_pure_blind_routes(
-    config: &config::BlindStrategyConfig,
-    rpc_client: &solana_client::nonblocking::rpc_client::RpcClient,
-) -> EngineResult<Vec<BlindRoutePlan>> {
-    if config.pure_routes.is_empty() {
-        return Err(EngineError::InvalidConfig(
-            "pure_mode 已开启，但 blind_strategy.pure_routes 为空".into(),
-        ));
-    }
-
-    let mut plans = Vec::with_capacity(config.pure_routes.len());
-
-    for route in &config.pure_routes {
-        let buy_market = Pubkey::from_str(route.buy_market.trim()).map_err(|err| {
-            EngineError::InvalidConfig(format!(
-                "blind_strategy.pure_routes.buy_market `{}` 解析失败: {err}",
-                route.buy_market
-            ))
-        })?;
-        let sell_market = Pubkey::from_str(route.sell_market.trim()).map_err(|err| {
-            EngineError::InvalidConfig(format!(
-                "blind_strategy.pure_routes.sell_market `{}` 解析失败: {err}",
-                route.sell_market
-            ))
-        })?;
-
-        let accounts = rpc_client
-            .get_multiple_accounts(&[buy_market, sell_market])
-            .await
-            .map_err(EngineError::Rpc)?;
-
-        let buy_account = accounts
-            .get(0)
-            .and_then(|acc| acc.as_ref())
-            .ok_or_else(|| EngineError::InvalidConfig(format!("市场 {} 不存在", buy_market)))?;
-        let sell_account = accounts
-            .get(1)
-            .and_then(|acc| acc.as_ref())
-            .ok_or_else(|| EngineError::InvalidConfig(format!("市场 {} 不存在", sell_market)))?;
-
-        let buy_meta = resolve_market_meta(rpc_client, buy_market, buy_account).await?;
-        let sell_meta = resolve_market_meta(rpc_client, sell_market, sell_account).await?;
-
-        if buy_meta.base_mint != sell_meta.base_mint || buy_meta.quote_mint != sell_meta.quote_mint
-        {
-            return Err(EngineError::InvalidConfig(format!(
-                "市场 {} 与 {} 的基础/计价代币不一致",
-                buy_market, sell_market
-            )));
-        }
-
-        let forward = vec![
-            build_blind_step(&sell_meta, sell_market, BlindSwapDirection::BaseToQuote),
-            build_blind_step(&buy_meta, buy_market, BlindSwapDirection::QuoteToBase),
-        ];
-
-        let reverse = vec![
-            build_blind_step(&buy_meta, buy_market, BlindSwapDirection::QuoteToBase),
-            build_blind_step(&sell_meta, sell_market, BlindSwapDirection::BaseToQuote),
-        ];
-
-        plans.push(BlindRoutePlan { forward, reverse });
-    }
-
-    Ok(plans)
-}
-
-#[derive(Clone)]
-struct ResolvedMarketMeta {
-    dex: BlindDex,
-    base_mint: Pubkey,
-    quote_mint: Pubkey,
-    base_token_program: Pubkey,
-    quote_token_program: Pubkey,
-    meta: BlindMarketMeta,
-}
-
-async fn resolve_market_meta(
-    rpc_client: &solana_client::nonblocking::rpc_client::RpcClient,
-    market: Pubkey,
-    account: &solana_sdk::account::Account,
-) -> EngineResult<ResolvedMarketMeta> {
-    match account.owner {
-        owner if owner == SOLFI_V2_PROGRAM_ID => {
-            let meta = decode_market_meta(market, &account.data).map_err(|err| {
-                EngineError::InvalidConfig(format!("SolFiV2 市场 {market} 解码失败: {err}"))
-            })?;
-            Ok(ResolvedMarketMeta {
-                dex: BlindDex::SolFiV2,
-                base_mint: meta.base_mint,
-                quote_mint: meta.quote_mint,
-                base_token_program: meta.base_token_program,
-                quote_token_program: meta.quote_token_program,
-                meta: BlindMarketMeta::SolFiV2(meta),
-            })
-        }
-        owner if owner == TESSERA_V_PROGRAM_ID => {
-            let meta = fetch_market_meta(rpc_client, market, account)
-                .await
-                .map_err(|err| {
-                    EngineError::InvalidConfig(format!("TesseraV 市场 {market} 解码失败: {err}"))
-                })?;
-            Ok(ResolvedMarketMeta {
-                dex: BlindDex::TesseraV,
-                base_mint: meta.base_mint,
-                quote_mint: meta.quote_mint,
-                base_token_program: meta.base_token_program,
-                quote_token_program: meta.quote_token_program,
-                meta: BlindMarketMeta::TesseraV(meta),
-            })
-        }
-        other => Err(EngineError::InvalidConfig(format!(
-            "纯盲发暂不支持程序 {other}",
-        ))),
-    }
-}
-
-fn build_blind_step(
-    resolved: &ResolvedMarketMeta,
-    market: Pubkey,
-    direction: BlindSwapDirection,
-) -> BlindStep {
-    BlindStep {
-        dex: resolved.dex,
-        market,
-        base_mint: resolved.base_mint,
-        quote_mint: resolved.quote_mint,
-        base_token_program: resolved.base_token_program,
-        quote_token_program: resolved.quote_token_program,
-        meta: resolved.meta.clone(),
-        direction,
-    }
 }
 
 /// 主策略入口，按配置在盲发与 copy 之间切换。
@@ -314,7 +177,8 @@ async fn run_blind_engine(
         .with_dry_run(dry_run);
 
     if pure_mode {
-        let routes = build_pure_blind_routes(blind_config, &rpc_client)
+        let routes = PureBlindRouteBuilder::new(blind_config, rpc_client.as_ref())
+            .build()
             .await
             .map_err(|err| anyhow!(err))?;
         let strategy_engine = StrategyEngine::new(

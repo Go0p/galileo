@@ -175,8 +175,9 @@ blind_strategy:
       three_hop_mints:
         - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
   pure_routes:
-    - buy_market: "HYKRMKiXfs1CedDsUHNyaVmEyuw7gj3E3uY6gJgUeMr6"
-      sell_market: "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc"
+    - buy_market: "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc"
+      # sell_market: "FLckHLGMJy5gEoXWwcE68Nprde1D4araK4TGLw4pQq2n"
+      sell_market: "6n9VhCwQ7EwK6NqFDjnHPzEk6wZdRBTfh43RFgHQWHuQ"
 
 # 后跑策略
 # Backrun 策略的工作原理如下：

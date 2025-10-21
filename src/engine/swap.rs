@@ -93,4 +93,8 @@ impl SwapInstructionFetcher {
             .await
             .map_err(EngineError::from)
     }
+
+    pub fn sample_compute_unit_price(&self) -> Option<u64> {
+        self.compute_unit_price.as_ref().map(|mode| mode.sample())
+    }
 }
