@@ -98,14 +98,3 @@ impl SwapAccountAssembler for SolFiV2Adapter {
         ]);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use solana_sdk::pubkey::Pubkey;
-    use std::str::FromStr;
-
-    #[test]
-    #[ignore]
-    fn decode_live_market() {}
-}

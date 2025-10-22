@@ -5,10 +5,14 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use solana_sdk::pubkey::Pubkey;
 
+use crate::dexes::clmm::RaydiumClmmMarketMeta;
+use crate::dexes::dlmm::MeteoraDlmmMarketMeta;
+use crate::dexes::framework::SwapFlow;
 use crate::dexes::humidifi::HumidiFiMarketMeta;
 use crate::dexes::obric_v2::ObricV2MarketMeta;
 use crate::dexes::solfi_v2::SolfiV2MarketMeta;
 use crate::dexes::tessera_v::TesseraVMarketMeta;
+use crate::dexes::whirlpool::WhirlpoolMarketMeta;
 use crate::dexes::zerofi::ZeroFiMarketMeta;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -64,6 +68,9 @@ pub enum BlindDex {
     TesseraV,
     ZeroFi,
     ObricV2,
+    RaydiumClmm,
+    MeteoraDlmm,
+    Whirlpool,
 }
 
 impl BlindDex {
@@ -74,6 +81,9 @@ impl BlindDex {
             Self::TesseraV => "TesseraV",
             Self::ZeroFi => "ZeroFi",
             Self::ObricV2 => "ObricV2",
+            Self::RaydiumClmm => "RaydiumClmm",
+            Self::MeteoraDlmm => "MeteoraDlmm",
+            Self::Whirlpool => "Whirlpool",
         }
     }
 }
@@ -94,33 +104,53 @@ impl FromStr for BlindDex {
             "TesseraV" => Ok(Self::TesseraV),
             "ZeroFi" => Ok(Self::ZeroFi),
             "ObricV2" => Ok(Self::ObricV2),
+            "RaydiumClmm" => Ok(Self::RaydiumClmm),
+            "MeteoraDlmm" => Ok(Self::MeteoraDlmm),
+            "Whirlpool" => Ok(Self::Whirlpool),
             other => anyhow::bail!("不支持的盲发 DEX: {other}"),
         }
     }
 }
 
 #[derive(Debug, Clone)]
+pub struct BlindAsset {
+    pub mint: Pubkey,
+    pub token_program: Pubkey,
+}
+
+impl BlindAsset {
+    pub fn new(mint: Pubkey, token_program: Pubkey) -> Self {
+        Self {
+            mint,
+            token_program,
+        }
+    }
+}
+
+impl PartialEq for BlindAsset {
+    fn eq(&self, other: &Self) -> bool {
+        self.mint == other.mint && self.token_program == other.token_program
+    }
+}
+
+impl Eq for BlindAsset {}
+
+#[derive(Debug, Clone)]
 pub struct BlindStep {
     pub dex: BlindDex,
     pub market: Pubkey,
-    pub base_mint: Pubkey,
-    pub quote_mint: Pubkey,
-    pub base_token_program: Pubkey,
-    pub quote_token_program: Pubkey,
+    pub base: BlindAsset,
+    pub quote: BlindAsset,
+    pub input: BlindAsset,
+    pub output: BlindAsset,
     pub meta: BlindMarketMeta,
-    pub direction: BlindSwapDirection,
+    pub flow: SwapFlow,
 }
 
 #[derive(Debug, Clone)]
 pub struct BlindOrder {
     pub amount_in: u64,
     pub steps: Vec<BlindStep>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlindSwapDirection {
-    QuoteToBase,
-    BaseToQuote,
 }
 
 #[derive(Debug, Clone)]
@@ -136,4 +166,7 @@ pub enum BlindMarketMeta {
     TesseraV(Arc<TesseraVMarketMeta>),
     ZeroFi(Arc<ZeroFiMarketMeta>),
     ObricV2(Arc<ObricV2MarketMeta>),
+    RaydiumClmm(Arc<RaydiumClmmMarketMeta>),
+    MeteoraDlmm(Arc<MeteoraDlmmMarketMeta>),
+    Whirlpool(Arc<WhirlpoolMarketMeta>),
 }

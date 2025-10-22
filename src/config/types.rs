@@ -271,8 +271,15 @@ pub struct BlindBaseMintConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PureBlindRouteConfig {
-    pub buy_market: String,
-    pub sell_market: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub legs: Vec<PureBlindLegConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PureBlindLegConfig {
+    pub market: String,
 }
 
 fn deserialize_trade_size_range<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>

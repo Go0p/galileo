@@ -32,22 +32,25 @@ use solana_sdk::pubkey::Pubkey;
 use tracing::{debug, info, trace, warn};
 
 use crate::api::SwapInstructionsResponse;
+use crate::dexes::clmm::RaydiumClmmAdapter;
+use crate::dexes::dlmm::MeteoraDlmmAdapter;
 use crate::dexes::framework::{SwapAccountAssembler, SwapAccountsContext, SwapFlow};
 use crate::dexes::humidifi::HumidiFiAdapter;
 use crate::dexes::obric_v2::ObricV2Adapter;
 use crate::dexes::solfi_v2::SolFiV2Adapter;
 use crate::dexes::tessera_v::TesseraVAdapter;
+use crate::dexes::whirlpool::WhirlpoolAdapter;
 use crate::dexes::zerofi::ZeroFiAdapter;
 use crate::flashloan::{FlashloanManager, FlashloanOutcome};
 use crate::lander::{Deadline, LanderStack};
 use crate::monitoring::events;
-use crate::strategy::types::{
-    BlindDex, BlindMarketMeta, BlindOrder, BlindStep, BlindSwapDirection, TradePair,
-};
+use crate::strategy::types::{BlindDex, BlindMarketMeta, BlindOrder, BlindStep, TradePair};
 use crate::strategy::{Strategy, StrategyEvent};
 use crate::txs::jupiter::route_v2::{RouteV2Accounts, RouteV2InstructionBuilder};
 use crate::txs::jupiter::swaps::{
-    HumidiFiSwap, ObricSwap, SolFiV2Swap, TesseraVSide, TesseraVSwap, ZeroFiSwap,
+    HumidiFiSwap, MeteoraDlmmSwap, MeteoraDlmmSwapV2, ObricSwap, RaydiumClmmSwap,
+    RaydiumClmmSwapV2, SolFiV2Swap, TesseraVSide, TesseraVSwap, WhirlpoolSwap, WhirlpoolSwapV2,
+    ZeroFiSwap,
 };
 use crate::txs::jupiter::types::{JUPITER_V6_PROGRAM_ID, RoutePlanStepV2};
 
@@ -229,8 +232,10 @@ where
 
         let (route_plan, remaining_accounts) = self.build_route_plan(order, &mut ata_resolver)?;
 
-        let (source_mint, source_program) = resolve_step_input(first_step);
-        let (destination_mint, destination_program) = resolve_step_output(last_step);
+        let source_mint = first_step.input.mint;
+        let source_program = first_step.input.token_program;
+        let destination_mint = last_step.output.mint;
+        let destination_program = last_step.output.token_program;
         let source_account = ata_resolver.get(source_mint, source_program);
         let destination_account = ata_resolver.get(destination_mint, destination_program);
 
@@ -285,9 +290,7 @@ where
             simulation_error: None,
         };
 
-        let (input_mint, _) = resolve_step_input(first_step);
-        let (output_mint, _) = resolve_step_output(last_step);
-        let pair = TradePair::from_pubkeys(input_mint, output_mint);
+        let pair = TradePair::from_pubkeys(source_mint, destination_mint);
         let flashloan_opportunity = SwapOpportunity {
             pair,
             amount_in: order.amount_in,
@@ -365,27 +368,43 @@ where
             return Err(EngineError::InvalidConfig("盲发订单缺少步骤".to_string()));
         }
 
-        let first = &order.steps[0];
-        let base_mint = first.base_mint;
-        let quote_mint = first.quote_mint;
-
         let mut route_plan = Vec::with_capacity(order.steps.len());
         let mut remaining_accounts = Vec::with_capacity(order.steps.len() * 12);
+        let mut slot_assets = Vec::with_capacity(order.steps.len() + 1);
+        slot_assets.push(
+            order
+                .steps
+                .first()
+                .map(|step| step.input.clone())
+                .ok_or_else(|| EngineError::InvalidConfig("盲发订单缺少首个步骤".to_string()))?,
+        );
 
-        for (idx, step) in order.steps.iter().enumerate() {
-            if step.base_mint != base_mint || step.quote_mint != quote_mint {
-                return Err(EngineError::InvalidConfig(
-                    "纯盲发路由中的市场 base/quote mint 不一致".to_string(),
-                ));
-            }
+        for step in &order.steps {
+            let input_slot = slot_assets
+                .iter()
+                .position(|asset| asset == &step.input)
+                .ok_or_else(|| {
+                    EngineError::InvalidConfig(format!(
+                        "盲发路线输入资产 {} 缺少生产者",
+                        step.input.mint
+                    ))
+                })?;
 
-            let user_base = resolver.get(step.base_mint, step.base_token_program);
-            let user_quote = resolver.get(step.quote_mint, step.quote_token_program);
+            let output_slot = match slot_assets.iter().position(|asset| asset == &step.output) {
+                Some(idx) => idx,
+                None => {
+                    slot_assets.push(step.output.clone());
+                    slot_assets.len() - 1
+                }
+            };
+
+            let user_base = resolver.get(step.base.mint, step.base.token_program);
+            let user_quote = resolver.get(step.quote.mint, step.quote.token_program);
 
             let encoded_swap = match (&step.meta, step.dex) {
                 (BlindMarketMeta::SolFiV2(_), BlindDex::SolFiV2) => {
                     let swap = SolFiV2Swap {
-                        is_quote_to_base: matches!(step.direction, BlindSwapDirection::QuoteToBase),
+                        is_quote_to_base: matches!(step.flow, SwapFlow::QuoteToBase),
                     };
                     swap.encode().map_err(|err| {
                         EngineError::InvalidConfig(format!("构造 SolFiV2 swap 失败: {err}"))
@@ -402,7 +421,7 @@ where
                     })?;
                     let swap = HumidiFiSwap {
                         swap_id,
-                        is_base_to_quote: matches!(step.direction, BlindSwapDirection::BaseToQuote),
+                        is_base_to_quote: matches!(step.flow, SwapFlow::BaseToQuote),
                     };
                     swap.encode().map_err(|err| {
                         EngineError::InvalidConfig(format!("构造 HumidiFi swap 失败: {err}"))
@@ -410,9 +429,9 @@ where
                 }
                 (BlindMarketMeta::TesseraV(_), BlindDex::TesseraV) => {
                     let swap = TesseraVSwap {
-                        side: match step.direction {
-                            BlindSwapDirection::QuoteToBase => TesseraVSide::Bid,
-                            BlindSwapDirection::BaseToQuote => TesseraVSide::Ask,
+                        side: match step.flow {
+                            SwapFlow::QuoteToBase => TesseraVSide::Bid,
+                            SwapFlow::BaseToQuote => TesseraVSide::Ask,
                         },
                     };
                     swap.encode().map_err(|err| {
@@ -421,11 +440,55 @@ where
                 }
                 (BlindMarketMeta::ObricV2(_), BlindDex::ObricV2) => {
                     let swap = ObricSwap {
-                        x_to_y: matches!(step.direction, BlindSwapDirection::BaseToQuote),
+                        x_to_y: matches!(step.flow, SwapFlow::BaseToQuote),
                     };
                     swap.encode().map_err(|err| {
                         EngineError::InvalidConfig(format!("构造 ObricV2 swap 失败: {err}"))
                     })?
+                }
+                (BlindMarketMeta::RaydiumClmm(meta), BlindDex::RaydiumClmm) => {
+                    if meta.uses_token_2022() {
+                        RaydiumClmmSwapV2::encode().map_err(|err| {
+                            EngineError::InvalidConfig(format!(
+                                "构造 RaydiumClmmV2 swap 失败: {err}"
+                            ))
+                        })?
+                    } else {
+                        RaydiumClmmSwap::encode().map_err(|err| {
+                            EngineError::InvalidConfig(format!("构造 RaydiumClmm swap 失败: {err}"))
+                        })?
+                    }
+                }
+                (BlindMarketMeta::MeteoraDlmm(meta), BlindDex::MeteoraDlmm) => {
+                    if meta.uses_token_2022() {
+                        MeteoraDlmmSwapV2::encode_default().map_err(|err| {
+                            EngineError::InvalidConfig(format!(
+                                "构造 MeteoraDlmmSwapV2 失败: {err}"
+                            ))
+                        })?
+                    } else {
+                        MeteoraDlmmSwap::encode().map_err(|err| {
+                            EngineError::InvalidConfig(format!("构造 MeteoraDlmm swap 失败: {err}"))
+                        })?
+                    }
+                }
+                (BlindMarketMeta::Whirlpool(meta), BlindDex::Whirlpool) => {
+                    if meta.uses_token_2022() {
+                        let swap = WhirlpoolSwapV2 {
+                            a_to_b: matches!(step.flow, SwapFlow::BaseToQuote),
+                            remaining_accounts: None,
+                        };
+                        swap.encode().map_err(|err| {
+                            EngineError::InvalidConfig(format!("构造 WhirlpoolSwapV2 失败: {err}"))
+                        })?
+                    } else {
+                        let swap = WhirlpoolSwap {
+                            a_to_b: matches!(step.flow, SwapFlow::BaseToQuote),
+                        };
+                        swap.encode().map_err(|err| {
+                            EngineError::InvalidConfig(format!("构造 Whirlpool swap 失败: {err}"))
+                        })?
+                    }
                 }
                 _ => {
                     return Err(EngineError::InvalidConfig(
@@ -437,21 +500,18 @@ where
             route_plan.push(RoutePlanStepV2 {
                 swap: encoded_swap,
                 bps: 10_000,
-                input_index: if idx == 0 { 0 } else { 1 },
-                output_index: if idx == 0 { 1 } else { 0 },
+                input_index: u8::try_from(input_slot)
+                    .map_err(|_| EngineError::InvalidConfig("盲发路线槽位数量超过限制".into()))?,
+                output_index: u8::try_from(output_slot)
+                    .map_err(|_| EngineError::InvalidConfig("盲发路线槽位数量超过限制".into()))?,
             });
-
-            let flow = match step.direction {
-                BlindSwapDirection::QuoteToBase => SwapFlow::QuoteToBase,
-                BlindSwapDirection::BaseToQuote => SwapFlow::BaseToQuote,
-            };
 
             let ctx = SwapAccountsContext {
                 market: step.market,
                 payer: self.identity.pubkey,
                 user_base,
                 user_quote,
-                flow,
+                flow: step.flow,
             };
 
             match &step.meta {
@@ -485,6 +545,27 @@ where
                 }
                 BlindMarketMeta::ObricV2(meta) => {
                     ObricV2Adapter::shared().assemble_remaining_accounts(
+                        meta.as_ref(),
+                        ctx,
+                        &mut remaining_accounts,
+                    );
+                }
+                BlindMarketMeta::RaydiumClmm(meta) => {
+                    RaydiumClmmAdapter::shared().assemble_remaining_accounts(
+                        meta.as_ref(),
+                        ctx,
+                        &mut remaining_accounts,
+                    );
+                }
+                BlindMarketMeta::MeteoraDlmm(meta) => {
+                    MeteoraDlmmAdapter::shared().assemble_remaining_accounts(
+                        meta.as_ref(),
+                        ctx,
+                        &mut remaining_accounts,
+                    );
+                }
+                BlindMarketMeta::Whirlpool(meta) => {
+                    WhirlpoolAdapter::shared().assemble_remaining_accounts(
                         meta.as_ref(),
                         ctx,
                         &mut remaining_accounts,
@@ -661,9 +742,9 @@ where
 }
 
 fn ensure_route_pair(first: &BlindStep, last: &BlindStep) -> EngineResult<()> {
-    if first.base_mint != last.base_mint || first.quote_mint != last.quote_mint {
+    if first.input != last.output {
         return Err(EngineError::InvalidConfig(
-            "纯盲发路由 base/quote mint 不一致".to_string(),
+            "纯盲发路由未形成闭环：首腿输入资产与末腿输出资产不一致".to_string(),
         ));
     }
     Ok(())
@@ -696,20 +777,6 @@ impl AtaResolver {
             .cache
             .entry((mint, token_program))
             .or_insert_with(|| derive_associated_token_address(&self.owner, &mint, &token_program))
-    }
-}
-
-fn resolve_step_input(step: &BlindStep) -> (Pubkey, Pubkey) {
-    match step.direction {
-        BlindSwapDirection::QuoteToBase => (step.quote_mint, step.quote_token_program),
-        BlindSwapDirection::BaseToQuote => (step.base_mint, step.base_token_program),
-    }
-}
-
-fn resolve_step_output(step: &BlindStep) -> (Pubkey, Pubkey) {
-    match step.direction {
-        BlindSwapDirection::QuoteToBase => (step.base_mint, step.base_token_program),
-        BlindSwapDirection::BaseToQuote => (step.quote_mint, step.quote_token_program),
     }
 }
 

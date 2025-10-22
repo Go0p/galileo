@@ -7,7 +7,14 @@
 - 新需求强调**不再调用 Jupiter 二进制或 API**，而是使用本地逻辑生成交易。唯一需要复用的是 Jupiter `route_v2` 指令格式（程序 id、前置账户固定），我们负责拼装 `data` 与 `remaining_accounts`。
 - 配置来源仍为 `blind_strategy` 节点。`trade_range_count` 为 `N` 时，需要在一个循环周期内发送 `2N` 笔交易（正向 + 反向各 `N` 笔），并允许随机化顺序。
 - 新增配置开关 `blind_strategy.pure_mode`：`false` 保持原有 quote → swap 流程，`true` 则启用纯盲发（不启动 Jupiter、本地组装指令）。
-- 纯盲发需要通过 `blind_strategy.pure_routes` 明确买入/卖出市场对（当前支持 SolFiV2、TesseraV，可混搭），例如 `buy_market` 指向买入池，`sell_market` 指向卖出池。路由顺序默认先在 `sell_market` 执行 `BaseToQuote`，再在 `buy_market` 执行 `QuoteToBase`，形成 2-hop route；随后会自动补上一条反向（Quote → Base → Quote）路径。
+- 纯盲发需要通过 `blind_strategy.pure_routes` 声明闭环路线。每条路线以 `legs` 列表按顺序写出市场（当前支持 SolFiV2、TesseraV、HumidiFi、ZeroFi、ObricV2，可混搭），系统会自动解析资产流向并生成正/反向闭环。例如：
+  ```yaml
+  pure_routes:
+    - legs:
+        - market: "<HumidiFi 市场>"
+        - market: "<Whirlpool 市场>"
+        - market: "<ZeroFi 市场>"
+  ```
 - 守则强调性能与可观测性：热路径需加 `hotpath::measure`；所有新流程要补 metrics / tracing。
 - **无需考虑向后兼容**：当前仓库尚未上线，重构时可直接移除旧有 quote → swap 逻辑，避免历史包袱。
 - 关联资料：  

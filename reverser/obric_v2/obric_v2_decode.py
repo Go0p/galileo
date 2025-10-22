@@ -85,17 +85,19 @@ def assemble_accounts(
     ui = data.get("ui_accounts", {})
 
     if order == "swap2":
+        mint_x_pool = ui.get("mint_x", data["mints"]["mint_x"])
+        mint_y_pool = ui.get("mint_y", data["mints"]["mint_y"])
         return [
-            ("trading_pair", data["trading_pair"], False),
-            ("second_reference_oracle", oracles["second_reference_oracle"], False),
-            ("third_reference_oracle", oracles["third_reference_oracle"], False),
+            ("trading_pair", data["trading_pair"], True),
+            ("mint_x_pool_share", mint_x_pool, False),
+            ("mint_y_pool_share", mint_y_pool, False),
             ("reserve_x", reserves["reserve_x"], True),
             ("reserve_y", reserves["reserve_y"], True),
             ("user_source_token", user["source_token_account"], True),
             ("user_destination_token", user["destination_token_account"], True),
             ("reference_oracle", oracles["reference_oracle"], False),
             ("x_price_feed", feeds["x_price_feed"], False),
-            ("y_price_feed", feeds["y_price_feed"], False),
+            ("sysvar_instructions", SYSVAR_INSTRUCTIONS, False),
             ("swap_authority", reserves["swap_authority"], False),
             ("token_program", data["token_program"], False),
         ]
@@ -704,7 +706,11 @@ def main(argv: typing.Optional[list[str]] = None) -> int:
     print(f"  mint_y (pool share): {result['ui_accounts']['mint_y']}")
     print(f"  mint_x: {result['mints']['mint_x']}")
     print(f"  mint_y: {result['mints']['mint_y']}")
-    print(f"  protocol_fee: {result['ui_accounts']['protocol_fee']}")
+    print(f"  protocol_fee/x_price_feed: {result['ui_accounts']['protocol_fee']}")
+    print(f"  y_price_feed: {result['price_feeds']['y_price_feed']}")
+    print(f"  reference_oracle: {result['oracles']['reference_oracle']}")
+    print(f"  second_reference_oracle: {result['oracles']['second_reference_oracle']}")
+    print(f"  third_reference_oracle: {result['oracles']['third_reference_oracle']}")
     print(f"  swap_authority: {result['reserves']['swap_authority']}")
     print(f"  token_program: {result['token_program']}")
     print()

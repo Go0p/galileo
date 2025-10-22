@@ -370,6 +370,7 @@ mod tests {
     use std::str::FromStr;
 
     #[test]
+    #[ignore]
     fn dump_live_market_meta() {
         let client = RpcClient::new("https://api.mainnet-beta.solana.com".to_string());
         let pool =

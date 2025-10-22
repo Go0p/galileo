@@ -1,0 +1,48 @@
+Interact With
+GoonFi - goonERTdGsjnkZqWuVjs73BZ3Pb9qoCUdBUL17BnS5j
+Input Accounts
+#1 - User: 3y5u6tGmYwoFpLgfRYcjxRLj6g4FYHfoG3Z3g4ChGas5 Writable Signer
+#2 - Market: GoonFi (WSOL-USDC) Market 4uWuh9fC7rrZKrN8ZdJf69MN1e2S7FPpMqcsyY1aof6K Writable
+#3 - User Token Account A: 4YQxhAeZosvcBxQZo7CGLxihbEUTM3krxcfD2Kxvj9LH Writable
+#4 - User Token Account B: FKmxC83agS6q6QLMsDeGT747wJEgGpsgCnuCJS86mKvD Writable
+#5 - Pool Token Account A: GoonFi (WSOL-USDC) Pool 1 pKiUC9hDXv52xqU1p3BKypV9AQjAMgfZUGRnoBsdkKm Writable
+#6 - Pool Token Account B: GoonFi (WSOL-USDC) Pool 2 Gsy5Zr7Vxn5KckAbduPHHGR1qzPJ4w3GSYmcinWAkhrC Writable
+#7 - Account: ENpQQn8mVBLsHkfZPpMRLbQYF3nGUcc1xYFD3hsqU5G2 
+#8 - Account: Sysvar: Instructions
+#9 - Account: Token Program Program
+
+Instruction Data 0200ff0418c60e00000000000000000000000000
+
+
+Interact With
+GoonFi - goonERTdGsjnkZqWuVjs73BZ3Pb9qoCUdBUL17BnS5j
+Input Accounts
+#1 - User: B4RRE8DrRRLAH3d6CAqmSixLdcurwnic1h83rEYmSY4s Writable Signer
+#2 - Market: GoonFi (WSOL-USDC) Market Writable
+#3 - User Token Account A: Gs9EYbXA73q1vFQufnGnamBn95YwFJJNp9KUowme6v7m Writable
+#4 - User Token Account B: EnN2PhjYDcvWL5UJEaqimSbsJVw3PKJTvj71pEJzirfp Writable
+#5 - Pool Token Account A: GoonFi (WSOL-USDC) Pool 1 Writable
+#6 - Pool Token Account B: GoonFi (WSOL-USDC) Pool 2 Writable
+#7 - Account: Ghgwmma8w9FNVYE2yjMEkKPgvzE7Hyv5NRoKw2vseQZr 
+#8 - Account: Sysvar: Instructions
+#9 - Account: Token Program Program
+
+Instruction Data 0200fbf5265a8f01000000000000000000000000
+
+
+Interact With
+GoonFi
+-
+goonERTdGsjnkZqWuVjs73BZ3Pb9qoCUdBUL17BnS5j
+Input Accounts
+#1 - User: 2KVCngVvgwHHTXjAeo5KHuRg6Hu65TxMWCVSs1axZKpg Writable Signer
+#2 - Market: GoonFi (WSOL-USDC) Market 4ynTYgJK5ruYx3AZMRjCHrJk1qkm61fePF7dkbvRQD46 Writable
+#3 - User Token Account A: BTiZ5p4nDZRY7yQ4ggjNGtiwpoaPqYDj5eTdvZXja4PX Writable
+#4 - User Token Account B: EN1akUcbqB1jUfnCmhsgMa8b1SR5edxiMTEpmdZUxLUk Writable
+#5 - Pool Token Account A: GoonFi (WSOL-USDC) Pool 1 AABxS823DPBxDkxEcdFSduUH1p3XmKjL5AuVgbH5qB3U Writable
+#6 - Pool Token Account B: GoonFi (WSOL-USDC) Pool 2 CyCg79QpzH8MbnPDMEJEvbw3ugJXWisWYPHEE363eUuJ Writable
+#7 - Account: CdjVcNMdhCF21R2VDVhtUUD9nA99YQSjJBPt5iHFpG3v
+#8 - Account: Sysvar: Instructions
+#9 - Account: Token Program Program
+
+Instruction Data 0201fd7ea8e80400000000000000000000000000 

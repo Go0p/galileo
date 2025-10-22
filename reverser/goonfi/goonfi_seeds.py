@@ -11,12 +11,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from enum import Enum
-from typing import Iterable, Sequence, Tuple
+from typing import Iterable, Sequence, Tuple, Union
 
-from goonfi_decode import b58decode, find_program_address
+from goonfi_utils import b58decode, find_program_address
 
 GOONFI_SO = Path(__file__).with_name("goonfi.so")
 PROGRAM_ID = b58decode("goonERTdGsjnkZqWuVjs73BZ3Pb9qoCUdBUL17BnS5j")
+
+JUPITER_ROUTER_SEED_OFFSETS = (0x248, 0x268, 0x288)
+POOL_SIGNER_BUMP_OFFSET = 0x330
+POOL_ROUTER_FLAG_OFFSET = 0x388
+POOL_BLACKLIST_FLAG_OFFSET = 0x38E
 
 
 def _read_rodata_slice(offset: int, length: int) -> bytes:
@@ -317,11 +322,113 @@ class RouterProgram(Enum):
     GOON_BLACKLIST = "goon_blacklist"
 
 
+@dataclass(frozen=True)
+class RouterLiteralBlock:
+    market_literal: bytes
+    vault_literal: bytes
+    program_ids: tuple[bytes, ...]
+
+
+def _load_router_literal_block() -> RouterLiteralBlock:
+    """
+    解析 `.rodata@0x1000167eb` 的静态 seed 字符串与路由 Program ID。
+
+    布局推测：
+      * 0x00..0x20 → `"marketprogram/src/state/market.rs"`（33 字节）
+      * 0x21..0x25 → `"vault"`（5 字节）
+      * 0x26       → 常量 0x04（暂未解意义，疑似占位符）
+      * 之后连续三个 32 字节 Program ID：JUP6 / 6m2CD / T1TAN。
+    """
+
+    literal_offset = 0x167EB
+    literal_length = 33 + 5 + 1 + (3 * 32)
+    raw = _read_rodata_slice(literal_offset, literal_length)
+    market_literal = raw[:33]
+    vault_literal = raw[33:38]
+    payload = raw[39:]  # 跳过 0x04 标记
+    if len(payload) < 3 * 32:
+        raise ValueError("router literal block 尺寸异常")
+    program_ids = tuple(
+        payload[i : i + 32] for i in range(0, 3 * 32, 32)
+    )
+    return RouterLiteralBlock(
+        market_literal=market_literal,
+        vault_literal=vault_literal,
+        program_ids=program_ids,
+    )
+
+
+ROUTER_LITERAL_BLOCK = _load_router_literal_block()
+
+MARKET_LITERAL = ROUTER_LITERAL_BLOCK.market_literal
+MARKET_LITERAL_PREFIX32 = MARKET_LITERAL[:32]
+MARKET_LITERAL_SUFFIX = MARKET_LITERAL[32:]
+VAULT_LITERAL = ROUTER_LITERAL_BLOCK.vault_literal
+
 ROUTER_PROGRAM_IDS: dict[RouterProgram, bytes] = {
-    RouterProgram.JUPITER_V6: b58decode("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"),
-    RouterProgram.STEP_AGGREGATOR: b58decode("6m2CDdhRgxpH4WjvdzxAYbGxwdGUz5MziiL5jek2kBma"),
-    RouterProgram.GOON_BLACKLIST: b58decode("T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT"),
+    RouterProgram.JUPITER_V6: ROUTER_LITERAL_BLOCK.program_ids[0],
+    RouterProgram.STEP_AGGREGATOR: ROUTER_LITERAL_BLOCK.program_ids[1],
+    RouterProgram.GOON_BLACKLIST: ROUTER_LITERAL_BLOCK.program_ids[2],
 }
+
+
+@dataclass(frozen=True)
+class AccountMetaView:
+    """
+    表示内部 Vec<AccountMeta> 中的一项。
+
+    仅记录地址与读写/签名标志，方便在 Python 端复刻 PDA seed。
+    """
+
+    pubkey: bytes
+    is_signer: bool
+    is_writable: bool
+
+
+# Jupiter/OpenBook 静态账户列表（来自 `.rodata@0x1680c` 起的一段常量）
+JUPITER_STATIC_ACCOUNT_OFFSETS: tuple[int, ...] = (
+    0x1680C,
+    0x1682C,
+    0x1684C,
+    0x1686C,
+    0x1688C,
+    0x168AC,
+    0x168CC,
+    0x168EC,
+    0x1690C,
+    0x1692C,
+    0x1694C,
+    0x1696C,
+    0x1698C,
+    0x169AC,
+    0x169CC,
+    0x169EC,
+    0x16A0C,
+    0x16A2C,
+    0x16A4C,
+    0x16A6C,
+    0x16A8C,
+    0x16AAC,
+    0x16ACC,
+    0x16AEC,
+    0x16B0C,
+    0x16B2C,
+    0x16B4C,
+)
+
+
+def load_jupiter_static_accounts() -> list[bytes]:
+    """
+    读取 `.rodata` 中 Jupiter/OpenBook 固定账户的原始 32 字节。
+
+    这些地址在 `function_4705` 里逐一比对，用于拼装内部 Vec<AccountMeta>。
+    """
+
+    accounts: list[bytes] = []
+    for offset in JUPITER_STATIC_ACCOUNT_OFFSETS:
+        slab = _read_rodata_slice(offset, 32)
+        accounts.append(slab)
+    return accounts
 
 
 JUPITER_ROUTE_HASHES: dict[int, str] = {
@@ -354,6 +461,94 @@ def identify_router(program_id: bytes, route_discriminant: int) -> Tuple[RouterP
                 return router, variant
             raise KeyError(f"{router.value} 尚未补齐 discriminant 映射")
     raise KeyError("未知 router program id")
+
+
+def get_router_program_id(router: RouterProgram) -> bytes:
+    """
+    返回指定 router 对应的 Program ID 原始 32 字节。
+    """
+
+    try:
+        return ROUTER_PROGRAM_IDS[router]
+    except KeyError as exc:  # pragma: no cover - 使用方须保证枚举完整
+        raise KeyError(f"未注册的 router: {router}") from exc
+
+
+def _slice_pool_bytes(pool_state: bytes, offset: int, length: int, label: str) -> bytes:
+    end = offset + length
+    if end > len(pool_state):
+        raise ValueError(f"{label} 超出 pool_state 长度: 0x{offset:x}+{length} > {len(pool_state)}")
+    segment = pool_state[offset:end]
+    if not any(segment):
+        raise ValueError(f"{label} 读取结果全为 0，疑似缺失")
+    return segment
+
+
+def _build_jupiter_swap_seeds(pool_state: bytes, router: RouterProgram) -> list[bytes]:
+    seeds: list[bytes] = [
+        MARKET_LITERAL_PREFIX32,
+        MARKET_LITERAL_SUFFIX,
+        VAULT_LITERAL,
+        get_router_program_id(router),
+    ]
+    for idx, offset in enumerate(JUPITER_ROUTER_SEED_OFFSETS):
+        seeds.append(_slice_pool_bytes(pool_state, offset, 32, f"router_seed[{idx}]"))
+    return seeds
+
+
+def build_swap_authority_seeds(pool_state: bytes, router: RouterProgram) -> list[bytes]:
+    """
+    根据 router 分支从 `pool_state` 中提取 swap authority seeds。
+
+    目前仅支持 Jupiter v6，Step/T1TAN 尚在解析。
+    """
+
+    if router is RouterProgram.JUPITER_V6:
+        return _build_jupiter_swap_seeds(pool_state, router)
+    raise NotImplementedError(f"{router.value} seeds 构造尚未实现")
+
+
+def read_pool_signer_bump(pool_state: bytes) -> int:
+    if POOL_SIGNER_BUMP_OFFSET >= len(pool_state):
+        raise ValueError("pool_state 数据长度不足 0x330 字节")
+    return pool_state[POOL_SIGNER_BUMP_OFFSET]
+
+
+def derive_swap_authority_address(
+    pool_pubkey: Union[str, bytes],
+    pool_state: bytes,
+    router: RouterProgram,
+) -> tuple[str, int, list[bytes]]:
+    """
+    根据池子原始数据推导 swap authority 地址。
+
+    返回值：(address, bump, seeds)，其中 seeds 为最终用于 PDA 的字节序列。
+    会优先尝试 `seeds + pool_pubkey` 与程序 ID 拼接的组合，若 bump 对不上，
+    再尝试不附加 pool_pubkey 的方案，便于定位实际实现。
+    """
+
+    seeds = build_swap_authority_seeds(pool_state, router)
+    bump = read_pool_signer_bump(pool_state)
+    if isinstance(pool_pubkey, str):
+        pool_bytes = b58decode(pool_pubkey)
+    else:
+        pool_bytes = pool_pubkey
+
+    addr_with_pool, bump_with_pool = find_program_address(
+        tuple(seeds) + (pool_bytes,),
+        PROGRAM_ID,
+    )
+    if bump_with_pool == bump:
+        return addr_with_pool, bump_with_pool, [*seeds, pool_bytes]
+
+    addr_without_pool, bump_without_pool = find_program_address(seeds, PROGRAM_ID)
+    if bump_without_pool == bump:
+        return addr_without_pool, bump_without_pool, list(seeds)
+
+    raise ValueError(
+        "推导 swap authority 失败：计算得到的 bump 与池子内保存值不一致 "
+        f"(with_pool={bump_with_pool}, without_pool={bump_without_pool}, stored={bump})"
+    )
 
 
 def extract_route_discriminant(account_data: bytes) -> int:
@@ -548,9 +743,15 @@ __all__ = [
     "_encode_hex_u64",
     "_decode_bitfield",
     "_dispatch_seed_builder",
+    "build_swap_authority_seeds",
+    "read_pool_signer_bump",
+    "derive_swap_authority_address",
     "derive_pool_signer",
+    "load_jupiter_static_accounts",
+    "AccountMetaView",
     "SeedToken",
     "RouterProgram",
     "identify_router",
+    "get_router_program_id",
     "extract_route_discriminant",
 ]

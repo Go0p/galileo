@@ -57,6 +57,11 @@ sha2 = "0.10.9"
 core_affinity = "0.8.3"
 bytemuck = { version = "1.15.0", features = ["derive"] }
 
+yellowstone-vixen-orca-whirlpool-parser = "0.5.0"
+yellowstone-vixen-raydium-clmm-parser = "0.5.0"
+yellowstone-vixen-meteora-parser = "0.5.0"
+
+
 [features]
 default = []
 hotpath = ["dep:hotpath", "hotpath/hotpath"]

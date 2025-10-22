@@ -2,19 +2,19 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::Result;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::account::Account;
 use solana_sdk::instruction::AccountMeta;
 use solana_sdk::pubkey::Pubkey;
-use spl_token::solana_program::program_pack::Pack;
-use spl_token::state::Account as SplTokenAccount;
 
 use crate::dexes::framework::{
     DexMarketMeta, DexMetaProvider, SwapAccountAssembler, SwapAccountsContext, SwapFlow,
 };
 
-use super::decoder::{OBRIC_V2_PROGRAM_ID, ObricV2MarketMeta, decode_trading_pair_accounts};
+use super::decoder::{
+    OBRIC_V2_PROGRAM_ID, ObricSwapOrder, ObricV2MarketMeta, decode_trading_pair_accounts,
+};
 
 #[derive(Default)]
 pub struct ObricV2Adapter;
@@ -64,56 +64,37 @@ impl DexMetaProvider for ObricV2Adapter {
         account: &'a Account,
     ) -> Self::FetchFuture<'a> {
         Box::pin(async move {
-            let layout = decode_trading_pair_accounts(&account.data)?;
-            let reserve_keys = [layout.reserve_x, layout.reserve_y];
-            let reserve_accounts = client
-                .get_multiple_accounts(&reserve_keys)
-                .await
-                .with_context(|| {
-                    format!(
-                        "读取 Obric reserves {{ {}, {} }} 失败",
-                        layout.reserve_x, layout.reserve_y
-                    )
-                })?;
-
-            let reserve_x_account = reserve_accounts
-                .get(0)
-                .and_then(|acc| acc.as_ref())
-                .ok_or_else(|| anyhow!("reserve_x {} 不存在", layout.reserve_x))?;
-            let reserve_y_account = reserve_accounts
-                .get(1)
-                .and_then(|acc| acc.as_ref())
-                .ok_or_else(|| anyhow!("reserve_y {} 不存在", layout.reserve_y))?;
-
-            let reserve_x_state = SplTokenAccount::unpack_from_slice(&reserve_x_account.data)
-                .map_err(|err| anyhow!("解析 reserve_x {} 失败: {err}", layout.reserve_x))?;
-            let reserve_y_state = SplTokenAccount::unpack_from_slice(&reserve_y_account.data)
-                .map_err(|err| anyhow!("解析 reserve_y {} 失败: {err}", layout.reserve_y))?;
-
-            let token_program = Pubkey::new_from_array(spl_token::id().to_bytes());
-            let base_mint = Pubkey::new_from_array(reserve_x_state.mint.to_bytes());
-            let quote_mint = Pubkey::new_from_array(reserve_y_state.mint.to_bytes());
+            let layout = decode_trading_pair_accounts(client, market, &account.data).await?;
 
             let meta = ObricV2MarketMeta {
+                order: layout.order,
                 trading_pair: AccountMeta::new(market, false),
-                second_reference_oracle: AccountMeta::new_readonly(
-                    layout.second_reference_oracle,
-                    false,
-                ),
-                third_reference_oracle: AccountMeta::new_readonly(
-                    layout.third_reference_oracle,
-                    false,
-                ),
+                second_reference_oracle: layout
+                    .second_reference_oracle
+                    .map(|pk| AccountMeta::new_readonly(pk, false)),
+                third_reference_oracle: layout
+                    .third_reference_oracle
+                    .map(|pk| AccountMeta::new_readonly(pk, false)),
                 reserve_x: AccountMeta::new(layout.reserve_x, false),
                 reserve_y: AccountMeta::new(layout.reserve_y, false),
                 reference_oracle: AccountMeta::new(layout.reference_oracle, false),
                 x_price_feed: AccountMeta::new_readonly(layout.x_price_feed, false),
                 y_price_feed: AccountMeta::new_readonly(layout.y_price_feed, false),
-                token_program: AccountMeta::new_readonly(token_program, false),
-                base_mint,
-                quote_mint,
-                base_token_program: token_program,
-                quote_token_program: token_program,
+                mint_x_pool: layout
+                    .mint_x_pool
+                    .map(|pk| AccountMeta::new_readonly(pk, false)),
+                mint_y_pool: layout
+                    .mint_y_pool
+                    .map(|pk| AccountMeta::new_readonly(pk, false)),
+                sysvar_instructions: layout
+                    .sysvar_instructions
+                    .map(|pk| AccountMeta::new_readonly(pk, false)),
+                swap_authority: AccountMeta::new(layout.swap_authority, false),
+                token_program: AccountMeta::new_readonly(layout.token_program, false),
+                base_mint: layout.base_mint,
+                quote_mint: layout.quote_mint,
+                base_token_program: layout.token_program,
+                quote_token_program: layout.token_program,
             };
 
             Ok(Arc::new(meta))
@@ -144,13 +125,56 @@ impl SwapAccountAssembler for ObricV2Adapter {
         output.push(AccountMeta::new(source_token, false));
         output.push(AccountMeta::new(destination_token, false));
         output.push(meta.trading_pair.clone());
-        output.push(meta.second_reference_oracle.clone());
-        output.push(meta.third_reference_oracle.clone());
-        output.push(meta.reserve_x.clone());
-        output.push(meta.reserve_y.clone());
-        output.push(meta.reference_oracle.clone());
-        output.push(meta.x_price_feed.clone());
-        output.push(meta.y_price_feed.clone());
-        output.push(meta.token_program.clone());
+
+        match meta.order {
+            ObricSwapOrder::Swap => {
+                let second = meta
+                    .second_reference_oracle
+                    .as_ref()
+                    .expect("swap missing second oracle")
+                    .clone();
+                let third = meta
+                    .third_reference_oracle
+                    .as_ref()
+                    .expect("swap missing third oracle")
+                    .clone();
+
+                output.push(second);
+                output.push(third);
+                output.push(meta.reserve_x.clone());
+                output.push(meta.reserve_y.clone());
+                output.push(meta.reference_oracle.clone());
+                output.push(meta.x_price_feed.clone());
+                output.push(meta.y_price_feed.clone());
+                output.push(meta.token_program.clone());
+            }
+            ObricSwapOrder::Swap2 => {
+                let mint_x_pool = meta
+                    .mint_x_pool
+                    .as_ref()
+                    .expect("swap2 missing mint_x_pool account")
+                    .clone();
+                let mint_y_pool = meta
+                    .mint_y_pool
+                    .as_ref()
+                    .expect("swap2 missing mint_y_pool account")
+                    .clone();
+                let sysvar = meta
+                    .sysvar_instructions
+                    .as_ref()
+                    .expect("swap2 missing sysvar instructions")
+                    .clone();
+
+                output.push(mint_x_pool);
+                output.push(mint_y_pool);
+                output.push(meta.reserve_x.clone());
+                output.push(meta.reserve_y.clone());
+                output.push(meta.reference_oracle.clone());
+                output.push(meta.x_price_feed.clone());
+                output.push(sysvar);
+                output.push(meta.swap_authority.clone());
+                output.push(meta.token_program.clone());
+            }
+        }
     }
 }

@@ -2,9 +2,9 @@ global:
   # rpc url
   # rpc_url: "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
   # rpc_url: "https://mainnet.solana.validationcloud.io/v1/4YlOowpz6fTe6Jl31oWxYGSusOS12UzTxXkpdoC1I5A"
-  rpc_url: "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
+  # rpc_url: "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
   # rpc_url: "https://solana-rpc.publicnode.com"
-  # rpc_url: "http://127.0.0.1:8899"
+  rpc_url: "http://127.0.0.1:8899"
   # yellowstone grpc url
   # proxy: "http://192.168.124.4:2080"
   yellowstone_grpc_url: ""
@@ -145,12 +145,14 @@ blind_strategy:
       "Perps",
       "GoonFi"
   ]
-  enable_landers: []
+  enable_landers: [
+        # "jito"
+    ]
   base_mints:
     - mint: "So11111111111111111111111111111111111111112"
       trade_size_range:
-        - 2_000_000_000 # 10 SOL
-        - 10_000_000_000 # 100 SOL
+        - 1_000_000_000 # 10 SOL
+        - 5_000_000_000 # 100 SOL
       # 在范围内将生成多少种不同的交易规模
       trade_range_count: 3
       # 目前支持三个值： linear 、 random 、 exponential
@@ -179,14 +181,19 @@ blind_strategy:
       three_hop_mints:
         - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
   pure_routes:
-      # HumidiFi
-    - buy_market: "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW"
-      # TesseraV 
-      # sell_market: "FLckHLGMJy5gEoXWwcE68Nprde1D4araK4TGLw4pQq2n"
-      # ZeroFi
-      # sell_market: "DRciepTenS2bwfA9YJkZraZrFzcUpmVebR4aZgo2zj1k"
-      # SolFi V2
-      sell_market: "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc"
+    - name: "solfi_cycle"
+      legs:
+        # HumidiFi
+        # - market: "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW"
+        # TesseraV
+        # - market: "FLckHLGMJy5gEoXWwcE68Nprde1D4araK4TGLw4pQq2n"
+        # ZeroFi
+        # - market: "DRciepTenS2bwfA9YJkZraZrFzcUpmVebR4aZgo2zj1k"
+        # SolFi V2
+        # - market: "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc"
+        - market: "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW"
+        - market: "HktfL7iwGKT5QHjywQkcDnZXScoh811k7akrMZJkCcEF"
+        - market: "BqkNuLTbUZLifWuUtfF5CkyRegTQhYYgUnNeUaxoWC8S"
 
 
 # 后跑策略

@@ -43,6 +43,26 @@
   该函数在 Jupiter 分支中会调用 `function_4682` / `function_4705` 逐步写入账户元信息，并将 swap authority seeds + bump 保存在寄存器堆栈上；最终只把 bump（`pool_state[0x330]`）持久化。
 - `function_9274`：出现多次 `call function_8841` / `8840`，并从 `.rodata` 的 `0x100017cc0`、`0x100017ca8` 等常量构造字节切片，随后通过 `function_7764`/`7763` 组合成 `Vec<&[u8]>`。该逻辑紧跟着 `sol_try_find_program_address` 导入函数（位于 `.rodata` 0x100017d78），极可能就是 swap authority seeds 的生成位置：先将若干常量块复制到栈上，再调用 `sol_try_find_program_address` 计算 PDA。
 
+## 最新 observation
+- 通过 Helius RPC (`getAccountInfo`) 抓取池子 `4uWuh9fC7rrZKrN8ZdJf69MN1e2S7FPpMqcsyY1aof6K` 的原始 856 字节，确认 `derive_swap_authority_address` 中假设的 `pool_state[0x248/0x268/0x288]` 并非 32 字节公钥，而是连续的 `u64` 参数块。仅以这些静态切片 + 程序 ID 计算得到的 PDA 为 `9Cmei… (bump=254)`，与实际 signer (`ENpQ…`/`Ghgwm…`, bump=255) 不符。
+- `swap.txt` 中三条样本的账户顺序现已结构化（`swap_samples.py` 输出），明确 Jupiter 路径只携带 9 个账户；`pool_signer` 并未在指令参数里传递。这意味最终的 PDA seeds 必然源于运行时构造的 `Vec<AccountMeta>` 序列化，而非指令级别的显式账户。
+- `.rodata@0x165b0` 存放 40 条静态公钥，现已由 `decode_rodata_accounts.py` 打印并标注常见 Program ID（global_state、sysvar instructions、Jupiter、SPL Token、System）。`0x1680c` 一带的 48 字节块主要是 panic/调试字符串，真实的 `AccountMeta` 会在运行期由 `function_4844`/`function_6608` 组合出来。
+
+## function_6471 三段 Vec<AccountMeta> 拆解进度
+- `function_6471` 的第二个参数（`r2`）指向三元素数组 `[vec_user_hdr, vec_static_hdr, vec_router_hdr]`：函数入口依次执行 `ldxdw r1, [r2+0x0]`、`ldxdw r1, [r2+0x8]`、`ldxdw r2, [r2+0x10]` 取得三个 `Vec<AccountMeta>` 的数据指针，并把对应的 `len/cap` 指针写入栈 (`r10-0x100`, `r10-0xf0`, `r10-0xe0`)，便于后续重复比对（`reverser/goonfi/asm/disassembly.out:6816-6834`）。
+- 函数内部出现三段几乎对称的校验：分别对 user 输入的 9 个账户、Jupiter/OpenBook 常量段、router 附加账户做 `is_signer`/`is_writable` flag 读取（偏移 `+0x1/+0x2/+0x3`），并将这些布尔值存入栈上 `[r10-0x9e .. r10-0x66]`；紧接着以 `ldxdw` 连续比较 `[ptr+0x8]`、`[ptr+0x10]`、`[ptr+0x18]`、`[ptr+0x20]`，确保三段向量的 `AccountInfo` 指针链彼此对应（详见 `disassembly.out:6855-6938`、`:7032-7110`）。
+- 校验全部通过后，`function_6471` 会把三段 `Vec<AccountMeta>` 的 `(ptr,len)` 写入 `[r10-0x20 .. r10-0x8]`，并以 `r3 = 3` 调用 BPF helper（`syscall` at `disassembly.out:7112-7120`）。返回值 26 表示 26 条 `AccountMeta` 全部整理完毕，失败则写入 11。这解释了 swap 流程内 signer 依赖整段向量序列化，而不仅仅是池子常量。
+
+## 静态公钥与模板提取的补充说明
+- `decode_rodata_accounts.py` 现在会把 `.rodata@0x165b0` 的静态公钥列表连同常用标签打印出来，方便在 `function_4705 → 7337 → 7291 → 7505` 链路中定位 `memcmp` 来源。
+- `.rodata@0x1680c` 的 48 字节块实为 Rust panic 文案，脚本新增的 `tail_words`/`ascii_hint` 可看到 `alloc/src/...`、`attempt to ...` 等片段。`function_4844`/`function_6608` 调用这些常量主要是挂载 label/错误消息，真实的 `AccountMeta` 数据仍靠运行时拼装（`disassembly.out:1530-1640` 可观察到先写 `len/cap` 再调用 `function_4844` → `function_6608` 的模式）。
+
+## 下一步 TODO
+1. 对照 `function_9030` / `function_7764`，还原 `Vec<AccountMeta>` → `[&[u8]]` 的序列化细节，确认 3 条 seeds 的实际编码格式（推测是某种压缩 `AccountMeta` 序列 + bump 字节）。
+2. 在 `goonfi_seeds.py` 中实现上述序列化逻辑：使用 `swap_samples.py` 还原出的 26 个账户及 flag，生成 eBPF 同款 seeds；完成后接入 `derive_swap_authority_address`。
+3. 验证脚本：针对 `ENpQ…`、`Ghgwm…`、`CdjV…` 等样本，确保 Python 侧能重建 signer/bump，并补充异常分支（Step/T1TAN）占位。
+- `.rodata@0x165b0` 起连续存放 40 条静态公钥（Global state、Sysvar、JUP6、Token Program、OpenBook 市场/队列/authority 等），`function_4705` 通过 `function_7337 → 7291 → 7505` 将这些模板逐条复制成 `AccountMeta(pubkey, is_signer, is_writable)`，随后再交给 `function_9030`/`7764` 拼装 seeds。下一步需编写脚本复刻这条调用链，解析模板中的 flags（`is_signer`/`is_writable`）并确认最终 `Vec<AccountMeta>` 的顺序。
+
 ## 未解决点 / 待补充
 - 账户顺序虽然可以通过 `function_6816` 推导，但目前尚未完全复刻 26 个槽位与 router type 的映射。需要结合实际链上交易进一步验证。
 - `0x38E` 的黑名单流程与 `T1TAN...`、`2gav...` 等 PDA 的含义仍待确认，推测与外部黑名单合约交互有关。
@@ -92,6 +112,23 @@
     - `.rodata@0x1000165b0` → GoonFi 全局状态 PDA（`updap...`），`.rodata@0x100016650` → System Program。  
     - `.rodata@0x1000165f0` / `0x100016570` / `0x100016670` 连续存放 Jupiter / Step / T1TAN 程序 ID；根据 router variant 选择其中一个写入 seeds。  
     - `.rodata@0x1000167eb` 字节串以 `"marketprogram/src/state/market.rs"` + `"vault"` 开头，随后的 0x20 字节为未解码哈希；这些切片在 `function_4682` 中通过 `call function_9989` 被拷贝到栈上，推测是固定的 seed literal。
+
+- 2025-02-20：继续走读 `function_4682` 的 Jupiter 分支，补齐 seeds 摆放细节。  
+  - `pool_state[0x328]` 作为 8 bit bitmask 被读出后存入栈上 `Vec<&[u8]>` 的 flag 槽，用来驱动黑名单/备用撮合分支；在 Jupiter 流程里该值通常为 `0`，后续 Step/T1TAN 会复用同一字段。  
+  - `.rodata@0x1000167eb` 实际是一段拼接好的 seed literal：`b"marketprogram/src/state/market.rs"`、`b"vault"` 以及依次排列的三枚程序 ID（基于 base58 解码确认分别是 `JUP6...`、`6m2CD...`、`T1TAN...`）。`function_4682` 通过步长 32 的偏移选择对应程序，把它作为第三个固定 seed 推入栈。  
+  - 同一分支还把 `pool_state` 中 `0x248..0x268`、`0x268..0x288`、`0x288..0x2A8` 三段 32 字节原样拷贝进 seeds 数组，紧跟在上面的常量之后；结合 `function_4705` 对 OpenBook 账户的校验推测，这三段就是 Jupiter 路由在池子里缓存的 market / open_orders / event_queue 公钥。后续只需把对应字段解包，就能在脚本里复原 CPI 所需账户。  
+  - 最后一个 seed 仍取自 `pool_state[0x330]` 的 bump，顺序与 `_dispatch_seed_builder` 里先前的占位设计完全一致；现在可以把占位的 `SeedToken` 替换成真实字节串，让 Python 侧真正算出 `pool_signer`。  
+  - `function_6471` 在上述过程中负责把这几段种子拼成 `Vec<&[u8]>` 并写回 `function_6816` 的本地缓冲，与 26 个 `AccountMeta` 槽同步增长。后续需要针对 Step/T1TAN 分支重复同样的偏移整理，验证 `pool_state` 中是否存在独立的备用账户列表。
+- 2025-02-20（补充）：直接从 `.rodata@0x1000167eb` 动态解析 router 常量。  
+  - 二进制排列为 `33("marketprogram/src/state/market.rs")` + `5("vault")` + `0x04` + `3×32` 字节 Program ID。  
+  - 在 `goonfi_seeds.py` 内新增 `_load_router_literal_block`，自动将该段拆分成 `RouterLiteralBlock`，并以 `RouterProgram` 枚举映射三种程序 ID，避免手写 base58 常量。  
+  - 暂未确定 0x04 的语义，推测与 seed 数量或分支计数相关，先保持占位。后续若确认可在脚本中暴露。  
+- 2025-02-21：初步实现 Python 端的 swap authority 推导。  
+  - `goonfi_seeds.py` 增补 `build_swap_authority_seeds` / `derive_swap_authority_address`，目前按照 Jupiter 分支的理解返回 7 段 seeds（`"marketprogram/...r"`, `"s"`, `"vault"`, 对应 router 的 program id，外加池子里缓存的 3 个聚合账户公钥）。派生逻辑会优先尝试追加 `pool_state` 公钥的方案，如果 bump 不匹配再回退为纯常量 seeds，便于定位真实实现。  
+  - `goonfi_decode.py` 在解析池子时自动调用上述函数，若成功则填充 `core_accounts.pool_signer` 并在 `derived_pool_signer` 附带 seeds hex；若失败则把报错写入 `notes`。  
+  - 同时改造 `goonfi_decode.py` 的账户拉取流程，改用 `getMultipleAccounts` 批量抓取 vault/mint/extra 公钥，显著减少 RPC 次数（目前 4+N 而非逐个调用），并在本地缓存结果供后续解析复用；旧版池子未携带 router flag 时默认按 Jupiter 分支处理。  
+  - `swap.txt` 新增三条实战样本：同一池子 `4uWuh9...` 在不同用户（`3y5u6t...`、`B4RRE...`）下导出的 signer 分别为 `ENpQ...`、`Ghgwm...`；而旧池子 `4ynTY...` 的 signer 为 `CdjV...`。说明 PDA seeds 除了池子常量之外还会引用用户上下文（authority/ATA）以及路由专用账户，此处需要继续走读 `function_6471`，明确 26 个 account meta 的排列与 `sol_try_find_program_address` 之前压栈的动态 seed 列表。为方便分析已编写 `reverser/goonfi/swap_samples.py` 将 `swap.txt` 解析成结构化数据。  
+  - 仍缺少链上样本校验：当前无法访问 mainnet RPC，需在有网络的环境下对 `4ynTYgJK...`、`4uWuh9fC...` 等池子跑一遍脚本，确认推导结果是否与链上 swap authority 一致。若偏差存在，优先用 notes 中的 `seed list` 对照汇编，修正 seed 顺序或缺失字段。
 
 > 推荐后续步骤：  
 > 1. 选取至少一条 GoonFi swap 成功交易，记录 26 个账户顺序，与 `function_6816` 的写入顺序比对，补完账户标签。  

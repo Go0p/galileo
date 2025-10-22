@@ -17,6 +17,14 @@ import typing
 import urllib.error
 import urllib.request
 
+from goonfi_seeds import RouterProgram, derive_swap_authority_address
+
+from goonfi_utils import (
+    b58decode,
+    b58encode,
+    find_program_address,
+)
+
 
 RPC_DEFAULT = "http://127.0.0.1:8899"
 GOONFI_PROGRAM_ID = "goonERTdGsjnkZqWuVjs73BZ3Pb9qoCUdBUL17BnS5j"
@@ -47,11 +55,6 @@ OPENBOOK_PROGRAM_IDS = {
     "sp3uGft1tXH6145iRhV8JdzS34rnDgYUdr9bS5NjZPa",  # mainnet OpenBook
 }
 
-BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-ED25519_P = 2**255 - 19
-ED25519_D = (-121665 * pow(121666, -1, ED25519_P)) % ED25519_P
-
-
 class RpcError(RuntimeError):
     pass
 
@@ -80,92 +83,35 @@ def rpc_request(rpc_url: str, method: str, params: typing.List[typing.Any]) -> t
     return result["result"]
 
 
-def b58encode(data: bytes) -> str:
-    num = int.from_bytes(data, "big")
-    if num == 0:
-        return "1" * len(data)
-    encoded = ""
-    while num > 0:
-        num, rem = divmod(num, 58)
-        encoded = BASE58_ALPHABET[rem] + encoded
-    leading_zero = 0
-    for byte in data:
-        if byte == 0:
-            leading_zero += 1
-        else:
-            break
-    return "1" * leading_zero + encoded
-
-
-def b58decode(data: str) -> bytes:
-    num = 0
-    for char in data:
-        num = num * 58 + BASE58_ALPHABET.index(char)
-    raw = num.to_bytes(32, "big")
-    pad = 0
-    for char in data:
-        if char == "1":
-            pad += 1
-        else:
-            break
-    return b"\x00" * pad + raw[len(raw) - 32 :]
-
-
-def is_on_curve(pubkey: bytes) -> bool:
-    if len(pubkey) != 32:
-        return False
-    y = int.from_bytes(pubkey, "little") & ((1 << 255) - 1)
-    sign = pubkey[31] >> 7
-    if y >= ED25519_P:
-        return False
-    y2 = (y * y) % ED25519_P
-    u = (y2 - 1) % ED25519_P
-    v = (ED25519_D * y2 + 1) % ED25519_P
-    if v == 0:
-        return False
-    x2 = (u * pow(v, ED25519_P - 2, ED25519_P)) % ED25519_P
-    x = pow(x2, (ED25519_P + 3) // 8, ED25519_P)
-    if (x * x - x2) % ED25519_P != 0:
-        x = (x * pow(2, (ED25519_P - 1) // 4, ED25519_P)) % ED25519_P
-        if (x * x - x2) % ED25519_P != 0:
-            return False
-    if (x % 2) != sign:
-        x = (-x) % ED25519_P
-    return not (x == 0 and sign == 1)
-
-
-def create_program_address(
-    seeds: typing.Iterable[bytes],
-    program_id: bytes,
-) -> bytes:
-    hasher = __import__("hashlib").sha256()
-    for seed in seeds:
-        if len(seed) > 32:
-            raise ValueError("seed 长度超过 32 字节")
-        hasher.update(seed)
-    hasher.update(program_id)
-    hasher.update(b"ProgramDerivedAddress")
-    digest = hasher.digest()
-    if is_on_curve(digest):
-        raise ValueError("PDA 落在曲线上")
-    return digest
-
-
-def find_program_address(
-    seeds: typing.Iterable[bytes],
-    program_id: bytes,
-) -> tuple[str, int]:
-    seeds_tuple = tuple(seeds)
-    for bump in range(255, -1, -1):
-        try:
-            addr = create_program_address(
-                seeds_tuple + (bytes([bump]),),
-                program_id,
-            )
-            return b58encode(addr), bump
-        except ValueError:
-            continue
-    raise RuntimeError("无法找到合法 PDA")
+def rpc_get_multiple_accounts(
+    rpc_url: str,
+    pubkeys: typing.Sequence[str],
+    *,
+    encoding: str = "base64",
+    commitment: str = "confirmed",
+    chunk_size: int = 100,
+) -> typing.List[typing.Optional[typing.Dict[str, typing.Any]]]:
+    if not pubkeys:
+        return []
+    aggregated: list[typing.Optional[dict[str, typing.Any]]] = []
+    for idx in range(0, len(pubkeys), chunk_size):
+        chunk = pubkeys[idx : idx + chunk_size]
+        response = rpc_request(
+            rpc_url,
+            "getMultipleAccounts",
+            [
+                list(chunk),
+                {
+                    "encoding": encoding,
+                    "commitment": commitment,
+                },
+            ],
+        )
+        values = response.get("value") or []
+        if len(values) < len(chunk):
+            values.extend([None] * (len(chunk) - len(values)))
+        aggregated.extend(values[: len(chunk)])
+    return aggregated
 
 
 def find_ata(
@@ -183,45 +129,6 @@ def find_ata(
     )
     return addr, bump
 
-
-def fetch_account_info(
-    rpc_url: str,
-    pubkey: str,
-) -> typing.Optional[dict[str, typing.Any]]:
-    resp = rpc_request(
-        rpc_url,
-        "getAccountInfo",
-        [
-            pubkey,
-            {
-                "encoding": "jsonParsed",
-                "commitment": "confirmed",
-            },
-        ],
-    )
-    return resp.get("value")
-
-
-def fetch_raw_account(
-    rpc_url: str,
-    pubkey: str,
-) -> typing.Optional[bytes]:
-    resp = rpc_request(
-        rpc_url,
-        "getAccountInfo",
-        [
-            pubkey,
-            {
-                "encoding": "base64",
-                "commitment": "confirmed",
-            },
-        ],
-    )
-    value = resp.get("value")
-    if not value:
-        return None
-    data_b64, _encoding = value["data"]
-    return base64.b64decode(data_b64)
 
 
 def read_pubkey(data: bytes, offset: int) -> str:
@@ -290,45 +197,51 @@ def classify_account_meta(
     }
 
 
-def fetch_vault_details(
-    rpc_url: str,
-    pubkey: str,
+def extract_vault_details(
+    account_info: typing.Optional[dict[str, typing.Any]]
 ) -> dict[str, typing.Any]:
-    info = fetch_account_info(rpc_url, pubkey)
-    meta = classify_account_meta(info)
+    meta = classify_account_meta(account_info)
     mint = None
     owner = None
     decimals: typing.Optional[int] = None
-    if info and (data := info.get("data")) and isinstance(data, dict):
+    if account_info and (data := account_info.get("data")) and isinstance(data, dict):
         parsed = data.get("parsed") or {}
         if parsed.get("type") == "account":
             parsed_info = parsed.get("info") or {}
             mint = parsed_info.get("mint")
             owner = parsed_info.get("owner")
             token_amount = parsed_info.get("tokenAmount") or {}
-            decimals = token_amount.get("decimals")
+            decimals_raw = token_amount.get("decimals")
+            if decimals_raw is not None:
+                try:
+                    decimals = int(decimals_raw)
+                except (TypeError, ValueError):
+                    decimals = None
     return {
         "meta": meta,
         "mint": mint,
         "owner": owner,
-        "decimals": int(decimals) if decimals is not None else None,
+        "decimals": decimals,
     }
 
 
-def fetch_mint_owner_and_decimals(
-    rpc_url: str,
-    mint: str,
+def extract_mint_owner_and_decimals(
+    mint_pubkey: str,
+    account_info: typing.Optional[dict[str, typing.Any]],
 ) -> tuple[str, int]:
-    info = fetch_account_info(rpc_url, mint)
-    if not info:
-        raise RpcError(f"mint {mint} 不存在")
-    owner = info.get("owner")
-    data = info.get("data") or {}
+    if not account_info:
+        raise RpcError(f"mint {mint_pubkey} 不存在")
+    owner = account_info.get("owner")
+    data = account_info.get("data") or {}
     parsed = data.get("parsed") or {}
     decimals = parsed.get("info", {}).get("decimals")
     if decimals is None:
-        raise RpcError(f"mint {mint} 缺少 decimals")
-    return owner, int(decimals)
+        raise RpcError(f"mint {mint_pubkey} 缺少 decimals")
+    try:
+        decimals_int = int(decimals)
+    except (TypeError, ValueError) as exc:
+        raise RpcError(f"mint {mint_pubkey} 的 decimals 字段异常: {decimals}") from exc
+    return owner, decimals_int
 
 
 def parse_pool(
@@ -370,17 +283,49 @@ def parse_pool(
         raw[POOL_BLACKLIST_FLAG_OFFSET] if len(raw) > POOL_BLACKLIST_FLAG_OFFSET else None
     )
 
-    base_details = fetch_vault_details(rpc_url, base_vault)
-    quote_details = fetch_vault_details(rpc_url, quote_vault)
+    account_cache: dict[str, typing.Optional[dict[str, typing.Any]]] = {}
 
-    # 基本 sanity 校验：vault owner 应与池子解析出的 PDA 匹配
-    vault_authority = base_details["owner"] if base_details["owner"] else None
+    def cache_accounts(
+        pubkeys: typing.Sequence[str],
+        *,
+        encoding: str,
+    ) -> None:
+        pending: list[str] = []
+        for key in pubkeys:
+            if key and key not in account_cache:
+                pending.append(key)
+        if not pending:
+            return
+        infos = rpc_get_multiple_accounts(
+            rpc_url,
+            pending,
+            encoding=encoding,
+        )
+        if len(infos) != len(pending):
+            raise RpcError("getMultipleAccounts 返回长度与请求不一致")
+        for key, info in zip(pending, infos):
+            account_cache[key] = info
 
     if not base_mint or not quote_mint:
         raise RpcError("无法从 vault 解析出 base/quote mint")
 
-    base_token_program, base_decimals = fetch_mint_owner_and_decimals(rpc_url, base_mint)
-    quote_token_program, quote_decimals = fetch_mint_owner_and_decimals(rpc_url, quote_mint)
+    cache_accounts(
+        [base_vault, quote_vault, base_mint, quote_mint],
+        encoding="jsonParsed",
+    )
+
+    base_details = extract_vault_details(account_cache.get(base_vault))
+    quote_details = extract_vault_details(account_cache.get(quote_vault))
+
+    # 基本 sanity 校验：vault owner 应与池子解析出的 PDA 匹配
+    vault_authority = base_details["owner"] if base_details["owner"] else None
+
+    base_token_program, base_decimals = extract_mint_owner_and_decimals(
+        base_mint, account_cache.get(base_mint)
+    )
+    quote_token_program, quote_decimals = extract_mint_owner_and_decimals(
+        quote_mint, account_cache.get(quote_mint)
+    )
 
     user_authority = user or "<user-authority>"
     if user:
@@ -397,19 +342,64 @@ def parse_pool(
         user_quote_token = "<user-quote-token-account>"
 
     extra_pubkeys = scan_pubkeys(raw, POOL_QUOTE_VAULT_OFFSET + 32, len(raw))
+    cache_accounts(
+        [pubkey for _, pubkey in extra_pubkeys],
+        encoding="base64",
+    )
     extra_entries: list[dict[str, typing.Any]] = []
+
+    router_program: RouterProgram | None = None
+    if router_flag is None:
+        # 早期版本 pool_state 长度不足以覆盖 0x388 router flag，默认走 Jupiter 分支
+        router_program = RouterProgram.JUPITER_V6
+    elif router_flag == 0:
+        router_program = RouterProgram.JUPITER_V6
+    elif router_flag == 1:
+        router_program = RouterProgram.STEP_AGGREGATOR
+    elif router_flag == 2:
+        router_program = RouterProgram.GOON_BLACKLIST
+
+    pool_signer_detail: dict[str, typing.Any] | None = None
+    pool_signer_addr: str | None = None
+    if router_program is not None:
+        try:
+            swap_addr, swap_bump, seeds_used = derive_swap_authority_address(
+                pool,
+                raw,
+                router_program,
+            )
+            pool_signer_addr = swap_addr
+            pool_signer_detail = {
+                "address": swap_addr,
+                "bump": swap_bump,
+                "router": router_program.value,
+                "seeds_hex": [seed.hex() for seed in seeds_used],
+            }
+        except Exception as exc:  # pragma: no cover - 逆向仍进行中
+            pool_signer_detail = {
+                "error": f"swap authority 解析失败: {exc}",
+                "router": router_program.value,
+            }
     for offset, pubkey in extra_pubkeys:
-        info = fetch_account_info(rpc_url, pubkey)
+        info = account_cache.get(pubkey)
         meta = classify_account_meta(info)
         extra_entries.append(
             {
                 "offset": f"0x{offset:03x}",
                 "pubkey": pubkey,
-                "owner": meta.get("owner"),
+                "owner": info.get("owner") if info else None,
                 "classification": meta.get("classification"),
                 "exists": meta["exists"],
             }
         )
+
+    notes: list[str] = [
+        "extra_pubkeys 列出 quote vault 之后的所有 32 字节段，若指向有效账户可进一步标注含义。",
+        "global_state_in_data 用于 sanity check；按照当前实现应当等于常量 GOONFI_GLOBAL_STATE。",
+        "vault_authority 来源于 base vault 的 owner，可用于核对 PDA。",
+    ]
+    if pool_signer_detail and pool_signer_detail.get("error"):
+        notes.append(pool_signer_detail["error"])
 
     return {
         "program_id": GOONFI_PROGRAM_ID,
@@ -436,7 +426,7 @@ def parse_pool(
             "user_base_token": user_base_token,
             "user_quote_token": user_quote_token,
             "vault_authority": vault_authority,
-            "pool_signer": None,
+            "pool_signer": pool_signer_addr,
         },
         "base_vault_meta": base_details,
         "quote_vault_meta": quote_details,
@@ -445,11 +435,9 @@ def parse_pool(
             "quote": quote_decimals,
         },
         "extra_pubkeys": extra_entries,
-        "notes": [
-            "extra_pubkeys 列出 quote vault 之后的所有 32 字节段，若指向有效账户可进一步标注含义。",
-            "global_state_in_data 用于 sanity check；按照当前实现应当等于常量 GOONFI_GLOBAL_STATE。",
-            "vault_authority 来源于 base vault 的 owner，可用于核对 PDA。",
-        ],
+        "router_program": router_program.value if router_program else None,
+        "derived_pool_signer": pool_signer_detail,
+        "notes": notes,
     }
 
 
