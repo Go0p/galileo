@@ -6,9 +6,11 @@ use solana_sdk::pubkey::Pubkey;
 
 use super::types::{JUPITER_V6_EVENT_AUTHORITY, JUPITER_V6_PROGRAM_ID, RoutePlanStep};
 
+#[allow(dead_code)]
 const ROUTE_DISCRIMINATOR: [u8; 8] = [229, 23, 203, 151, 122, 227, 173, 42];
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct RouteAccounts {
     pub token_program: Pubkey,
     pub user_transfer_authority: Pubkey,
@@ -22,6 +24,7 @@ pub struct RouteAccounts {
     pub remaining_accounts: Vec<AccountMeta>,
 }
 
+#[allow(dead_code)]
 impl RouteAccounts {
     #[allow(dead_code)]
     pub fn with_defaults(
@@ -69,6 +72,7 @@ impl RouteAccounts {
 }
 
 #[derive(BorshSerialize)]
+#[allow(dead_code)]
 struct RouteInstructionArgs {
     route_plan: Vec<RoutePlanStep>,
     in_amount: u64,
@@ -78,6 +82,7 @@ struct RouteInstructionArgs {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct RouteInstructionBuilder {
     pub accounts: RouteAccounts,
     pub route_plan: Vec<RoutePlanStep>,
@@ -87,6 +92,7 @@ pub struct RouteInstructionBuilder {
     pub platform_fee_bps: u8,
 }
 
+#[allow(dead_code)]
 impl RouteInstructionBuilder {
     pub fn build(self) -> Result<Instruction> {
         let mut data = Vec::new();

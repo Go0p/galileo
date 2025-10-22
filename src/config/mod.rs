@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::engine::DispatchStrategy;
+
 pub mod loader;
 pub mod types;
 pub mod wallet;
@@ -116,6 +118,10 @@ pub(crate) fn default_graceful_shutdown_timeout_ms() -> u64 {
 
 pub(crate) fn default_compute_unit_price_strategy() -> String {
     "fixed".to_string()
+}
+
+pub(crate) fn default_tip_strategies() -> Vec<cfg::TipStrategyKind> {
+    vec![cfg::TipStrategyKind::Fixed]
 }
 
 pub(crate) fn default_environment() -> BTreeMap<String, String> {
@@ -416,6 +422,7 @@ impl Default for cfg::LanderSettings {
         Self {
             enable_log: false,
             compute_unit_price_strategy: default_compute_unit_price_strategy(),
+            sending_strategy: DispatchStrategy::default(),
             fixed_compute_unit_price: None,
             random_compute_unit_price_range: Vec::new(),
             jito: None,

@@ -12,6 +12,7 @@ solana-rpc-client = "3.0.7"
 solana-sdk = "3.0.0"
 solana-program = "3.0.0"
 solana-commitment-config = "3.0.0"
+solana-system-interface = { version = "2.0.0", features = ["bincode"] }
 anyhow = "1.0.100"
 clap = { version = "4.5.49", features = ["derive"] }
 async-trait = "0.1.89"
@@ -62,6 +63,3 @@ hotpath = ["dep:hotpath", "hotpath/hotpath"]
 hotpath-alloc-bytes-total = ["hotpath/hotpath-alloc-bytes-total"]
 hotpath-alloc-count-total = ["hotpath/hotpath-alloc-count-total"]
 hotpath-off = ["hotpath/hotpath-off"]
-
-[dev-dependencies]
-litesvm = "0.8.1"

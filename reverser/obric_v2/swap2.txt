@@ -1,0 +1,14 @@
+Interact With Obric V2 - obriQD1zbpyLz95G5n7nJe6a4DPjpFwa5XYPoNm113y
+Input Accounts
+#1 - Account: Obric (SOL-USDC) Market 6 AvBSC1KmFNceHpD6jyyXBV6gMXFxZ8BJJ3HVUN8kCurJ Writable
+#2 - Account: GZsNmWKbqhMYtdSkkvMdEyQF9k5mLmP7tTKYWZjcHVPE
+#3 - Account: 6YawcNeZ74tRyCv4UfGydYMr7eho7vbUR6ScVffxKAb3
+#4 - Account: Obric (SOL-USDC) Pool 1 FpEzVYQ5MjuSut61Ka18tzYhQKLqndefubV7K2U1mrTz Writable
+#5 - Account: Obric (SOL-USDC) Pool 2 74tjvZXuW2C7bsBxRYxmwTrqF8BrYr3VDgusj8DwRd9a Writable
+#6 - Account: EW9diL91VgHY5i9qYScz53W3PihQPSnPoMtAKCo1Bs7J Writable
+#7 - Account: 3nnVbsCfN1mwUk2XSLCnjzY3bDDTdzpnKjvRmd8nESS2 Writable
+#8 - Account: Orca (SOL-USDC) Market  FpCMFDFGYotvufJ7HrFHsWEiiQCGbkLCtwHiDnh7o28Q
+#9 - Account: J4HJYz4p7TRP96WVFky3vh7XryxoFehHjoRySUTeSeXw
+#10 - Account: Sysvar: Instructions
+#11 - Account: Titan Exchange: Atlas Writable
+#12 - Account: Token Program Program

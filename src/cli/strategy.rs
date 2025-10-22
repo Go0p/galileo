@@ -183,6 +183,7 @@ async fn run_blind_engine(
 
     let compute_unit_price_mode = derive_compute_unit_price_mode(&config.lander.lander);
     let engine_settings = EngineSettings::new(quote_config)
+        .with_dispatch_strategy(config.lander.lander.sending_strategy)
         .with_landing_timeout(landing_timeout)
         .with_dry_run(dry_run);
 

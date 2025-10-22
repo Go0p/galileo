@@ -79,17 +79,15 @@ impl LanderFactory {
                 settings.min_context_slot,
             ))),
             "jito" => settings.jito.as_ref().and_then(|cfg| {
-                let endpoints: Vec<String> = cfg
+                let has_endpoint = cfg
                     .endpoints
                     .iter()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if endpoints.is_empty() {
+                    .any(|endpoint| !endpoint.trim().is_empty());
+                if !has_endpoint {
                     None
                 } else {
                     Some(LanderVariant::Jito(JitoLander::new(
-                        endpoints,
+                        cfg,
                         self.http_client.clone(),
                     )))
                 }

@@ -67,16 +67,19 @@ src/
 - 指令装配结果形成 `TransactionPlan`，继续交由 Builder。
 
 ### 3.4 交易打包
-- `TransactionBuilder` 对 `TransactionPlan` 执行：
-  1. 按 blockhash 缓存设置最近的 `recent_blockhash`；
-  2. 填充 signer（来自配置 `bot.identity`）；
-  3. 计算 CU、优先费，若策略重写 `compute_unit_price` 则在此应用；
-  4. 输出 `PreparedTxn<TL::Payload>`，其中 `Payload` 由具体 Lander 决定。
-- 该阶段完全泛型化，允许通过 trait 约束在编译期选择不同的打包策略。
+- `TransactionBuilder` 将指令序列打包为 `PreparedTransaction`：
+  1. 读取最新 `blockhash` 与 `slot`；
+  2. 使用配置身份 (`EngineIdentity`) 完成签名；
+  3. 记录优先费（优先费策略仍由策略侧决定）；
+  4. 输出结构体供后续生成不同交易变体。
+- 该阶段保持零成本抽象，仅负责构建最原始的可签交易。
 
-### 3.5 Lander 发送
-- `EngineContext` 调用泛型参数 `TL: Lander` 的实现，将交易提交到对应上链服务。
-- 所有落地器返回 `LanderOutcome`（成功 / 失败 / 可重试 / 不可重试），Engine 根据结果决定重试策略或熔断。
+### 3.5 交易变体与发送计划
+- `TxVariantPlanner` 根据 `PreparedTransaction`、`DispatchStrategy` 与落地器容量生成 `DispatchPlan`：
+  - `AllAtOnce`：产出 1 个 `TxVariant`，所有落地器共享同一笔交易；
+  - `OneByOne`：依据落地端点数量生成多个 `TxVariant`，为后续分发预留差异化空间（tip 钱包、序列调整等）。
+- `DispatchPlan` 交给 `LanderStack::submit_plan` 执行，统一处理重试/超时逻辑，并将 `variant_id` 透传至监控。
+- Jito 落地器会利用 `variant_id` 轮换 tip 钱包，并在请求 URL 附带 uuid 池生成的 `uuid`，以最大化可用速率配额。
 
 ## 4. Lander 栈设计
 
@@ -87,10 +90,13 @@ pub struct LanderStack {
 }
 
 impl LanderStack {
-    pub async fn submit(
+    pub fn plan_capacity(&self, strategy: DispatchStrategy) -> usize { /* ... */ }
+
+    pub async fn submit_plan(
         &self,
-        prepared: &PreparedTransaction,
+        plan: &DispatchPlan,
         deadline: Deadline,
+        strategy_name: &str,
     ) -> Result<LanderReceipt, LanderError> { /* ... */ }
 }
 ```
@@ -100,7 +106,10 @@ impl LanderStack {
   - `RpcLander`：复用共享 `RpcClient` 的 `send_transaction`。
   - `JitoLander`：编码 bundle 并向配置的 Jito endpoints 提交。
   - `StakedLander`：与 `RpcLander` 一样提交 JSON-RPC 交易，只是路由到经过质押的专用节点，逻辑保持一致。
-- **调度策略**：`LanderFactory` 读取 `lander.yaml` 与策略侧 `enable_landers` 顺序，构造 `LanderStack`，并根据 `max_retries`（Spam）或单次尝试（Blind）决定重试节奏。
+- **调度策略**：`LanderFactory` 读取 `lander.yaml` 与策略侧 `enable_landers` 顺序，构造 `LanderStack`。Engine 根据配置选择 `DispatchStrategy`（AllAtOnce/OneByOne），先由 `TxVariantPlanner` 生成 `DispatchPlan`，再委托 `LanderStack::submit_plan` 执行落地。
+- **策略细节**：
+  - `AllAtOnce`：对每个落地器并发推送同一笔交易，最节省费用；任一落地成功后即终止剩余请求。
+  - `OneByOne`：为各端点生成独立 `variant_id`，并按 `(variant, endpoint)` 顺序快速提交，可规避部分速率限制；Jito 端会为不同变体轮换 tip 钱包，同时通过 uuid 池在 query string 加入 `uuid`。
 - **监控与日志**：每次尝试都会通过 `monitoring::events::lander_*` 打点，方便排查失败原因与成功路径。
 
 ## 5. Engine / Strategy 解耦模式
@@ -156,9 +165,23 @@ pub struct StrategyEngine<S: Strategy> {
 | `blind_strategy.*` / `back_run_strategy.*` | `src/strategy/*.rs` | 策略节奏、利润阈值、禁用状态；策略模块读取后决定是否发起 Quote。 |
 | `bot.request_params.*` | `engine::quote` | 构造 Jupiter Quote 请求的默认参数。 |
 | `lander.enable` / `lander.type` | `lander::*` | 选择默认 Lander 实现与启用列表。 |
+| `lander.sending_strategy` | `engine::planner` + `lander::stack` | 选择 `AllAtOnce` 或 `OneByOne` 调度策略，决定交易变体数量与分发方式。 |
 | `lander.tips` | `engine::builder` + `lander::*` | 配置 tip 账户、优先费；Builder 根据策略覆盖 CU。 |
 | `controls.over_trade_process_delay_ms` | `engine::scheduler` | 控制任务节奏，防止过载。 |
 | `monitoring.*` | `monitoring::*` | 指标上报端点、采样率、日志级别等。 |
+
+示例：
+
+```yaml
+lander:
+  sending_strategy: "AllAtOnce"   # 或 "OneByOne"
+  jito:
+    uuid_config:
+      - uuid: "7dc...966"
+        rate_limit: 5
+    endpoints:
+      - https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles
+```
 
 ## 9. 迭代路线建议
 
@@ -218,8 +241,8 @@ pub struct StrategyEngine<S: Strategy> {
   - `galileo_opportunity_detected_total{strategy}`
   - `galileo_swap_compute_unit_limit_bucket{strategy}`
   - `galileo_transaction_built_total{strategy}`
-  - `galileo_lander_attempt_total{strategy, lander}`
-  - `galileo_lander_success_total{strategy, lander}`、`galileo_lander_failure_total{strategy, lander}`
+  - `galileo_lander_attempt_total{strategy, lander, dispatch, variant}`
+  - `galileo_lander_success_total{strategy, lander, dispatch, variant}`、`galileo_lander_failure_total{strategy, lander, dispatch, variant}`
   - `galileo_accounts_precheck_total{strategy}`
   - `galileo_accounts_precheck_mints_bucket{strategy}`
   - `galileo_accounts_precheck_created_bucket{strategy}`

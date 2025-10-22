@@ -1,42 +1,24 @@
 #!/usr/bin/env python3
 """
-输入 Aquifer 池子（`dex_instance` PDA）地址，解析该 swap 指令所需的核心账户。
+基于本地 RPC 解析 Aquifer swap 指令所需的关键账户。
 
-功能：
-1. 读取 `dex_instance` 原始数据，解析 `dex_owner`、base/quote coin、oracle、做市风险账户等字段；
-2. 通过 PDA 公式校验 `dex`、`dex_instance`、`coin`、`coin_managed_ta` 等账户；
-3. 读取 `coin` 账户，补齐 mint、vault，并判断对应 Token Program / decimals；
-4. 可选 `--user`，自动推导 base / quote ATA；默认使用占位符；
-5. 支持 JSON 与人类可读两种输出格式（`--json`）。
+已知 swap 指令只在 AccountMeta 中携带 5 个核心账户：
+  0. 用户签名者（payer / authority）
+  1. Dex 全局状态（长度 ~8.3KB，程序自有账户）
+  2. Dex 实例状态（长度 ~8.2KB，程序自有账户）
+  3. 用户状态（长度 ~1KB，程序自有账户）
+  4. 交换所针对的 token mint（SPL mint）
 
-账户顺序与 Swap 指令一致（常见 16 个账户）：
- 0 `sysvar_instructions`
- 1 `user_authority`（签名者 / 费支付者）
- 2 `token_program_base`
- 3 `mm_account`（做市 / 风控 PDA，来自 `dex_instance` 0xCC）
- 4 `base_mint`
- 5 `token_program_quote`
- 6 `base_coin`（PDA：["coin", dex, base_mint]）
- 7 `quote_mint`
- 8 `dex`（PDA：["dex", dex_owner]）
- 9 `dex_instance`（池子本体，PDA：["dex_instance", dex, [instance_id]]）
-10 `base_oracle`
-11 `quote_oracle`
-12 `base_vault_authority`（PDA：["coin_managed_ta", base_coin] 的 Token 账户 owner）
-13 `base_vault_token_account`（SPL Token 账户，mint=base_mint，owner=#12）
-14 `quote_vault_authority`（PDA：["coin_managed_ta", quote_coin]）
-15 `quote_vault_token_account`（SPL Token 账户，mint=quote_mint，owner=#14）
+程序其余依赖账户会在指令数据里以压缩方式传入，或由状态账户内的白名单推导。
+因此脚本只需解析状态账户内容，校验它们之间的父子关系，并给出构造指令时需要
+传入的 5 个 AccountMeta 顺序。
 
-脚本仍会返回额外信息（例如 `sysvar_clock` 建议、可选用户 ATA 等），可按需使用。
-
-注意：字段偏移和校验逻辑基于 `reverser/aquifer/asm` 汇编推断，如链上结构更新需同步维护。
+输出额外给出一些可观察字段，便于人工比对状态含义。
 """
 from __future__ import annotations
 
 import argparse
 import base64
-import ctypes
-import ctypes.util
 import json
 import sys
 import typing
@@ -45,498 +27,458 @@ import urllib.request
 
 
 RPC_DEFAULT = "http://127.0.0.1:8899"
-PROGRAM_ID = "AQU1FRd7papthgdrwPTTq5JacJh8YtwEXaBfKU3bTz45"
+AQUIFER_PROGRAM_ID = "AQU1FRd7papthgdrwPTTq5JacJh8YtwEXaBfKU3bTz45"
+FAST_PROGRAM_ID = "fastC7gqs2WUXgcyNna2BZAe9mte4zcTGprv3mv18N3"
 SYSVAR_INSTRUCTIONS = "Sysvar1nstructions1111111111111111111111111"
-SYSVAR_CLOCK = "SysvarC1ock11111111111111111111111111111111"
-TOKEN_PROGRAM_V1 = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-TOKEN_PROGRAM_2022 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXkq9AH7K"
-ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+PLACEHOLDERS = {
+    "payer": "<user-signer>",
+    "user_wrap_sol": "<user-wrap-sol>",
+    "user_quote_token": "<user-quote-token>",
+}
 
 BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-BASE58_INDEX = {c: i for i, c in enumerate(BASE58_ALPHABET)}
-PROGRAM_ID_BYTES = None  # 在主函数初始化
-_ZSTD_LIB: ctypes.CDLL | None = None
 
 
 class RpcError(RuntimeError):
-    """RPC 请求失败。"""
+    pass
 
 
 def b58encode(data: bytes) -> str:
     num = int.from_bytes(data, "big")
     if num == 0:
-        return "1" * len(data)
+        return "1"
     encoded = ""
-    while num > 0:
+    while num:
         num, rem = divmod(num, 58)
         encoded = BASE58_ALPHABET[rem] + encoded
-    pad = 0
+    prefix = 0
     for byte in data:
         if byte == 0:
-            pad += 1
+            prefix += 1
         else:
             break
-    return "1" * pad + encoded
+    return "1" * prefix + encoded
 
 
 def b58decode(data: str) -> bytes:
     num = 0
-    for ch in data:
-        num = num * 58 + BASE58_INDEX[ch]
-    raw = num.to_bytes((num.bit_length() + 7) // 8, "big") if num else b""
-    pad = len(data) - len(data.lstrip("1"))
-    return b"\x00" * pad + raw.rjust(32, b"\x00")
+    for char in data:
+        num = num * 58 + BASE58_ALPHABET.index(char)
+    raw = num.to_bytes(32, "big")
+    pad = 0
+    for char in data:
+        if char == "1":
+            pad += 1
+        else:
+            break
+    return b"\x00" * pad + raw[len(raw) - 32 :]
 
 
 def rpc_request(rpc_url: str, method: str, params: typing.List[typing.Any]) -> typing.Any:
-    payload = json.dumps(
-        {
-            "jsonrpc": "2.0",
-            "id": method,
-            "method": method,
-            "params": params,
-        }
-    ).encode("utf-8")
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params,
+    }
+    data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         rpc_url,
-        data=payload,
+        data=data,
         headers={"Content-Type": "application/json"},
-        method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            body = resp.read()
-    except urllib.error.URLError as exc:  # pragma: no cover - 环境依赖
-        raise RpcError(f"{method} RPC 请求失败: {exc}") from exc
-    doc = json.loads(body)
-    if "error" in doc:
-        raise RpcError(f"{method} 返回错误: {doc['error']}")
-    return doc.get("result")
+        with urllib.request.urlopen(req) as resp:
+            raw = resp.read()
+    except urllib.error.URLError as exc:  # pragma: no cover
+        raise RpcError(f"RPC 请求失败: {exc}") from exc
+    result = json.loads(raw)
+    if "error" in result:
+        raise RpcError(f"{method} 调用失败: {result['error']}")
+    return result["result"]
 
 
-def _decompress_zstd(data: bytes) -> bytes:
-    global _ZSTD_LIB
-    if _ZSTD_LIB is None:
-        lib_name = ctypes.util.find_library("zstd")
-        if not lib_name:
-            raise RuntimeError("缺少 libzstd，无法解压 base64+zstd 数据")
-        _ZSTD_LIB = ctypes.CDLL(lib_name)
-        _ZSTD_LIB.ZSTD_getFrameContentSize.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-        _ZSTD_LIB.ZSTD_getFrameContentSize.restype = ctypes.c_ulonglong
-        _ZSTD_LIB.ZSTD_decompress.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_size_t,
-            ctypes.c_void_p,
-            ctypes.c_size_t,
-        ]
-        _ZSTD_LIB.ZSTD_decompress.restype = ctypes.c_size_t
-        _ZSTD_LIB.ZSTD_isError.argtypes = [ctypes.c_size_t]
-        _ZSTD_LIB.ZSTD_isError.restype = ctypes.c_uint
-        _ZSTD_LIB.ZSTD_getErrorName.argtypes = [ctypes.c_size_t]
-        _ZSTD_LIB.ZSTD_getErrorName.restype = ctypes.c_char_p
-
-    src_buf = (ctypes.c_char * len(data)).from_buffer_copy(data)
-    src_ptr = ctypes.cast(src_buf, ctypes.c_void_p)
-    content_size = _ZSTD_LIB.ZSTD_getFrameContentSize(src_ptr, len(data))
-    ZSTD_CONTENTSIZE_ERROR = 2**64 - 1
-    ZSTD_CONTENTSIZE_UNKNOWN = 2**64 - 2
-    if content_size in (ZSTD_CONTENTSIZE_ERROR, ZSTD_CONTENTSIZE_UNKNOWN):
-        content_size = max(len(data) * 32, 8192)
-    dst_buf = (ctypes.c_char * content_size)()
-    result_size = _ZSTD_LIB.ZSTD_decompress(
-        ctypes.cast(dst_buf, ctypes.c_void_p),
-        content_size,
-        src_ptr,
-        len(data),
-    )
-    if _ZSTD_LIB.ZSTD_isError(result_size):
-        err_name = _ZSTD_LIB.ZSTD_getErrorName(result_size)
-        raise RuntimeError(
-            f"zstd 解压失败: {err_name.decode() if err_name else result_size}"
-        )
-    return bytes(dst_buf[: result_size])
-
-
-def is_on_curve(pubkey: bytes) -> bool:
-    if len(pubkey) != 32:
-        return False
-    p = 2**255 - 19
-    d = (-121665 * pow(121666, -1, p)) % p
-    y = int.from_bytes(pubkey, "little") & ((1 << 255) - 1)
-    sign = pubkey[31] >> 7
-    if y >= p:
-        return False
-    y2 = (y * y) % p
-    u = (y2 - 1) % p
-    v = (d * y2 + 1) % p
-    if v == 0:
-        return False
-    x2 = (u * pow(v, p - 2, p)) % p
-    x = pow(x2, (p + 3) // 8, p)
-    if (x * x - x2) % p != 0:
-        x = (x * pow(2, (p - 1) // 4, p)) % p
-        if (x * x - x2) % p != 0:
-            return False
-    if (x % 2) != sign:
-        x = (-x) % p
-    return not (x == 0 and sign == 1)
-
-
-def create_program_address(seeds: typing.Iterable[bytes], program_id: bytes) -> bytes:
-    hasher = __import__("hashlib").sha256()
-    for seed in seeds:
-        if len(seed) > 32:
-            raise ValueError("seed 长度超过 32 字节")
-        hasher.update(seed)
-    hasher.update(program_id)
-    hasher.update(b"ProgramDerivedAddress")
-    digest = hasher.digest()
-    if is_on_curve(digest):
-        raise ValueError("PDA 落在曲线上")
-    return digest
-
-
-def find_program_address_bytes(
-    seeds: typing.Iterable[bytes],
-    program_id: bytes,
-) -> tuple[bytes, int]:
-    seeds_tuple = tuple(seeds)
-    for bump in range(255, -1, -1):
-        try:
-            addr = create_program_address(seeds_tuple + (bytes([bump]),), program_id)
-            return addr, bump
-        except ValueError:
-            continue
-    raise RuntimeError("无法找到合法 PDA")
-
-
-def find_program_address(
-    seeds: typing.Iterable[bytes],
-    program_id: bytes,
-) -> tuple[str, int]:
-    addr, bump = find_program_address_bytes(seeds, program_id)
-    return b58encode(addr), bump
-
-
-def find_ata(owner: str, mint: str, token_program: str) -> str:
-    owner_bytes = b58decode(owner)
-    mint_bytes = b58decode(mint)
-    token_prog_bytes = b58decode(token_program)
-    assoc_bytes = b58decode(ASSOCIATED_TOKEN_PROGRAM_ID)
-    addr, _ = find_program_address_bytes(
-        (owner_bytes, token_prog_bytes, mint_bytes),
-        assoc_bytes,
-    )
-    return b58encode(addr)
-
-
-def read_pubkey(data: bytes, offset: int) -> bytes:
-    segment = data[offset : offset + 32]
-    if len(segment) != 32:
-        raise ValueError(f"偏移 {offset:#x} 解析 pubkey 失败，长度不足")
-    return segment
-
-
-def decode_dex_instance(raw: bytes) -> dict[str, typing.Any]:
-    if len(raw) < 0xCC + 32:
-        raise ValueError(f"dex_instance 数据长度过短: {len(raw)}")
-
-    stored_dex = read_pubkey(raw, 0x00)
-    dex_owner = read_pubkey(raw, 0x20)
-    derived_dex, dex_bump = find_program_address_bytes((b"dex", dex_owner), PROGRAM_ID_BYTES)
-    if derived_dex != stored_dex:
-        raise ValueError("dex PDA 校验失败")
-
-    instance_id = raw[0x41]
-    base_coin_bump = raw[0x42]
-    quote_coin_bump = raw[0x43]
-
-    base_coin = read_pubkey(raw, 0x4C)
-    quote_coin = read_pubkey(raw, 0x6C)
-    base_oracle = read_pubkey(raw, 0x8C)
-    quote_oracle = read_pubkey(raw, 0xAC)
-    mm_account = read_pubkey(raw, 0xCC)
-    return {
-        "raw": raw,
-        "dex_owner": b58encode(dex_owner),
-        "dex": b58encode(derived_dex),
-        "dex_bump": dex_bump,
-        "instance_id": instance_id,
-        "base_coin": b58encode(base_coin),
-        "quote_coin": b58encode(quote_coin),
-        "base_oracle": b58encode(base_oracle),
-        "quote_oracle": b58encode(quote_oracle),
-        "mm_account": b58encode(mm_account),
-        "base_coin_bump": base_coin_bump,
-        "quote_coin_bump": quote_coin_bump,
-        "dex_instance_bytes": raw[0x20:0x40],  # 供 coin 验证使用
-        "dex_bytes": stored_dex,
-    }
-
-
-def decode_coin_account(
-    raw: bytes,
-    *,
-    coin_address: str,
-    dex_instance_bytes: bytes,
-    dex_bytes: bytes,
-) -> dict[str, typing.Any]:
-    if len(raw) < 0xB0:
-        raise ValueError(f"coin 数据长度过短: {len(raw)}")
-    if raw[0x08:0x28] != dex_instance_bytes:
-        raise ValueError("coin 绑定的 dex_instance 与输入不一致")
-    mint = read_pubkey(raw, 0x28)
-    vault = read_pubkey(raw, 0x48)
-    oracle = read_pubkey(raw, 0x68)
-    risk = read_pubkey(raw, 0x88)
-    decimals = raw[0xA8]
-    coin_addr_bytes = b58decode(coin_address)
-    derived_coin, coin_bump = find_program_address_bytes(
-        (b"coin", dex_bytes, mint),
-        PROGRAM_ID_BYTES,
-    )
-    if derived_coin != coin_addr_bytes:
-        raise ValueError("coin PDA 校验失败")
-    vault_expected, vault_bump = find_program_address_bytes(
-        (b"coin_managed_ta", coin_addr_bytes),
-        PROGRAM_ID_BYTES,
-    )
-    if vault_expected != vault:
-        raise ValueError("coin_managed_ta PDA 校验失败")
-    return {
-        "mint": b58encode(mint),
-        "vault": b58encode(vault),
-        "oracle": b58encode(oracle),
-        "risk": b58encode(risk),
-        "coin_bump": coin_bump,
-        "managed_ta_bump": vault_bump,
-        "decimals_flag": decimals,
-        "raw": raw,
-    }
-
-
-def fetch_account_record(rpc_url: str, address: str) -> dict[str, typing.Any]:
-    resp = rpc_request(
-        rpc_url,
-        "getAccountInfo",
-        [
-            address,
-            {
-                "encoding": "base64",
-                "commitment": "confirmed",
-            },
-        ],
-    )
-    value = resp.get("value")
-    if not value:
-        raise RpcError(f"账户 {address} 数据为空")
-    data_field = value.get("data")
-    if not data_field:
-        raise RpcError(f"账户 {address} 缺少 data 字段")
-    data_b64, _encoding = data_field
-    data = base64.b64decode(data_b64)
-    if data.startswith(b"\x28\xb5\x2f\xfd"):
-        data = _decompress_zstd(data)
-    return {
-        "data": data,
-        "owner": value.get("owner"),
-        "lamports": value.get("lamports"),
-        "executable": value.get("executable", False),
-    }
-
-
-def decode_token_account(raw: bytes) -> dict[str, typing.Any]:
-    if len(raw) < 165:
-        raise ValueError(f"SPL Token 账户数据长度过短: {len(raw)}")
-    mint = read_pubkey(raw, 0x00)
-    owner = read_pubkey(raw, 0x20)
-    amount = int.from_bytes(raw[0x40:0x48], "little")
-    delegate_present = int.from_bytes(raw[0x48:0x50], "little") != 0
-    close_authority_present = int.from_bytes(raw[0x78:0x80], "little") != 0
-    return {
-        "mint": b58encode(mint),
-        "owner": b58encode(owner),
-        "amount": amount,
-        "has_delegate": delegate_present,
-        "has_close_authority": close_authority_present,
-    }
-
-
-def fetch_mint_owner_and_decimals(
-    rpc_url: str,
-    mint: str,
-) -> tuple[str, int]:
+def fetch_account_bytes(rpc_url: str, pubkey: str) -> bytes:
     info = rpc_request(
         rpc_url,
         "getAccountInfo",
         [
-            mint,
+            pubkey,
+            {"encoding": "base64", "commitment": "confirmed"},
+        ],
+    )
+    value = info.get("value")
+    if not value:
+        raise RpcError(f"账户 {pubkey} 不存在或无数据")
+    data_b64, _encoding = value["data"]
+    return base64.b64decode(data_b64)
+
+
+def list_program_accounts(
+    rpc_url: str,
+    program_id: str,
+    *,
+    data_size: typing.Optional[int] = None,
+) -> typing.List[dict[str, typing.Any]]:
+    params_filter: dict[str, typing.Any] = {"encoding": "base64", "commitment": "confirmed"}
+    if data_size is not None:
+        params_filter["filters"] = [{"dataSize": data_size}]
+    result = rpc_request(
+        rpc_url,
+        "getProgramAccounts",
+        [
+            program_id,
+            params_filter,
+        ],
+    )
+    return typing.cast(typing.List[dict[str, typing.Any]], result)
+
+
+def chunk32(data: bytes, count: int) -> typing.List[str]:
+    out: typing.List[str] = []
+    for idx in range(count):
+        start = idx * 32
+        end = start + 32
+        if end > len(data):
+            break
+        out.append(b58encode(data[start:end]))
+    return out
+
+
+def parse_fast_account(raw: bytes) -> dict[str, typing.Any]:
+    if len(raw) != 128:
+        raise RpcError(f"fast state 长度异常: {len(raw)}")
+    mint = b58encode(raw[24:56])
+    dex = b58encode(raw[56:88])
+    global_state = b58encode(raw[88:120])
+    vault_info_ptr = b58encode(raw[32:64])
+    index = int.from_bytes(raw[0:8], "little")
+    bump = int.from_bytes(raw[8:12], "little")
+    return {
+        "raw_len": len(raw),
+        "mint": mint,
+        "dex": dex,
+        "global_state": global_state,
+        "vault_info": vault_info_ptr,
+        "index": index,
+        "bump": bump,
+    }
+
+
+def parse_vault_info(raw: bytes) -> dict[str, typing.Any]:
+    if len(raw) != 1056:
+        raise RpcError(f"vault info 长度异常: {len(raw)}")
+    mint = b58encode(raw[952:984])
+    instance = b58encode(raw[1016:1048])
+    fast_pointer = b58encode(raw[960:992])
+    return {
+        "raw_len": len(raw),
+        "mint": mint,
+        "instance": instance,
+        "fast_pointer": fast_pointer,
+    }
+
+
+def fetch_token_account(
+    rpc_url: str,
+    owner: str,
+    expected_mint: str,
+) -> tuple[str, dict[str, typing.Any]]:
+    result = rpc_request(
+        rpc_url,
+        "getTokenAccountsByOwner",
+        [
+            owner,
+            {"programId": TOKEN_PROGRAM_ID},
             {
                 "encoding": "jsonParsed",
                 "commitment": "confirmed",
             },
         ],
     )
-    value = info.get("value")
-    if not value:
-        raise RpcError(f"mint {mint} 不存在")
-    owner = value.get("owner")
-    parsed = value.get("data", {}).get("parsed", {})
-    decimals = parsed.get("info", {}).get("decimals")
-    if decimals is None:
-        raise RpcError(f"mint {mint} 缺少 decimals")
-    return owner, int(decimals)
+    entries = typing.cast(typing.List[typing.Any], result.get("value") or [])
+    if not entries:
+        raise RpcError(f"找不到 {owner} 的 SPL Token 账户")
+
+    best_entry: typing.Optional[dict[str, typing.Any]] = None
+    best_amount = -1
+    for entry in entries:
+        parsed = (
+            entry.get("account", {})
+            .get("data", {})
+            .get("parsed", {})
+            .get("info", {})
+        )
+        mint = parsed.get("mint")
+        if mint != expected_mint:
+            continue
+        token_amount = parsed.get("tokenAmount", {})
+        amount_raw = token_amount.get("amount")
+        try:
+            amount = int(amount_raw)
+        except (TypeError, ValueError):
+            amount = 0
+        if amount >= best_amount:
+            best_amount = amount
+            best_entry = entry
+    if not best_entry:
+        raise RpcError(
+            f"{owner} 未找到 mint={expected_mint} 的 Token 账户"
+        )
+    info = (
+        best_entry["account"]["data"]["parsed"]["info"]
+    )
+    info = typing.cast(dict[str, typing.Any], info)
+    return best_entry["pubkey"], info
 
 
-def resolve_accounts(
+def resolve_fast_states(
     rpc_url: str,
-    dex_instance: str,
-    user: str | None,
-) -> dict[str, typing.Any]:
-    instance_record = fetch_account_record(rpc_url, dex_instance)
-    instance_raw = instance_record["data"]
-    instance = decode_dex_instance(instance_raw)
-
-    base_coin_record = fetch_account_record(rpc_url, instance["base_coin"])
-    base_coin_raw = base_coin_record["data"]
-    base_coin = decode_coin_account(
-        base_coin_raw,
-        coin_address=instance["base_coin"],
-        dex_instance_bytes=instance_raw[0x08:0x28],
-        dex_bytes=b58decode(instance["dex"]),
+    dex: str,
+    base_mint: str,
+    quote_mint: str,
+) -> dict[str, dict[str, typing.Any]]:
+    accounts = list_program_accounts(
+        rpc_url,
+        FAST_PROGRAM_ID,
+        data_size=128,
     )
-    quote_coin_record = fetch_account_record(rpc_url, instance["quote_coin"])
-    quote_coin_raw = quote_coin_record["data"]
-    quote_coin = decode_coin_account(
-        quote_coin_raw,
-        coin_address=instance["quote_coin"],
-        dex_instance_bytes=instance_raw[0x08:0x28],
-        dex_bytes=b58decode(instance["dex"]),
+    targets = {"base": None, "quote": None}
+    for entry in accounts:
+        data_b64 = entry.get("account", {}).get("data", [])
+        if not data_b64:
+            continue
+        raw = base64.b64decode(data_b64[0])
+        parsed = parse_fast_account(raw)
+        if parsed["dex"] != dex:
+            continue
+        if parsed["mint"] == base_mint and targets["base"] is None:
+            targets["base"] = {
+                **parsed,
+                "pubkey": entry["pubkey"],
+            }
+        elif parsed["mint"] == quote_mint and targets["quote"] is None:
+            targets["quote"] = {
+                **parsed,
+                "pubkey": entry["pubkey"],
+            }
+        if targets["base"] and targets["quote"]:
+            break
+    missing = [key for key, value in targets.items() if value is None]
+    if missing:
+        raise RpcError(f"未找到 fast state: {', '.join(missing)}")
+    return typing.cast(dict[str, dict[str, typing.Any]], targets)
+
+
+def resolve_vault_infos(
+    rpc_url: str,
+    instance: str,
+    base_mint: str,
+    quote_mint: str,
+) -> dict[str, dict[str, typing.Any]]:
+    accounts = list_program_accounts(
+        rpc_url,
+        AQUIFER_PROGRAM_ID,
+        data_size=1056,
     )
+    targets: dict[str, typing.Optional[dict[str, typing.Any]]] = {
+        "base": None,
+        "quote": None,
+    }
+    for entry in accounts:
+        data_b64 = entry.get("account", {}).get("data", [])
+        if not data_b64:
+            continue
+        raw = base64.b64decode(data_b64[0])
+        parsed = parse_vault_info(raw)
+        if parsed["instance"] != instance:
+            continue
+        if parsed["mint"] == base_mint and targets["base"] is None:
+            targets["base"] = {
+                **parsed,
+                "pubkey": entry["pubkey"],
+            }
+        elif parsed["mint"] == quote_mint and targets["quote"] is None:
+            targets["quote"] = {
+                **parsed,
+                "pubkey": entry["pubkey"],
+            }
+        if targets["base"] and targets["quote"]:
+            break
+    missing = [key for key, value in targets.items() if value is None]
+    if missing:
+        raise RpcError(f"未找到 vault info: {', '.join(missing)}")
+    return typing.cast(dict[str, dict[str, typing.Any]], targets)
 
-    base_token_program, base_decimals = fetch_mint_owner_and_decimals(
-        rpc_url, base_coin["mint"]
-    )
-    quote_token_program, quote_decimals = fetch_mint_owner_and_decimals(
-        rpc_url, quote_coin["mint"]
-    )
 
-    base_vault_record = fetch_account_record(rpc_url, base_coin["vault"])
-    quote_vault_record = fetch_account_record(rpc_url, quote_coin["vault"])
-
-    if base_vault_record["owner"] not in (TOKEN_PROGRAM_V1, TOKEN_PROGRAM_2022):
-        raise RpcError(
-            f"base vault token account {base_coin['vault']} owner 非 SPL Token Program: {base_vault_record['owner']}"
-        )
-    if quote_vault_record["owner"] not in (TOKEN_PROGRAM_V1, TOKEN_PROGRAM_2022):
-        raise RpcError(
-            f"quote vault token account {quote_coin['vault']} owner 非 SPL Token Program: {quote_vault_record['owner']}"
-        )
-    base_vault_account = decode_token_account(base_vault_record["data"])
-    quote_vault_account = decode_token_account(quote_vault_record["data"])
-
-    if base_vault_account["mint"] != base_coin["mint"]:
-        raise RpcError(
-            f"base vault token account mint 不匹配: 期望 {base_coin['mint']}, 实际 {base_vault_account['mint']}"
-        )
-    if quote_vault_account["mint"] != quote_coin["mint"]:
-        raise RpcError(
-            f"quote vault token account mint 不匹配: 期望 {quote_coin['mint']}, 实际 {quote_vault_account['mint']}"
-        )
-
-    base_vault_authority = base_vault_account["owner"]
-    quote_vault_authority = quote_vault_account["owner"]
-
-    user_authority = user or "<user-authority>"
-    if user:
-        try:
-            user_base_token = find_ata(user, base_coin["mint"], base_token_program)
-        except Exception as exc:  # pragma: no cover - 需人工处理
-            raise RpcError(f"计算 base ATA 失败: {exc}") from exc
-        try:
-            user_quote_token = find_ata(user, quote_coin["mint"], quote_token_program)
-        except Exception as exc:  # pragma: no cover - 需人工处理
-            raise RpcError(f"计算 quote ATA 失败: {exc}") from exc
-    else:
-        user_base_token = "<user-base-token-account>"
-        user_quote_token = "<user-quote-token-account>"
-
-    account_list = [
-        ("sysvar_instructions", SYSVAR_INSTRUCTIONS),
-        ("user_authority", user_authority),
-        ("token_program_base", base_token_program),
-        ("mm_account", instance["mm_account"]),
-        ("base_mint", base_coin["mint"]),
-        ("token_program_quote", quote_token_program),
-        ("base_coin", instance["base_coin"]),
-        ("quote_mint", quote_coin["mint"]),
-        ("dex", instance["dex"]),
-        ("dex_instance", dex_instance),
-        ("base_oracle", instance["base_oracle"]),
-        ("quote_oracle", instance["quote_oracle"]),
-        ("base_vault_authority", base_vault_authority),
-        ("base_vault_token_account", base_coin["vault"]),
-        ("quote_vault_authority", quote_vault_authority),
-        ("quote_vault_token_account", quote_coin["vault"]),
-    ]
-
+def summarise_dex(data: bytes) -> dict[str, typing.Any]:
+    version = int.from_bytes(data[0:8], "little")
+    admin = b58encode(data[8:40])
+    fields = chunk32(data[40:], 6)
     return {
-        "program_id": PROGRAM_ID,
-        "dex": instance["dex"],
-        "dex_instance": dex_instance,
-        "dex_owner": instance["dex_owner"],
-        "instance_id": instance["instance_id"],
-        "base": {
-            "coin": instance["base_coin"],
-            "mint": base_coin["mint"],
-            "vault_authority": base_vault_authority,
-            "vault_token_account": base_coin["vault"],
-            "oracle": instance["base_oracle"],
-            "risk": base_coin["risk"],
-            "token_program": base_token_program,
-            "decimals": base_decimals,
-            "vault_amount": base_vault_account["amount"],
-        },
-        "quote": {
-            "coin": instance["quote_coin"],
-            "mint": quote_coin["mint"],
-            "vault_authority": quote_vault_authority,
-            "vault_token_account": quote_coin["vault"],
-            "oracle": instance["quote_oracle"],
-            "risk": quote_coin["risk"],
-            "token_program": quote_token_program,
-            "decimals": quote_decimals,
-            "vault_amount": quote_vault_account["amount"],
-        },
-        "mm_account": instance["mm_account"],
-        "user": {
-            "authority": user_authority,
-            "base_token": user_base_token,
-            "quote_token": user_quote_token,
-        },
-        "ordered_accounts": account_list,
+        "raw_len": len(data),
+        "version": version,
+        "admin_key": admin,
+        "field32_starting_from_40": fields,
     }
 
 
-def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Aquifer swap 账户解码")
-    parser.add_argument("pool", help="Aquifer dex_instance 账户地址")
-    parser.add_argument("--rpc", default=RPC_DEFAULT, help="RPC endpoint，默认 127.0.0.1:8899")
-    parser.add_argument("--user", help="可选：用户钱包地址，用于计算 ATA")
-    args = parser.parse_args(argv)
+def summarise_instance(data: bytes) -> dict[str, typing.Any]:
+    parent = b58encode(data[0:32])
+    anchors = chunk32(data[32:], 10)
+    return {
+        "raw_len": len(data),
+        "parent_dex": parent,
+        "leading_pubkeys": anchors,
+    }
 
-    global PROGRAM_ID_BYTES
-    PROGRAM_ID_BYTES = b58decode(PROGRAM_ID)
+
+def summarise_user(data: bytes) -> dict[str, typing.Any]:
+    words = chunk32(data, 6)
+    return {
+        "raw_len": len(data),
+        "leading_pubkeys": words,
+        "trailing_pubkey": b58encode(data[-32:]),
+    }
+
+
+def build_output(
+    rpc_url: str,
+    dex: str,
+    instance: str,
+    user: str | None,
+    signer: str | None,
+    base_mint: str,
+    quote_mint: str,
+    user_wrap_sol: str | None,
+    user_quote_token: str | None,
+) -> dict[str, typing.Any]:
+    dex_bytes = fetch_account_bytes(rpc_url, dex)
+    instance_bytes = fetch_account_bytes(rpc_url, instance)
+    user_bytes = fetch_account_bytes(rpc_url, user) if user else None
+    fast_states = resolve_fast_states(rpc_url, dex, base_mint, quote_mint)
+    vault_infos = resolve_vault_infos(rpc_url, instance, base_mint, quote_mint)
+    base_vault_token, base_token_info = fetch_token_account(
+        rpc_url,
+        vault_infos["base"]["pubkey"],
+        base_mint,
+    )
+    quote_vault_token, quote_token_info = fetch_token_account(
+        rpc_url,
+        vault_infos["quote"]["pubkey"],
+        quote_mint,
+    )
+    vault_infos["base"]["token_account"] = base_vault_token
+    vault_infos["base"]["token_info"] = base_token_info
+    vault_infos["quote"]["token_account"] = quote_vault_token
+    vault_infos["quote"]["token_info"] = quote_token_info
+
+    core_accounts = [
+        ("payer", signer or "<user-signer>"),
+        ("dex_global", dex),
+        ("dex_instance", instance),
+        ("user_state", user or "<user-account>"),
+        ("swap_mint", base_mint),
+    ]
+
+    summary = {
+        "program_id": AQUIFER_PROGRAM_ID,
+        "swap_accounts_order": core_accounts,
+        "dex_summary": summarise_dex(dex_bytes),
+        "instance_summary": summarise_instance(instance_bytes),
+        "base_mint": base_mint,
+        "quote_mint": quote_mint,
+        "coin_states": fast_states,
+        "vault_infos": vault_infos,
+    }
+    if user_bytes is not None:
+        summary["user_summary"] = summarise_user(user_bytes)
+
+    ordered_accounts = [
+        ("sysvar_instructions", SYSVAR_INSTRUCTIONS),
+        ("payer", signer or PLACEHOLDERS["payer"]),
+        ("token_program_base", TOKEN_PROGRAM_ID),
+        ("user_wrap_sol", user_wrap_sol or PLACEHOLDERS["user_wrap_sol"]),
+        ("base_mint", base_mint),
+        ("token_program_quote", TOKEN_PROGRAM_ID),
+        ("user_quote_token", user_quote_token or PLACEHOLDERS["user_quote_token"]),
+        ("quote_mint", quote_mint),
+        ("dex_global", dex),
+        ("dex_instance", instance),
+        ("coin_state_base", fast_states["base"]["pubkey"]),
+        ("coin_state_quote", fast_states["quote"]["pubkey"]),
+        ("base_vault_pda", vault_infos["base"]["pubkey"]),
+        ("base_vault_token", base_vault_token),
+        ("quote_vault_pda", vault_infos["quote"]["pubkey"]),
+        ("quote_vault_token", quote_vault_token),
+    ]
+
+    summary["full_account_list"] = ordered_accounts
+    return summary
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Aquifer swap 账户解析")
+    parser.add_argument("dex", help="Dex 全局状态账户地址")
+    parser.add_argument("instance", help="Dex 实例账户地址")
+    parser.add_argument(
+        "--user",
+        help="用户状态账户地址（可选，如未提供则输出占位符）",
+    )
+    parser.add_argument(
+        "--signer",
+        help="用户签名者地址（可选，默认输出占位符）",
+    )
+    parser.add_argument(
+        "--mint",
+        help="swap 使用的 token mint（可选，默认输出占位符）",
+    )
+    parser.add_argument("--base-mint", help="base 侧 mint (例如 wSOL)")
+    parser.add_argument("--quote-mint", help="quote 侧 mint (例如 USDC)")
+    parser.add_argument("--user-wrap-sol", help="用户 base token 账户（可选，占位）")
+    parser.add_argument("--user-quote-token", help="用户 quote token 账户（可选，占位）")
+    parser.add_argument(
+        "--rpc",
+        default=RPC_DEFAULT,
+        help=f"Solana RPC 地址（默认 {RPC_DEFAULT}）",
+    )
+    args = parser.parse_args()
 
     try:
-        result = resolve_accounts(args.rpc, args.pool, args.user)
-    except Exception as exc:
-        raise SystemExit(f"解析失败: {exc}") from exc
+        base_mint = args.base_mint or args.mint
+        if not base_mint:
+            raise RpcError("请通过 --base-mint 指定 base 侧 mint")
+        if not args.quote_mint:
+            raise RpcError("请通过 --quote-mint 指定 quote 侧 mint")
+
+        result = build_output(
+            rpc_url=args.rpc,
+            dex=args.dex,
+            instance=args.instance,
+            user=args.user,
+            signer=args.signer,
+            base_mint=base_mint,
+            quote_mint=args.quote_mint,
+            user_wrap_sol=args.user_wrap_sol,
+            user_quote_token=args.user_quote_token,
+        )
+    except RpcError as exc:
+        print(f"错误: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
-    sys.stdout.write("\n")
-    return 0
+    print()
+
+    accounts = result.get("full_account_list", [])
+    if accounts:
+        print("\n账户顺序 (swap 指令实际顺序)：")
+        max_label_len = max(len(label) for label, _addr in accounts)
+        for idx, (label, addr) in enumerate(accounts):
+            padded = label.ljust(max_label_len)
+            print(f"  {idx:<2d} {padded} {addr}")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    main()

@@ -8,6 +8,7 @@ use solana_sdk::hash::Hash;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::message::v0::Message as V0Message;
 use solana_sdk::message::{AddressLookupTableAccount, VersionedMessage};
+use solana_sdk::signature::Keypair;
 use solana_sdk::transaction::VersionedTransaction;
 use tracing::{debug, warn};
 
@@ -32,6 +33,8 @@ pub struct PreparedTransaction {
     pub transaction: VersionedTransaction,
     pub blockhash: Hash,
     pub slot: u64,
+    pub signer: Arc<Keypair>,
+    pub tip_lamports: u64,
 }
 
 #[derive(Clone)]
@@ -105,13 +108,16 @@ impl TransactionBuilder {
 
         let message = compile_message(&identity.pubkey, &ix, &lookup_accounts, blockhash)?;
         let versioned = VersionedMessage::V0(message);
-        let tx = VersionedTransaction::try_new(versioned, &[identity.signer.as_ref()])
+        let signer = identity.signer.clone();
+        let tx = VersionedTransaction::try_new(versioned, &[signer.as_ref()])
             .map_err(|err| EngineError::Transaction(anyhow!(err)))?;
 
         Ok(PreparedTransaction {
             transaction: tx,
             blockhash,
             slot,
+            signer,
+            tip_lamports,
         })
     }
 

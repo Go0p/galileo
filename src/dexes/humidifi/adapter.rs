@@ -8,7 +8,9 @@ use solana_sdk::account::Account;
 use solana_sdk::instruction::AccountMeta;
 use solana_sdk::pubkey::Pubkey;
 
-use crate::dexes::framework::{DexMarketMeta, DexMetaProvider, SwapAccountAssembler, SwapAccountsContext};
+use crate::dexes::framework::{
+    DexMarketMeta, DexMetaProvider, SwapAccountAssembler, SwapAccountsContext,
+};
 
 use super::decoder::{HUMIDIFI_PROGRAM_ID, HumidiFiMarketMeta, fetch_market_meta};
 

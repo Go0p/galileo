@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 
-use crate::engine::{QuoteTask, SwapOpportunity};
+use crate::engine::{QuoteTask, SwapOpportunity, VariantId};
 use crate::lander::{LanderError, LanderReceipt};
 use solana_sdk::pubkey::Pubkey;
 
@@ -259,12 +259,20 @@ pub fn transaction_built(
     }
 }
 
-pub fn lander_attempt(strategy: &str, name: &str, attempt: usize) {
+pub fn lander_attempt(
+    strategy: &str,
+    dispatch: &str,
+    name: &str,
+    variant: VariantId,
+    attempt: usize,
+) {
     info!(
         target: "monitoring::lander",
         event = "attempt",
         strategy,
+        dispatch,
         lander = name,
+        variant,
         attempt,
         "lander submission attempt"
     );
@@ -273,18 +281,22 @@ pub fn lander_attempt(strategy: &str, name: &str, attempt: usize) {
         counter!(
             "galileo_lander_attempt_total",
             "strategy" => strategy.to_string(),
-            "lander" => name.to_string()
+            "lander" => name.to_string(),
+            "dispatch" => dispatch.to_string(),
+            "variant" => variant.to_string()
         )
         .increment(1);
     }
 }
 
-pub fn lander_success(strategy: &str, attempt: usize, receipt: &LanderReceipt) {
+pub fn lander_success(strategy: &str, dispatch: &str, attempt: usize, receipt: &LanderReceipt) {
     info!(
         target: "monitoring::lander",
         event = "success",
         strategy,
+        dispatch,
         lander = receipt.lander,
+        variant = receipt.variant_id,
         attempt,
         endpoint = %receipt.endpoint,
         slot = receipt.slot,
@@ -297,19 +309,31 @@ pub fn lander_success(strategy: &str, attempt: usize, receipt: &LanderReceipt) {
         counter!(
             "galileo_lander_success_total",
             "strategy" => strategy.to_string(),
-            "lander" => receipt.lander
+            "lander" => receipt.lander.to_string(),
+            "dispatch" => dispatch.to_string(),
+            "variant" => receipt.variant_id.to_string()
         )
         .increment(1);
     }
 }
 
-pub fn lander_failure(strategy: &str, name: &str, attempt: usize, _err: &LanderError) {
+pub fn lander_failure(
+    strategy: &str,
+    dispatch: &str,
+    name: &str,
+    variant: VariantId,
+    attempt: usize,
+    err: &LanderError,
+) {
     warn!(
         target: "monitoring::lander",
         event = "failure",
         strategy,
+        dispatch,
         lander = name,
+        variant,
         attempt,
+        error = %err,
         "lander submission failed"
     );
 
@@ -317,7 +341,9 @@ pub fn lander_failure(strategy: &str, name: &str, attempt: usize, _err: &LanderE
         counter!(
             "galileo_lander_failure_total",
             "strategy" => strategy.to_string(),
-            "lander" => name.to_string()
+            "lander" => name.to_string(),
+            "dispatch" => dispatch.to_string(),
+            "variant" => variant.to_string()
         )
         .increment(1);
     }

@@ -150,6 +150,7 @@ pub async fn fetch_market_meta(
     build_market_meta(market, &config, base_vault_accounts, quote_vault_accounts)
 }
 
+#[allow(dead_code)]
 pub fn fetch_market_meta_blocking(
     client: &BlockingRpcClient,
     market: Pubkey,

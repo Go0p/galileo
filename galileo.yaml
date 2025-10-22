@@ -6,7 +6,7 @@ global:
   # rpc_url: "https://solana-rpc.publicnode.com"
   # rpc_url: "http://127.0.0.1:8899"
   # yellowstone grpc url
-  proxy: "http://192.168.124.4:2080"
+  # proxy: "http://192.168.124.4:2080"
   yellowstone_grpc_url: ""
   # yellowstone grpc token
   yellowstone_grpc_token: ""
@@ -184,9 +184,9 @@ blind_strategy:
       # TesseraV 
       # sell_market: "FLckHLGMJy5gEoXWwcE68Nprde1D4araK4TGLw4pQq2n"
       # ZeroFi
-      sell_market: "DRciepTenS2bwfA9YJkZraZrFzcUpmVebR4aZgo2zj1k"
+      # sell_market: "DRciepTenS2bwfA9YJkZraZrFzcUpmVebR4aZgo2zj1k"
       # SolFi V2
-      # sell_market: "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc"
+      sell_market: "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc"
 
 
 # 后跑策略

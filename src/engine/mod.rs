@@ -2,6 +2,7 @@ mod builder;
 mod context;
 mod error;
 mod identity;
+mod planner;
 mod precheck;
 mod profit;
 mod quote;
@@ -9,10 +10,11 @@ mod scheduler;
 mod swap;
 mod types;
 
-pub use builder::{BuilderConfig, PreparedTransaction, TransactionBuilder};
+pub use builder::{BuilderConfig, TransactionBuilder};
 pub use context::{Action, StrategyContext, StrategyResources};
 pub use error::{EngineError, EngineResult};
 pub use identity::EngineIdentity;
+pub use planner::{DispatchPlan, DispatchStrategy, TxVariant, TxVariantPlanner, VariantId};
 pub use precheck::AccountPrechecker;
 pub use profit::{ProfitConfig, ProfitEvaluator, TipConfig};
 pub use quote::{QuoteConfig, QuoteExecutor};
@@ -32,6 +34,7 @@ use tracing::{debug, info, trace, warn};
 use crate::api::SwapInstructionsResponse;
 use crate::dexes::framework::{SwapAccountAssembler, SwapAccountsContext, SwapFlow};
 use crate::dexes::humidifi::HumidiFiAdapter;
+use crate::dexes::obric_v2::ObricV2Adapter;
 use crate::dexes::solfi_v2::SolFiV2Adapter;
 use crate::dexes::tessera_v::TesseraVAdapter;
 use crate::dexes::zerofi::ZeroFiAdapter;
@@ -44,7 +47,7 @@ use crate::strategy::types::{
 use crate::strategy::{Strategy, StrategyEvent};
 use crate::txs::jupiter::route_v2::{RouteV2Accounts, RouteV2InstructionBuilder};
 use crate::txs::jupiter::swaps::{
-    HumidiFiSwap, SolFiV2Swap, TesseraVSide, TesseraVSwap, ZeroFiSwap,
+    HumidiFiSwap, ObricSwap, SolFiV2Swap, TesseraVSide, TesseraVSwap, ZeroFiSwap,
 };
 use crate::txs::jupiter::types::{JUPITER_V6_PROGRAM_ID, RoutePlanStepV2};
 
@@ -59,6 +62,7 @@ pub struct EngineSettings {
     pub landing_timeout: Duration,
     pub quote: QuoteConfig,
     pub dry_run: bool,
+    pub dispatch_strategy: DispatchStrategy,
 }
 
 impl EngineSettings {
@@ -67,6 +71,7 @@ impl EngineSettings {
             landing_timeout: Duration::from_secs(2),
             quote,
             dry_run: false,
+            dispatch_strategy: DispatchStrategy::default(),
         }
     }
 
@@ -77,6 +82,11 @@ impl EngineSettings {
 
     pub fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
+        self
+    }
+
+    pub fn with_dispatch_strategy(mut self, strategy: DispatchStrategy) -> Self {
+        self.dispatch_strategy = strategy;
         self
     }
 }
@@ -97,6 +107,7 @@ where
     settings: EngineSettings,
     trade_pairs: Vec<TradePair>,
     trade_amounts: Vec<u64>,
+    variant_planner: TxVariantPlanner,
 }
 
 impl<S> StrategyEngine<S>
@@ -131,6 +142,7 @@ where
             settings,
             trade_pairs,
             trade_amounts,
+            variant_planner: TxVariantPlanner::new(),
         }
     }
 
@@ -315,20 +327,24 @@ where
             .build_with_sequence(&self.identity, &response, final_instructions, 0)
             .await?;
 
+        let dispatch_strategy = self.settings.dispatch_strategy;
+        let variant_budget = self.landers.plan_capacity(dispatch_strategy);
+        let plan = self
+            .variant_planner
+            .plan(dispatch_strategy, &prepared, variant_budget);
+
         let deadline = Deadline::from_instant(Instant::now() + self.settings.landing_timeout);
 
         match self
             .landers
-            .submit(&prepared, deadline, strategy_name)
+            .submit_plan(&plan, deadline, strategy_name)
             .await
         {
             Ok(_) => Ok(()),
             Err(err) => {
-                let tx_signature = prepared
-                    .transaction
-                    .signatures
-                    .get(0)
-                    .map(|sig| sig.to_string());
+                let tx_signature = plan
+                    .primary_variant()
+                    .and_then(|variant| variant.signature());
                 warn!(
                     target: "engine::blind",
                     signature = tx_signature.as_deref().unwrap_or(""),
@@ -403,6 +419,14 @@ where
                         EngineError::InvalidConfig(format!("构造 TesseraV swap 失败: {err}"))
                     })?
                 }
+                (BlindMarketMeta::ObricV2(_), BlindDex::ObricV2) => {
+                    let swap = ObricSwap {
+                        x_to_y: matches!(step.direction, BlindSwapDirection::BaseToQuote),
+                    };
+                    swap.encode().map_err(|err| {
+                        EngineError::InvalidConfig(format!("构造 ObricV2 swap 失败: {err}"))
+                    })?
+                }
                 _ => {
                     return Err(EngineError::InvalidConfig(
                         "纯盲发暂未支持该 DEX".to_string(),
@@ -454,6 +478,13 @@ where
                 }
                 BlindMarketMeta::TesseraV(meta) => {
                     TesseraVAdapter::shared().assemble_remaining_accounts(
+                        meta.as_ref(),
+                        ctx,
+                        &mut remaining_accounts,
+                    );
+                }
+                BlindMarketMeta::ObricV2(meta) => {
+                    ObricV2Adapter::shared().assemble_remaining_accounts(
                         meta.as_ref(),
                         ctx,
                         &mut remaining_accounts,
@@ -578,17 +609,20 @@ where
             return Ok(());
         }
 
-        let deadline = Deadline::from_instant(deadline);
+        let dispatch_strategy = self.settings.dispatch_strategy;
+        let variant_budget = self.landers.plan_capacity(dispatch_strategy);
+        let plan = self
+            .variant_planner
+            .plan(dispatch_strategy, &prepared, variant_budget);
 
-        let tx_signature = prepared
-            .transaction
-            .signatures
-            .get(0)
-            .map(|sig| sig.to_string());
+        let deadline = Deadline::from_instant(deadline);
+        let tx_signature = plan
+            .primary_variant()
+            .and_then(|variant| variant.signature());
 
         match self
             .landers
-            .submit(&prepared, deadline, strategy_name)
+            .submit_plan(&plan, deadline, strategy_name)
             .await
         {
             Ok(_) => Ok(()),

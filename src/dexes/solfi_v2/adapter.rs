@@ -8,7 +8,9 @@ use solana_sdk::account::Account;
 use solana_sdk::instruction::AccountMeta;
 use solana_sdk::pubkey::Pubkey;
 
-use crate::dexes::framework::{DexMarketMeta, DexMetaProvider, SwapAccountAssembler, SwapAccountsContext};
+use crate::dexes::framework::{
+    DexMarketMeta, DexMetaProvider, SwapAccountAssembler, SwapAccountsContext,
+};
 
 use super::decoder::decode_market_meta;
 use super::{SOLFI_V2_PROGRAM_ID, SolfiV2MarketMeta};

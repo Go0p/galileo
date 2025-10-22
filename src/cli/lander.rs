@@ -8,7 +8,7 @@ use crate::cli::args::{LanderCmd, LanderSendArgs};
 use crate::cli::context::{resolve_global_http_proxy, resolve_rpc_client};
 use crate::config;
 use crate::config::AppConfig;
-use crate::engine::{BuilderConfig, EngineIdentity, TransactionBuilder};
+use crate::engine::{BuilderConfig, EngineIdentity, TransactionBuilder, TxVariantPlanner};
 use crate::lander::{Deadline, LanderFactory};
 
 /// Lander 子命令：用于离线重放 Swap 指令并测试落地器链路。
@@ -76,10 +76,15 @@ async fn send_transaction(
         .await
         .map_err(|err| anyhow!(err))?;
 
+    let dispatch_strategy = lander_settings.sending_strategy;
+    let planner = TxVariantPlanner::new();
+    let variant_budget = lander_stack.plan_capacity(dispatch_strategy);
+    let plan = planner.plan(dispatch_strategy, &prepared, variant_budget);
+
     let deadline =
         Deadline::from_instant(Instant::now() + Duration::from_millis(args.deadline_ms.max(1)));
     let receipt = lander_stack
-        .submit(&prepared, deadline, "lander-test")
+        .submit_plan(&plan, deadline, "lander-test")
         .await
         .map_err(|err| anyhow!(err))?;
 

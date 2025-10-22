@@ -5,7 +5,7 @@ use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_sdk::transaction::VersionedTransaction;
 use tracing::info;
 
-use crate::engine::PreparedTransaction;
+use crate::engine::{TxVariant, VariantId};
 
 use super::error::LanderError;
 use super::stack::{Deadline, LanderReceipt};
@@ -37,9 +37,9 @@ impl RpcLander {
         Self { client, config }
     }
 
-    pub async fn submit(
+    pub async fn submit_variant(
         &self,
-        prepared: &PreparedTransaction,
+        variant: TxVariant,
         deadline: Deadline,
     ) -> Result<LanderReceipt, LanderError> {
         if deadline.expired() {
@@ -47,15 +47,17 @@ impl RpcLander {
         }
 
         self.send_via_rpc(
-            &prepared.transaction,
-            prepared.slot,
-            &prepared.blockhash.to_string(),
+            variant.id(),
+            variant.transaction(),
+            variant.slot(),
+            &variant.blockhash().to_string(),
         )
         .await
     }
 
     async fn send_via_rpc(
         &self,
+        variant_id: VariantId,
         tx: &VersionedTransaction,
         slot: u64,
         blockhash: &str,
@@ -81,6 +83,7 @@ impl RpcLander {
             slot,
             blockhash: blockhash.to_string(),
             signature: Some(signature.to_string()),
+            variant_id,
         })
     }
 }

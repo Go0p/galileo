@@ -9,6 +9,7 @@ use crate::config;
 use crate::dexes::{
     framework::{DexMarketMeta, DexMetaProvider},
     humidifi::{HUMIDIFI_PROGRAM_ID, HumidiFiAdapter},
+    obric_v2::{OBRIC_V2_PROGRAM_ID, ObricV2Adapter},
     solfi_v2::{SOLFI_V2_PROGRAM_ID, SolFiV2Adapter},
     tessera_v::{TESSERA_V_PROGRAM_ID, TesseraVAdapter},
     zerofi::{ZEROFI_PROGRAM_ID, ZeroFiAdapter},
@@ -80,15 +81,15 @@ impl<'a> PureBlindRouteBuilder<'a> {
                 )));
             }
 
-        let forward = vec![
-            build_blind_step(&sell_meta, sell_market, BlindSwapDirection::BaseToQuote),
-            build_blind_step(&buy_meta, buy_market, BlindSwapDirection::QuoteToBase),
-        ];
+            let forward = vec![
+                build_blind_step(&sell_meta, sell_market, BlindSwapDirection::BaseToQuote),
+                build_blind_step(&buy_meta, buy_market, BlindSwapDirection::QuoteToBase),
+            ];
 
-        let reverse = vec![
-            build_blind_step(&buy_meta, buy_market, BlindSwapDirection::BaseToQuote),
-            build_blind_step(&sell_meta, sell_market, BlindSwapDirection::QuoteToBase),
-        ];
+            let reverse = vec![
+                build_blind_step(&buy_meta, buy_market, BlindSwapDirection::BaseToQuote),
+                build_blind_step(&sell_meta, sell_market, BlindSwapDirection::QuoteToBase),
+            ];
 
             plans.push(BlindRoutePlan { forward, reverse });
         }
@@ -171,6 +172,25 @@ impl<'a> PureBlindRouteBuilder<'a> {
                 base_token_program: meta.base_token_program(),
                 quote_token_program: meta.quote_token_program(),
                 meta: BlindMarketMeta::HumidiFi(meta),
+            });
+        }
+
+        if account.owner == OBRIC_V2_PROGRAM_ID {
+            let adapter = ObricV2Adapter::shared();
+            let meta = adapter
+                .fetch_market_meta(self.rpc_client, market, account)
+                .await
+                .map_err(|err| {
+                    EngineError::InvalidConfig(format!("ObricV2 市场 {market} 解码失败: {err}"))
+                })?;
+
+            return Ok(ResolvedMarketMeta {
+                dex: BlindDex::ObricV2,
+                base_mint: meta.base_mint(),
+                quote_mint: meta.quote_mint(),
+                base_token_program: meta.base_token_program(),
+                quote_token_program: meta.quote_token_program(),
+                meta: BlindMarketMeta::ObricV2(meta),
             });
         }
 

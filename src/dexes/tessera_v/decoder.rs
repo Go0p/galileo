@@ -106,6 +106,7 @@ pub async fn fetch_market_meta(
     )
 }
 
+#[allow(dead_code)]
 pub fn fetch_market_meta_blocking(
     client: &BlockingRpcClient,
     market: Pubkey,

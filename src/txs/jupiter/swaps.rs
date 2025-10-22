@@ -25,6 +25,18 @@ impl SolFiV2Swap {
     }
 }
 
+/// Obric swap 编码器封装。
+#[derive(Debug, Clone, Copy)]
+pub struct ObricSwap {
+    pub x_to_y: bool,
+}
+
+impl ObricSwap {
+    pub fn encode(&self) -> Result<EncodedSwap> {
+        EncodedSwap::from_name("Obric", &self.x_to_y)
+    }
+}
+
 /// HumidiFi swap 编码器封装。
 #[derive(Debug, Clone, Copy)]
 pub struct HumidiFiSwap {
@@ -119,5 +131,12 @@ mod tests {
         };
         let encoded = swap.encode().expect("encode tessera");
         assert_eq!(encoded.variant().unwrap(), "TesseraV");
+    }
+
+    #[test]
+    fn encode_obric_swap() {
+        let swap = ObricSwap { x_to_y: true };
+        let encoded = swap.encode().expect("encode obric");
+        assert_eq!(encoded.variant().unwrap(), "Obric");
     }
 }

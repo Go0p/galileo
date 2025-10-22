@@ -1,11 +1,14 @@
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::PathBuf;
 
 use serde::Deserialize;
-use serde::de::{Deserializer, Error as DeError};
-use serde_with::serde_as;
+use serde::de::{Deserializer, Error as DeError, Unexpected, Visitor};
+use serde_with::{OneOrMany, serde_as};
+
+use crate::engine::DispatchStrategy;
 
 #[derive(Debug, Clone, Default)]
 pub struct AppConfig {
@@ -630,6 +633,8 @@ pub struct LanderSettings {
     #[serde(default = "super::default_compute_unit_price_strategy")]
     pub compute_unit_price_strategy: String,
     #[serde(default)]
+    pub sending_strategy: DispatchStrategy,
+    #[serde(default)]
     pub fixed_compute_unit_price: Option<u64>,
     #[serde(default)]
     pub random_compute_unit_price_range: Vec<u64>,
@@ -649,28 +654,133 @@ pub struct LanderSettings {
     pub min_context_slot: Option<u64>,
 }
 
+#[serde_as]
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct LanderJitoConfig {
     #[serde(default)]
     pub endpoints: Vec<String>,
-    #[serde(default)]
-    pub tip_strategies: Vec<String>,
-    #[serde(default)]
-    pub static_tip_bp: Option<u64>,
-    #[serde(default)]
-    pub static_tip_bps: Vec<u64>,
+    #[serde_as(deserialize_as = "OneOrMany<_>")]
+    #[serde(default = "super::default_tip_strategies")]
+    pub tip_strategies: Vec<TipStrategyKind>,
     #[serde(default)]
     pub fixed_tip: Option<u64>,
     #[serde(default)]
-    pub fixed_tips: Vec<u64>,
+    pub range_tips: Vec<u64>,
     #[serde(default)]
-    pub floor_tip: Option<String>,
-    #[serde(default)]
-    pub floor_tips: Vec<String>,
+    pub floor_tip_level: Option<TipFloorLevel>,
     #[serde(default)]
     pub max_floor_tip_lamports: Option<u64>,
     #[serde(default)]
     pub uuid_config: Vec<LanderJitoUuidConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TipStrategyKind {
+    Fixed,
+    Range,
+    Floor,
+}
+
+impl<'de> Deserialize<'de> for TipStrategyKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct KindVisitor;
+
+        impl<'de> Visitor<'de> for KindVisitor {
+            type Value = TipStrategyKind;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("one of: fixed, range, floor")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                match value.trim().to_ascii_lowercase().as_str() {
+                    "fixed" => Ok(TipStrategyKind::Fixed),
+                    "range" => Ok(TipStrategyKind::Range),
+                    "floor" => Ok(TipStrategyKind::Floor),
+                    other => Err(DeError::unknown_variant(
+                        other,
+                        &["fixed", "range", "floor"],
+                    )),
+                }
+            }
+        }
+
+        deserializer.deserialize_str(KindVisitor)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TipFloorLevel {
+    Percentile25,
+    Percentile50,
+    Percentile75,
+    Percentile95,
+    Percentile99,
+    Ema50,
+}
+
+impl TipFloorLevel {
+    pub fn field_name(self) -> &'static str {
+        match self {
+            TipFloorLevel::Percentile25 => "landed_tips_25th_percentile",
+            TipFloorLevel::Percentile50 => "landed_tips_50th_percentile",
+            TipFloorLevel::Percentile75 => "landed_tips_75th_percentile",
+            TipFloorLevel::Percentile95 => "landed_tips_95th_percentile",
+            TipFloorLevel::Percentile99 => "landed_tips_99th_percentile",
+            TipFloorLevel::Ema50 => "ema_landed_tips_50th_percentile",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TipFloorLevel::Percentile25 => "25th",
+            TipFloorLevel::Percentile50 => "50th",
+            TipFloorLevel::Percentile75 => "75th",
+            TipFloorLevel::Percentile95 => "95th",
+            TipFloorLevel::Percentile99 => "99th",
+            TipFloorLevel::Ema50 => "ema50",
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for TipFloorLevel {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct LevelVisitor;
+
+        impl<'de> Visitor<'de> for LevelVisitor {
+            type Value = TipFloorLevel;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("one of: 25th, 50th, 75th, 95th, 99th, ema50")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                match value.trim().to_ascii_lowercase().as_str() {
+                    "25th" => Ok(TipFloorLevel::Percentile25),
+                    "50th" => Ok(TipFloorLevel::Percentile50),
+                    "75th" => Ok(TipFloorLevel::Percentile75),
+                    "95th" => Ok(TipFloorLevel::Percentile95),
+                    "99th" => Ok(TipFloorLevel::Percentile99),
+                    "ema50" => Ok(TipFloorLevel::Ema50),
+                    _other => Err(DeError::invalid_value(Unexpected::Str(value), &self)),
+                }
+            }
+        }
+
+        deserializer.deserialize_str(LevelVisitor)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -685,4 +795,40 @@ pub struct LanderJitoUuidConfig {
 pub struct LanderEndpointConfig {
     #[serde(default)]
     pub endpoints: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tip_strategies_deserialize_from_string() {
+        let yaml = r#"
+endpoints: []
+tip_strategies: fixed
+"#;
+        let cfg: LanderJitoConfig = serde_yaml::from_str(yaml).expect("parse config");
+        assert_eq!(cfg.tip_strategies, vec![TipStrategyKind::Fixed]);
+    }
+
+    #[test]
+    fn tip_strategies_deserialize_from_list() {
+        let yaml = r#"
+endpoints: []
+tip_strategies:
+  - range
+  - floor
+"#;
+        let cfg: LanderJitoConfig = serde_yaml::from_str(yaml).expect("parse config");
+        assert_eq!(
+            cfg.tip_strategies,
+            vec![TipStrategyKind::Range, TipStrategyKind::Floor]
+        );
+    }
+
+    #[test]
+    fn tip_floor_level_deserialize() {
+        let level: TipFloorLevel = serde_yaml::from_str("\"95th\"").expect("parse level");
+        assert_eq!(level, TipFloorLevel::Percentile95);
+    }
 }

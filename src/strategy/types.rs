@@ -6,6 +6,7 @@ use anyhow::{Result, anyhow};
 use solana_sdk::pubkey::Pubkey;
 
 use crate::dexes::humidifi::HumidiFiMarketMeta;
+use crate::dexes::obric_v2::ObricV2MarketMeta;
 use crate::dexes::solfi_v2::SolfiV2MarketMeta;
 use crate::dexes::tessera_v::TesseraVMarketMeta;
 use crate::dexes::zerofi::ZeroFiMarketMeta;
@@ -62,6 +63,7 @@ pub enum BlindDex {
     HumidiFi,
     TesseraV,
     ZeroFi,
+    ObricV2,
 }
 
 impl BlindDex {
@@ -71,6 +73,7 @@ impl BlindDex {
             Self::HumidiFi => "HumidiFi",
             Self::TesseraV => "TesseraV",
             Self::ZeroFi => "ZeroFi",
+            Self::ObricV2 => "ObricV2",
         }
     }
 }
@@ -90,6 +93,7 @@ impl FromStr for BlindDex {
             "HumidiFi" => Ok(Self::HumidiFi),
             "TesseraV" => Ok(Self::TesseraV),
             "ZeroFi" => Ok(Self::ZeroFi),
+            "ObricV2" => Ok(Self::ObricV2),
             other => anyhow::bail!("不支持的盲发 DEX: {other}"),
         }
     }
@@ -131,4 +135,5 @@ pub enum BlindMarketMeta {
     SolFiV2(Arc<SolfiV2MarketMeta>),
     TesseraV(Arc<TesseraVMarketMeta>),
     ZeroFi(Arc<ZeroFiMarketMeta>),
+    ObricV2(Arc<ObricV2MarketMeta>),
 }

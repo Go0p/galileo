@@ -1,0 +1,15 @@
+Interact With
+Obric V2 - obriQD1zbpyLz95G5n7nJe6a4DPjpFwa5XYPoNm113y
+Input Accounts
+#1 - Trading Pair: Obric (USDC-USDT) Market BWBHrYqfcjAh5dSiRwzPnY4656cApXVXmkeDmAfwBKQG Writable
+#2 - Mint X: GZsNmWKbqhMYtdSkkvMdEyQF9k5mLmP7tTKYWZjcHVPE
+#3 - Mint Y: 6YawcNeZ74tRyCv4UfGydYMr7eho7vbUR6ScVffxKAb3
+#4 - Reserve X: Obric (USDC-USDT) Pool 1 C3tPQ8TRcHybnPpR8KMASUVD3PukQRRHEsLwxorJMhgm Writable
+#5 - Reserve Y: Obric (USDC-USDT) Pool 2 AAamGhyPfpQJWfZHTq944NM1cFvoVLDrQxt7HGjeRQUS Writable
+#6 - User Token Account X: Dxbkq1g2wPv3mRiv9uBgoAYehB73NUZA7VGfRNDiXUbA Writable
+#7 - User Token Account Y: 5Ziw1yL6jgcwnVxsJmFQivxjvB3NW8gcEEFCNAoo2Esv Writable
+#8 - Protocol Fee: J4HJYz4p7TRP96WVFky3vh7XryxoFehHjoRySUTeSeXw Writable
+#9 - X Price Feed: J4HJYz4p7TRP96WVFky3vh7XryxoFehHjoRySUTeSeXw Writable
+#10 - Y Price Feed: J4HJYz4p7TRP96WVFky3vh7XryxoFehHjoRySUTeSeXw Writable
+#11 - User: AE86nntkQdBhs9zHv4xCkcMsg2eGwjdiSuuGqXqBMuwJ Writable Signer 
+#12 - Token Program: Token Program Program

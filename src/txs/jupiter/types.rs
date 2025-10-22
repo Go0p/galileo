@@ -152,6 +152,7 @@ pub struct EncodedSwap {
     data: Vec<u8>,
 }
 
+#[allow(dead_code)]
 impl EncodedSwap {
     pub fn new(discriminant: u8, data: Vec<u8>) -> Self {
         Self { discriminant, data }
