@@ -41,6 +41,7 @@ fn sample_swap_response() -> crate::api::SwapInstructionsResponse {
         cleanup_instruction: Some(make_instruction(4)),
         other_instructions: vec![make_instruction(5)],
         address_lookup_table_addresses: vec![],
+        resolved_lookup_tables: Vec::new(),
         prioritization_fee_lamports: 0,
         compute_unit_limit: 0,
         prioritization_type: None,

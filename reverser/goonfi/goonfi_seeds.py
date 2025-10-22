@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from enum import Enum
-from typing import Iterable, Sequence, Tuple, Union
+from typing import Callable, Iterable, Sequence, Tuple, Union
 
 from goonfi_utils import b58decode, find_program_address
 
@@ -327,6 +327,113 @@ class RouterLiteralBlock:
     market_literal: bytes
     vault_literal: bytes
     program_ids: tuple[bytes, ...]
+
+
+@dataclass(frozen=True)
+class FormatFragment:
+    """
+    复刻 `function_7764` 处理的片段布局。
+
+    汇编行为可概括为：
+      * 若首字节为 0x80，则通过上下文指针调用“静态查表”函数；
+        0x04..0x07 处的 `u32` 被视作 symbol id。
+      * 否则视为内联数据：0x0A/0x0B 分别给出截取范围的起始/结束，
+        将 `[base + start, base + end)` 拷贝到目标缓冲。
+    """
+
+    raw: bytes
+
+    @property
+    def is_static(self) -> bool:
+        return bool(self.raw and self.raw[0] == 0x80)
+
+    @property
+    def inline_bounds(self) -> tuple[int, int]:
+        if len(self.raw) < 0x0C:
+            raise ValueError("fragment 长度不足 0x0c 字节")
+        start = self.raw[0x0A]
+        end = self.raw[0x0B]
+        if end < start:
+            raise ValueError(f"fragment 终止偏移早于起点: start={start}, end={end}")
+        return start, end
+
+    @property
+    def static_symbol(self) -> int:
+        if len(self.raw) < 0x08:
+            raise ValueError("fragment 用作静态 symbol 时至少需要 8 字节")
+        return int.from_bytes(self.raw[0x04:0x08], "little")
+
+    def slice_inline_payload(self) -> bytes:
+        start, end = self.inline_bounds
+        if end > len(self.raw):
+            raise ValueError(
+                f"fragment 内联数据越界: end={end}, len={len(self.raw)}"
+            )
+        return self.raw[start:end]
+
+
+@dataclass
+class FormatDispatchTable:
+    """
+    对标 `function_7764` 的上下文指针（`r2` 指向的结构）。
+
+    - `resolve_static(symbol_id)` 模拟 `[ctx+0x28]->fn(ctx[..], symbol_id)`。
+    - `emit_chunk(bytes_chunk)` 对应 `[ctx+0x20]->sink`。
+    """
+
+    resolve_static: Callable[[int], bytes]
+    emit_chunk: Callable[[bytes], None]
+
+
+def replay_fragment(fragment: FormatFragment, table: FormatDispatchTable) -> None:
+    """
+    Python 版本的 `function_7764`：根据 fragment 的布局执行复制 / 查表。
+
+    Parameters
+    ----------
+    fragment:
+        `FormatFragment` 结构，来自汇编栈上的 `Vec<fmt::rt::Piece>`。
+    table:
+        汇编里通过 `[r2+0x20]`、`[r2+0x28]` 访问的调度表，抽象成两个回调。
+    """
+
+    if fragment.is_static:
+        symbol = fragment.static_symbol
+        table.emit_chunk(table.resolve_static(symbol))
+        return
+
+    payload = fragment.slice_inline_payload()
+    if not payload:
+        return
+    table.emit_chunk(payload)
+
+
+def validate_utf8_slice(data: bytes, start: int, end: int) -> None:
+    """
+    复刻 `function_9030`/`9031` 在 Rust 标准库中对 `&str[start..end]` 的边界校验。
+
+    - `start`、`end` 需满足 `0 <= start <= end <= len(data)`。
+    - `start` 与 `end` 必须位于 UTF-8 码点边界（高两位不为 `10`）。
+    违反任一条件时抛出 `ValueError`，模拟汇编里走向 panic 分支。
+    """
+
+    length = len(data)
+    if start < 0 or end < 0:
+        raise ValueError("slice index 不得为负数")
+    if start > end or end > length:
+        raise ValueError(
+            f"slice index 越界: start={start}, end={end}, len={length}"
+        )
+
+    def is_char_boundary(idx: int) -> bool:
+        if idx == 0 or idx == length:
+            return True
+        return (data[idx] & 0xC0) != 0x80
+
+    if not is_char_boundary(start) or not is_char_boundary(end):
+        raise ValueError(
+            f"slice index 不在 UTF-8 边界: start={start}, end={end}"
+        )
 
 
 def _load_router_literal_block() -> RouterLiteralBlock:

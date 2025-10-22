@@ -77,9 +77,12 @@ impl TransactionBuilder {
         override_sequence: Option<Vec<Instruction>>,
         tip_lamports: u64,
     ) -> EngineResult<PreparedTransaction> {
-        let lookup_accounts = self
-            .load_lookup_tables(&instructions.address_lookup_table_addresses)
-            .await?;
+        let lookup_accounts = if instructions.resolved_lookup_tables.is_empty() {
+            self.load_lookup_tables(&instructions.address_lookup_table_addresses)
+                .await?
+        } else {
+            instructions.resolved_lookup_tables.clone()
+        };
 
         let blockhash = self
             .rpc

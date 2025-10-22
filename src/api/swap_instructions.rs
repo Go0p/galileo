@@ -6,6 +6,7 @@ use serde_json::Value;
 use solana_account_decoder::UiAccount;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
+    message::AddressLookupTableAccount,
     pubkey::Pubkey,
 };
 
@@ -120,6 +121,7 @@ pub struct SwapInstructionsResponse {
     /// Now, it should only have the Jito tip instruction.
     pub other_instructions: Vec<Instruction>,
     pub address_lookup_table_addresses: Vec<Pubkey>,
+    pub resolved_lookup_tables: Vec<AddressLookupTableAccount>,
     pub prioritization_fee_lamports: u64,
     pub compute_unit_limit: u32,
     pub prioritization_type: Option<PrioritizationType>,
@@ -218,6 +220,7 @@ impl SwapInstructionsResponse {
                 .into_iter()
                 .map(|p| p.0)
                 .collect(),
+            resolved_lookup_tables: Vec::new(),
             prioritization_fee_lamports: value.prioritization_fee_lamports,
             compute_unit_limit: value.compute_unit_limit,
             prioritization_type: value.prioritization_type,

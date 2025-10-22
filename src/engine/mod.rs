@@ -274,6 +274,12 @@ where
                 price.saturating_mul(BLIND_COMPUTE_UNIT_LIMIT as u64) / 1_000_000;
         }
 
+        let lookup_table_accounts = order.lookup_tables.clone();
+        let lookup_table_addresses: Vec<Pubkey> = lookup_table_accounts
+            .iter()
+            .map(|table| table.key)
+            .collect();
+
         let response = SwapInstructionsResponse {
             raw: Value::Null,
             token_ledger_instruction: None,
@@ -282,7 +288,8 @@ where
             swap_instruction: instruction,
             cleanup_instruction: None,
             other_instructions: Vec::new(),
-            address_lookup_table_addresses: Vec::new(),
+            address_lookup_table_addresses: lookup_table_addresses,
+            resolved_lookup_tables: lookup_table_accounts,
             prioritization_fee_lamports,
             compute_unit_limit: BLIND_COMPUTE_UNIT_LIMIT,
             prioritization_type: None,

@@ -2,8 +2,9 @@ use std::str::FromStr;
 
 use anyhow::{Result, bail};
 use rand::seq::SliceRandom;
+use solana_address_lookup_table_interface::state::AddressLookupTable;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::{account::Account, pubkey::Pubkey};
+use solana_sdk::{account::Account, message::AddressLookupTableAccount, pubkey::Pubkey};
 
 use crate::config;
 use crate::dexes::{
@@ -27,6 +28,9 @@ pub struct PureBlindRouteBuilder<'a> {
     config: &'a config::BlindStrategyConfig,
     rpc_client: &'a RpcClient,
 }
+
+const LOOKUP_TABLE_PROGRAM_ID: Pubkey =
+    solana_sdk::pubkey!("AddressLookupTab1e1111111111111111111111111");
 
 impl<'a> PureBlindRouteBuilder<'a> {
     pub fn new(config: &'a config::BlindStrategyConfig, rpc_client: &'a RpcClient) -> Self {
@@ -94,6 +98,8 @@ impl<'a> PureBlindRouteBuilder<'a> {
             resolved.push(meta);
         }
 
+        let lookup_tables = self.resolve_lookup_tables(route, route_label).await?;
+
         let forward = Self::build_closed_loop(&resolved).ok_or_else(|| {
             EngineError::InvalidConfig(format!(
                 "pure_routes `{route_label}` 无法推导闭环资产流，请检查腿顺序与市场配置"
@@ -101,7 +107,11 @@ impl<'a> PureBlindRouteBuilder<'a> {
         })?;
         let reverse = Self::build_reverse_steps(&forward);
 
-        Ok(BlindRoutePlan { forward, reverse })
+        Ok(BlindRoutePlan {
+            forward,
+            reverse,
+            lookup_tables,
+        })
     }
 
     fn build_closed_loop(resolved: &[ResolvedMarketMeta]) -> Option<Vec<BlindStep>> {
@@ -350,6 +360,72 @@ impl<'a> PureBlindRouteBuilder<'a> {
             account.owner
         )))
     }
+
+    async fn resolve_lookup_tables(
+        &self,
+        route: &config::PureBlindRouteConfig,
+        route_label: &str,
+    ) -> EngineResult<Vec<AddressLookupTableAccount>> {
+        if route.lookup_tables.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut pubkeys = Vec::with_capacity(route.lookup_tables.len());
+        for (idx, value) in route.lookup_tables.iter().enumerate() {
+            let parsed = Pubkey::from_str(value.trim()).map_err(|err| {
+                EngineError::InvalidConfig(format!(
+                    "pure_routes `{route_label}` 第 {idx} 个 lookup table `{}` 解析失败: {err}",
+                    value
+                ))
+            })?;
+            pubkeys.push(parsed);
+        }
+
+        let accounts = self
+            .rpc_client
+            .get_multiple_accounts(&pubkeys)
+            .await
+            .map_err(EngineError::Rpc)?;
+
+        let mut resolved = Vec::with_capacity(pubkeys.len());
+        for (idx, maybe_account) in accounts.into_iter().enumerate() {
+            let address = pubkeys[idx];
+            let account = maybe_account.ok_or_else(|| {
+                EngineError::InvalidConfig(format!(
+                    "pure_routes `{route_label}` lookup table `{}` 不存在",
+                    route.lookup_tables[idx]
+                ))
+            })?;
+
+            if account.owner != LOOKUP_TABLE_PROGRAM_ID {
+                return Err(EngineError::InvalidConfig(format!(
+                    "pure_routes `{route_label}` lookup table `{}` 的程序并非 ALT",
+                    route.lookup_tables[idx]
+                )));
+            }
+
+            let table = AddressLookupTable::deserialize(&account.data).map_err(|err| {
+                EngineError::InvalidConfig(format!(
+                    "pure_routes `{route_label}` lookup table `{}` 解析失败: {err}",
+                    route.lookup_tables[idx]
+                ))
+            })?;
+
+            if table.meta.deactivation_slot != u64::MAX {
+                return Err(EngineError::InvalidConfig(format!(
+                    "pure_routes `{route_label}` lookup table `{}` 已失效",
+                    route.lookup_tables[idx]
+                )));
+            }
+
+            resolved.push(AddressLookupTableAccount {
+                key: address,
+                addresses: table.addresses.into_owned(),
+            });
+        }
+
+        Ok(resolved)
+    }
 }
 
 #[derive(Clone)]
@@ -398,10 +474,12 @@ impl Strategy for PureBlindStrategy {
                         batch.push(BlindOrder {
                             amount_in: amount,
                             steps: route.forward.clone(),
+                            lookup_tables: route.lookup_tables.clone(),
                         });
                         batch.push(BlindOrder {
                             amount_in: amount,
                             steps: route.reverse.clone(),
+                            lookup_tables: route.lookup_tables.clone(),
                         });
                     }
                 }

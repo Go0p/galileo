@@ -3,6 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
+use solana_sdk::message::AddressLookupTableAccount;
 use solana_sdk::pubkey::Pubkey;
 
 use crate::dexes::clmm::RaydiumClmmMarketMeta;
@@ -151,12 +152,14 @@ pub struct BlindStep {
 pub struct BlindOrder {
     pub amount_in: u64,
     pub steps: Vec<BlindStep>,
+    pub lookup_tables: Vec<AddressLookupTableAccount>,
 }
 
 #[derive(Debug, Clone)]
 pub struct BlindRoutePlan {
     pub forward: Vec<BlindStep>,
     pub reverse: Vec<BlindStep>,
+    pub lookup_tables: Vec<AddressLookupTableAccount>,
 }
 
 #[derive(Debug, Clone)]

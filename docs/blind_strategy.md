@@ -7,14 +7,17 @@
 - 新需求强调**不再调用 Jupiter 二进制或 API**，而是使用本地逻辑生成交易。唯一需要复用的是 Jupiter `route_v2` 指令格式（程序 id、前置账户固定），我们负责拼装 `data` 与 `remaining_accounts`。
 - 配置来源仍为 `blind_strategy` 节点。`trade_range_count` 为 `N` 时，需要在一个循环周期内发送 `2N` 笔交易（正向 + 反向各 `N` 笔），并允许随机化顺序。
 - 新增配置开关 `blind_strategy.pure_mode`：`false` 保持原有 quote → swap 流程，`true` 则启用纯盲发（不启动 Jupiter、本地组装指令）。
-- 纯盲发需要通过 `blind_strategy.pure_routes` 声明闭环路线。每条路线以 `legs` 列表按顺序写出市场（当前支持 SolFiV2、TesseraV、HumidiFi、ZeroFi、ObricV2，可混搭），系统会自动解析资产流向并生成正/反向闭环。例如：
+- 纯盲发需要通过 `blind_strategy.pure_routes` 声明闭环路线。每条路线以 `legs` 列表按顺序写出市场（当前支持 SolFiV2、TesseraV、HumidiFi、ZeroFi、ObricV2，可混搭），系统会自动解析资产流向并生成正/反向闭环。若路由需要引用 Address Lookup Table，可在同级声明 `lookup_tables`：
   ```yaml
   pure_routes:
     - legs:
         - market: "<HumidiFi 市场>"
         - market: "<Whirlpool 市场>"
         - market: "<ZeroFi 市场>"
+      lookup_tables:
+        - "<Address Lookup Table Pubkey>"
   ```
+  配置中的 lookup table 会在预检查阶段批量解析、校验激活状态，并在后续交易执行时直接随 `swap_instruction` 一起下发。
 - 守则强调性能与可观测性：热路径需加 `hotpath::measure`；所有新流程要补 metrics / tracing。
 - **无需考虑向后兼容**：当前仓库尚未上线，重构时可直接移除旧有 quote → swap 逻辑，避免历史包袱。
 - 关联资料：  

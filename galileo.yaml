@@ -182,6 +182,7 @@ blind_strategy:
         - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
   pure_routes:
     - name: "solfi_cycle"
+      # https://solscan.io/tx/TBAnSKbNuNdu2kCPMcLhM8BYh8awZZ5Gt8DTw4k7cFV9DP9YUY86fxc7w9mQ3R5T1L1yeXTh2a4vTkf3izizYFa
       legs:
         # HumidiFi
         # - market: "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW"
@@ -194,6 +195,11 @@ blind_strategy:
         - market: "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW"
         - market: "HktfL7iwGKT5QHjywQkcDnZXScoh811k7akrMZJkCcEF"
         - market: "BqkNuLTbUZLifWuUtfF5CkyRegTQhYYgUnNeUaxoWC8S"
+      lookup_tables:
+        - 3RRynG7FN6FkVaAyZPHwZSAGYUWzxb1EmtM5CfrShhsw
+        - "AW3raiF9cvqu8d5JgCXmCi8kh16Aba86gWVi9pbNYNNc"
+        - "5CMHLs9MphE5Nhox4hrqF72e8utWmu8ZH8UtVegT6WL2"
+        - "FqeeFKhvn4d19iJA7G4qU9tcfjHNUkEo2rKsht5Btztm"
 
 
 # 后跑策略

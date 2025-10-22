@@ -275,6 +275,8 @@ pub struct PureBlindRouteConfig {
     pub name: Option<String>,
     #[serde(default)]
     pub legs: Vec<PureBlindLegConfig>,
+    #[serde(default)]
+    pub lookup_tables: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
