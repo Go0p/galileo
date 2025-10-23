@@ -106,15 +106,31 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             }
         }
         crate::config::EngineBackend::Dflow => {
-            let api_base = config
+            let quote_base = config
                 .galileo
                 .engine
                 .dflow
-                .api_base
+                .api_quote_base
                 .clone()
-                .ok_or_else(|| anyhow!("未配置 DFlow API base_url"))?;
+                .ok_or_else(|| anyhow!("未配置 DFlow 报价 API base_url"))?;
+            let swap_base = config
+                .galileo
+                .engine
+                .dflow
+                .api_swap_base
+                .clone()
+                .unwrap_or_else(|| quote_base.clone());
             let mut api_http_builder = reqwest::Client::builder();
-            if let Some(proxy_url) = config.galileo.engine.dflow.api_proxy.clone() {
+            let dflow_proxy = config
+                .galileo
+                .engine
+                .dflow
+                .api_proxy
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string());
+            if let Some(proxy_url) = dflow_proxy {
                 let proxy = reqwest::Proxy::all(&proxy_url)
                     .map_err(|err| anyhow!("DFlow API 代理地址无效 {proxy_url}: {err}"))?;
                 info!(
@@ -135,7 +151,8 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let api_http_client = api_http_builder.build()?;
             let api_client = DflowApiClient::new(
                 api_http_client,
-                api_base,
+                quote_base,
+                swap_base,
                 &config.galileo.bot,
                 &config.galileo.global.logging,
             );

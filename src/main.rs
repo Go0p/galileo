@@ -21,7 +21,7 @@ mod txs;
 
 use crate::cli::args::Cli;
 use crate::cli::context::{init_tracing, load_configuration};
-use crate::config::{AppConfig, CpuAffinityConfig};
+use crate::config::{AppConfig, CpuAffinityConfig, loader::ConfigError as LoaderConfigError};
 
 #[cfg_attr(feature = "hotpath", hotpath::measure)]
 async fn async_entry(cli: Cli, config: AppConfig) -> Result<()> {
@@ -126,7 +126,17 @@ impl AffinityPlan {
 
 fn bootstrap() -> Result<(Cli, AppConfig, RuntimeOptions)> {
     let cli = Cli::parse();
-    let config = load_configuration(cli.config.clone())?;
+    let config = match load_configuration(cli.config.clone()) {
+        Ok(config) => config,
+        Err(LoaderConfigError::WalletEncrypted { encrypted }) => {
+            println!(
+                "🔐 已将私钥加密写入 `{}`，配置项已清空。请确认已提交或备份后，再次启动 Galileo。",
+                encrypted.display()
+            );
+            std::process::exit(0);
+        }
+        Err(err) => return Err(err.into()),
+    };
     init_tracing(&config.galileo.global.logging)?;
 
     let runtime_opts = prepare_runtime_options(&config.galileo.bot.cpu_affinity)?;

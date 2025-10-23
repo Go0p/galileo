@@ -53,10 +53,13 @@ metrics = "0.24.2"
 metrics-exporter-prometheus = { version = "0.17.2", default-features = false, features = ["http-listener"] }
 url = "2.5.7"
 aes-gcm = { version = "0.10.3", features = ["aes"] }
+argon2 = "0.5.3"
+console = "0.15.11"
 sha2 = "0.10.9"
 core_affinity = "0.8.3"
 bytemuck = { version = "1.15.0", features = ["derive"] }
 uuid = { version = "1.11.0", features = ["v4"] }
+zeroize = "1.8.1"
 
 yellowstone-vixen-orca-whirlpool-parser = "0.5.0"
 yellowstone-vixen-raydium-clmm-parser = "0.5.0"

@@ -1,10 +1,10 @@
 use std::convert::TryFrom;
 
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::aggregator::QuoteResponseVariant;
 use crate::api::dflow::{
-    DflowApiClient, QuoteRequest as DflowQuoteRequest, SlippageBps, SlippagePreset,
+    DflowApiClient, DflowError, QuoteRequest as DflowQuoteRequest, SlippageBps, SlippagePreset,
 };
 use crate::api::jupiter::{JupiterApiClient, QuoteRequest};
 use crate::config::{DflowQuoteConfig, JupiterQuoteConfig};
@@ -20,6 +20,7 @@ pub struct QuoteConfig {
     pub restrict_intermediate_tokens: bool,
     pub quote_max_accounts: Option<u32>,
     pub dex_whitelist: Vec<String>,
+    pub dex_blacklist: Vec<String>,
 }
 
 impl QuoteConfig {}
@@ -60,7 +61,10 @@ impl QuoteExecutor {
         task: &QuoteTask,
         config: &QuoteConfig,
     ) -> EngineResult<Option<DoubleQuote>> {
-        let forward = self.quote_once(&task.pair, task.amount, config).await?;
+        let forward = match self.quote_once(&task.pair, task.amount, config).await? {
+            Some(value) => value,
+            None => return Ok(None),
+        };
 
         let first_out = forward.out_amount() as u128;
         if first_out == 0 {
@@ -87,9 +91,13 @@ impl QuoteExecutor {
         };
 
         let reverse_pair = task.pair.reversed();
-        let reverse = self
+        let reverse = match self
             .quote_once(&reverse_pair, second_amount, config)
-            .await?;
+            .await?
+        {
+            Some(value) => value,
+            None => return Ok(None),
+        };
 
         if forward.kind() != reverse.kind() {
             debug!(
@@ -110,7 +118,7 @@ impl QuoteExecutor {
         pair: &TradePair,
         amount: u64,
         config: &QuoteConfig,
-    ) -> EngineResult<QuoteResponseVariant> {
+    ) -> EngineResult<Option<QuoteResponseVariant>> {
         match &self.backend {
             QuoteBackend::Jupiter { client, defaults } => {
                 let mut request = QuoteRequest::new(
@@ -129,13 +137,14 @@ impl QuoteExecutor {
                     let dexes = config.dex_whitelist.join(",");
                     request.dexes = Some(dexes);
                 }
+                if !config.dex_blacklist.is_empty() {
+                    let excluded = config.dex_blacklist.join(",");
+                    request.excluded_dexes = Some(excluded);
+                }
 
                 apply_jupiter_defaults(defaults, &mut request);
-                client
-                    .quote(&request)
-                    .await
-                    .map(QuoteResponseVariant::Jupiter)
-                    .map_err(EngineError::from)
+                let response = client.quote(&request).await?;
+                Ok(Some(QuoteResponseVariant::Jupiter(response)))
             }
             QuoteBackend::Dflow { client, defaults } => {
                 let mut request =
@@ -146,17 +155,32 @@ impl QuoteExecutor {
                 if !config.dex_whitelist.is_empty() {
                     request.dexes = Some(config.dex_whitelist.join(","));
                 }
+                if !config.dex_blacklist.is_empty() {
+                    request.exclude_dexes = Some(config.dex_blacklist.join(","));
+                }
+                if let Some(max_route_length) = defaults.max_route_length {
+                    request.max_route_length = Some(max_route_length);
+                }
                 if defaults.use_auto_slippage {
                     request.slippage_bps = Some(SlippageBps::Preset(SlippagePreset::Auto));
                 } else {
                     request.slippage_bps = Some(SlippageBps::Fixed(config.slippage_bps));
                 }
 
-                client
-                    .quote(&request)
-                    .await
-                    .map(QuoteResponseVariant::Dflow)
-                    .map_err(EngineError::from)
+                match client.quote(&request).await {
+                    Ok(response) => Ok(Some(QuoteResponseVariant::Dflow(response))),
+                    Err(DflowError::RateLimited { status, body, .. }) => {
+                        warn!(
+                            target: "engine::quote",
+                            status = status.as_u16(),
+                            input_mint = %pair.input_mint,
+                            output_mint = %pair.output_mint,
+                            "DFlow 报价命中限流，跳过本轮: {body}"
+                        );
+                        Ok(None)
+                    }
+                    Err(err) => Err(EngineError::from(err)),
+                }
             }
         }
     }

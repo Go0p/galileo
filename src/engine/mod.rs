@@ -33,6 +33,7 @@ use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::pubkey::Pubkey;
 use tracing::{debug, info, trace, warn};
 
+use crate::api::dflow::DflowError;
 use crate::api::jupiter::SwapInstructionsResponse;
 use crate::dexes::clmm::RaydiumClmmAdapter;
 use crate::dexes::dlmm::MeteoraDlmmAdapter;
@@ -59,7 +60,7 @@ use crate::txs::jupiter::types::{JUPITER_V6_PROGRAM_ID, RoutePlanStepV2};
 
 const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
     solana_sdk::pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
-const BLIND_COMPUTE_UNIT_LIMIT: u32 = 230_000;
+pub const BLIND_COMPUTE_UNIT_LIMIT: u32 = 230_000;
 const COMPUTE_BUDGET_PROGRAM_ID: Pubkey =
     solana_sdk::pubkey!("ComputeBudget111111111111111111111111111111");
 
@@ -635,10 +636,32 @@ where
             "检测到套利机会"
         );
 
-        let instructions = self
-            .swap_fetcher
-            .fetch(&opportunity, &self.identity)
-            .await?;
+        let instructions = match self.swap_fetcher.fetch(&opportunity, &self.identity).await {
+            Ok(value) => value,
+            Err(err) => {
+                if let EngineError::Dflow(DflowError::ApiStatus { status, body, .. }) = &err {
+                    if status.as_u16() == 500 && body.contains("failed_to_compute_swap") {
+                        warn!(
+                            target: "engine::swap",
+                            status = status.as_u16(),
+                            "DFlow swap 指令生成失败，跳过当前机会。Error: {body}"
+                        );
+                        return Ok(());
+                    }
+                }
+                if let EngineError::Dflow(DflowError::RateLimited { status, body, .. }) = &err {
+                    warn!(
+                        target: "engine::swap",
+                        status = status.as_u16(),
+                        input_mint = %opportunity.pair.input_mint,
+                        output_mint = %opportunity.pair.output_mint,
+                        "DFlow 指令命中限流，放弃当前机会: {body}"
+                    );
+                    return Ok(());
+                }
+                return Err(err);
+            }
+        };
         let compute_unit_limit = instructions.compute_unit_limit();
         let prioritization_fee = instructions
             .prioritization_fee_lamports()

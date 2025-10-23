@@ -90,6 +90,8 @@ pub struct EngineConfig {
     pub jupiter: JupiterEngineConfig,
     #[serde(default)]
     pub dflow: DflowEngineConfig,
+    #[serde(default)]
+    pub titan: TitanEngineConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -142,7 +144,9 @@ pub struct DflowEngineConfig {
     #[serde(default)]
     pub enable: bool,
     #[serde(default)]
-    pub api_base: Option<String>,
+    pub api_quote_base: Option<String>,
+    #[serde(default)]
+    pub api_swap_base: Option<String>,
     #[serde(default)]
     pub api_proxy: Option<String>,
     #[serde(default)]
@@ -152,11 +156,33 @@ pub struct DflowEngineConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct TitanEngineConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub ws_url: Option<String>,
+    #[serde(default)]
+    pub default_pubkey: Option<String>,
+    #[serde(default)]
+    pub jwt: Option<String>,
+    #[serde(default)]
+    pub providers: Vec<String>,
+    #[serde(default)]
+    pub reverse_slippage_bps: u16,
+    #[serde(default)]
+    pub interval_ms: Option<u64>,
+    #[serde(default)]
+    pub num_quotes: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct DflowQuoteConfig {
     #[serde(default = "super::default_true")]
     pub use_auto_slippage: bool,
     #[serde(default)]
     pub only_direct_routes: bool,
+    #[serde(default)]
+    pub max_route_length: Option<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -287,6 +313,8 @@ pub struct BlindStrategyConfig {
     #[serde(default)]
     pub enable_dexs: Vec<String>,
     #[serde(default)]
+    pub exclude_dexes: Vec<String>,
+    #[serde(default)]
     pub enable_landers: Vec<String>,
     #[serde(default)]
     pub base_mints: Vec<BlindBaseMintConfig>,
@@ -305,6 +333,7 @@ pub struct BlindBaseMintConfig {
     #[serde(default)]
     pub trade_range_strategy: Option<String>,
     #[serde(default)]
+    #[serde(alias = "min_quote_profit_lamports")]
     pub min_quote_profit: Option<u64>,
     #[serde(default)]
     pub process_delay: Option<u64>,

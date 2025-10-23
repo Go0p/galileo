@@ -84,6 +84,7 @@ def request_quote(
         "outputMint": output_mint,
         "amount": amount,
         "slippageBps": slippage_bps,
+        "dexes":"HumidiFi,SolFi,SolFi V2,Tessera V,ZeroFi,Whirlpools,Obric V2,Aquifer,Lifinity V2,DFlow JIT Router"
     }
     query = urlencode(params)
     path_with_query = f"/quote?{query}"

@@ -15,6 +15,7 @@ use reqwest::{
 };
 use serde_json::Value;
 use thiserror::Error;
+use tokio::time::sleep;
 use tracing::{debug, info, trace, warn};
 use url::form_urlencoded;
 
@@ -50,6 +51,12 @@ pub enum DflowError {
         status: StatusCode,
         body: String,
     },
+    #[error("rate limited when calling {endpoint}: status {status}, body: {body}")]
+    RateLimited {
+        endpoint: String,
+        status: StatusCode,
+        body: String,
+    },
     #[error("unexpected response schema: {0}")]
     Schema(String),
     #[error("failed to generate x-client headers: {0}")]
@@ -58,7 +65,8 @@ pub enum DflowError {
 
 #[derive(Clone, Debug)]
 pub struct DflowApiClient {
-    base_url: String,
+    quote_base_url: String,
+    swap_base_url: String,
     client: reqwest::Client,
     quote_timeout: Duration,
     swap_timeout: Duration,
@@ -68,9 +76,13 @@ pub struct DflowApiClient {
 }
 
 impl DflowApiClient {
+    const HTTP_RETRY_DELAY: Duration = Duration::from_secs(8);
+    const HTTP_MAX_ATTEMPTS: usize = 10;
+
     pub fn new(
         client: reqwest::Client,
-        base_url: String,
+        quote_base_url: String,
+        swap_base_url: String,
         bot_config: &BotConfig,
         logging: &LoggingConfig,
     ) -> Self {
@@ -78,7 +90,8 @@ impl DflowApiClient {
         let swap_ms = bot_config.swap_ms.unwrap_or(bot_config.quote_ms);
         let swap_timeout = Duration::from_millis(swap_ms);
         Self {
-            base_url,
+            quote_base_url,
+            swap_base_url,
             client,
             quote_timeout,
             swap_timeout,
@@ -88,17 +101,25 @@ impl DflowApiClient {
         }
     }
 
-    fn endpoint(&self, path: &str) -> String {
+    fn endpoint(base: &str, path: &str) -> String {
         format!(
             "{}/{}",
-            self.base_url.trim_end_matches('/'),
+            base.trim_end_matches('/'),
             path.trim_start_matches('/')
         )
     }
 
+    fn quote_endpoint(&self, path: &str) -> String {
+        Self::endpoint(&self.quote_base_url, path)
+    }
+
+    fn swap_endpoint(&self, path: &str) -> String {
+        Self::endpoint(&self.swap_base_url, path)
+    }
+
     pub async fn quote(&self, request: &QuoteRequest) -> Result<QuoteResponse, DflowError> {
         let path = "/quote";
-        let url = self.endpoint(path);
+        let url = self.quote_endpoint(path);
         let metadata = LatencyMetadata::new(
             [
                 ("stage".to_string(), "quote".to_string()),
@@ -124,12 +145,6 @@ impl DflowApiClient {
             "开始请求 DFlow 报价"
         );
 
-        let http_request = self
-            .client
-            .get(&url)
-            .timeout(self.quote_timeout)
-            .query(request);
-
         let serialized_internal = serde_urlencoded::to_string(request)
             .map_err(|err| DflowError::Schema(format!("序列化报价参数失败: {err}")))?;
         let query_pairs: Vec<(String, String)> =
@@ -146,46 +161,97 @@ impl DflowApiClient {
             path_with_query.push('?');
             path_with_query.push_str(query);
         }
-        let mut header_map = build_header_map(&path_with_query, "")
-            .map_err(|err| DflowError::Header(err.to_string()))?;
-        if let Some(host) = host_header_from_url(&final_url) {
-            let header_value = HeaderValue::from_str(&host)
-                .map_err(|err| DflowError::Header(format!("构造 Host 头失败: {err}")))?;
-            header_map.insert(HOST, header_value);
-        }
-        let http_request = http_request.headers(header_map);
-        trace!(
-            target: "dflow::quote",
-            url = %final_url,
-            "即将发起 DFlow 报价请求"
-        );
+        let host_header_value = host_header_from_url(&final_url)
+            .map(|host| {
+                HeaderValue::from_str(&host)
+                    .map_err(|err| DflowError::Header(format!("构造 Host 头失败: {err}")))
+            })
+            .transpose()?;
 
-        let response = http_request.send().await.map_err(|err| {
-            self.record_quote_metrics("transport_error", None, None);
-            DflowError::from(err)
-        })?;
+        let mut attempt = 0usize;
+        let response = loop {
+            attempt += 1;
 
-        if !response.status().is_success() {
+            let mut header_map = build_header_map(&path_with_query, "")
+                .map_err(|err| DflowError::Header(err.to_string()))?;
+            if let Some(value) = host_header_value.as_ref() {
+                header_map.insert(HOST, value.clone());
+            }
+
+            let http_request = self
+                .client
+                .get(&url)
+                .timeout(self.quote_timeout)
+                .query(request)
+                .headers(header_map);
+
+            trace!(
+                target: "dflow::quote",
+                url = %final_url,
+                attempt,
+                "即将发起 DFlow 报价请求"
+            );
+
+            let response = http_request.send().await.map_err(|err| {
+                self.record_quote_metrics("transport_error", None, None);
+                DflowError::from(err)
+            })?;
+
+            if response.status().is_success() {
+                break response;
+            }
+
             let status = response.status();
             let body_text = response
                 .text()
                 .await
                 .unwrap_or_else(|err| format!("<body decode failed: {err}>"));
             let body_summary = summarize_error_body(body_text);
-            warn!(
-                target: "dflow::quote",
-                status = status.as_u16(),
-                endpoint = %url,
-                body = %body_summary,
-                "报价请求返回非 200 状态"
-            );
-            self.record_quote_metrics("http_error", None, Some(status));
-            return Err(DflowError::ApiStatus {
-                endpoint: url,
-                status,
-                body: body_summary,
-            });
-        }
+
+            let is_rate_limited = status == StatusCode::TOO_MANY_REQUESTS;
+            if is_rate_limited {
+                self.record_quote_metrics("rate_limited", None, Some(status));
+                warn!(
+                    target: "dflow::quote",
+                    status = status.as_u16(),
+                    endpoint = %url,
+                    body = %body_summary,
+                    attempt,
+                    wait_ms = Self::HTTP_RETRY_DELAY.as_millis(),
+                    "报价请求命中 DFlow 限流，等待后重试"
+                );
+            } else {
+                self.record_quote_metrics("http_error", None, Some(status));
+                warn!(
+                    target: "dflow::quote",
+                    status = status.as_u16(),
+                    endpoint = %url,
+                    body = %body_summary,
+                    attempt,
+                    wait_ms = Self::HTTP_RETRY_DELAY.as_millis(),
+                    "报价请求返回非 200 状态，等待后重试"
+                );
+            }
+
+            if attempt >= Self::HTTP_MAX_ATTEMPTS {
+                if is_rate_limited {
+                    return Err(DflowError::RateLimited {
+                        endpoint: url,
+                        status,
+                        body: body_summary,
+                    });
+                } else {
+                    return Err(DflowError::ApiStatus {
+                        endpoint: url,
+                        status,
+                        body: body_summary,
+                    });
+                }
+            }
+
+            sleep(Self::HTTP_RETRY_DELAY).await;
+            continue;
+        };
 
         let status = response.status();
         let value: Value = response.json().await.map_err(|err| {
@@ -230,7 +296,7 @@ impl DflowApiClient {
         request: &SwapInstructionsRequest,
     ) -> Result<SwapInstructionsResponse, DflowError> {
         let path = "/swap-instructions";
-        let url = self.endpoint(path);
+        let url = self.swap_endpoint(path);
         let metadata = LatencyMetadata::new(
             [
                 ("stage".to_string(), "swap-instructions".to_string()),
@@ -246,61 +312,105 @@ impl DflowApiClient {
         };
         let guard = guard_with_level("dflow.swap_instructions", latency_level, metadata);
 
-        let mut body = serde_json::to_value(request)
-            .map_err(|err| DflowError::Schema(format!("序列化指令参数失败: {err}")))?;
-        prune_nulls(&mut body);
-        trace!(
-            target: "dflow::swap_instructions",
-            payload = %body,
-            "即将发起 DFlow 指令请求"
-        );
-
-        let body_json = serde_json::to_string(&body)
-            .map_err(|err| DflowError::Schema(format!("序列化指令 JSON 失败: {err}")))?;
-        let mut header_map = build_header_map(path, &body_json)
-            .map_err(|err| DflowError::Header(err.to_string()))?;
         let parsed_url = Url::parse(&url)
             .map_err(|err| DflowError::Schema(format!("解析指令 URL 失败: {err}")))?;
-        if let Some(host) = host_header_from_url(&parsed_url) {
-            let header_value = HeaderValue::from_str(&host)
-                .map_err(|err| DflowError::Header(format!("构造 Host 头失败: {err}")))?;
-            header_map.insert(HOST, header_value);
-        }
+        let host_header_value = host_header_from_url(&parsed_url)
+            .map(|host| {
+                HeaderValue::from_str(&host)
+                    .map_err(|err| DflowError::Header(format!("构造 Host 头失败: {err}")))
+            })
+            .transpose()?;
 
-        let response = self
-            .client
-            .post(&url)
-            .timeout(self.swap_timeout)
-            .json(&body)
-            .headers(header_map)
-            .send()
-            .await
-            .map_err(|err| {
-                self.record_swap_metrics("transport_error", None, None);
-                DflowError::from(err)
-            })?;
+        let mut attempt = 0usize;
+        let response = loop {
+            attempt += 1;
 
-        if !response.status().is_success() {
+            let mut body = serde_json::to_value(request)
+                .map_err(|err| DflowError::Schema(format!("序列化指令参数失败: {err}")))?;
+            prune_nulls(&mut body);
+            trace!(
+                target: "dflow::swap_instructions",
+                attempt,
+                payload = %body,
+                "即将发起 DFlow 指令请求"
+            );
+
+            let body_json = serde_json::to_string(&body)
+                .map_err(|err| DflowError::Schema(format!("序列化指令 JSON 失败: {err}")))?;
+            let mut header_map = build_header_map(path, &body_json)
+                .map_err(|err| DflowError::Header(err.to_string()))?;
+            if let Some(value) = host_header_value.as_ref() {
+                header_map.insert(HOST, value.clone());
+            }
+
+            let response = self
+                .client
+                .post(&url)
+                .timeout(self.swap_timeout)
+                .json(&body)
+                .headers(header_map)
+                .send()
+                .await
+                .map_err(|err| {
+                    self.record_swap_metrics("transport_error", None, None);
+                    DflowError::from(err)
+                })?;
+
+            if response.status().is_success() {
+                break response;
+            }
+
             let status = response.status();
             let body_text = response
                 .text()
                 .await
                 .unwrap_or_else(|err| format!("<body decode failed: {err}>"));
             let body_summary = summarize_error_body(body_text);
-            warn!(
-                target: "dflow::swap_instructions",
-                status = status.as_u16(),
-                endpoint = %url,
-                body = %body_summary,
-                "指令请求返回非 200 状态"
-            );
-            self.record_swap_metrics("http_error", None, Some(status));
-            return Err(DflowError::ApiStatus {
-                endpoint: url,
-                status,
-                body: body_summary,
-            });
-        }
+
+            let is_rate_limited = status == StatusCode::TOO_MANY_REQUESTS;
+            if is_rate_limited {
+                self.record_swap_metrics("rate_limited", None, Some(status));
+                warn!(
+                    target: "dflow::swap_instructions",
+                    status = status.as_u16(),
+                    endpoint = %url,
+                    body = %body_summary,
+                    attempt,
+                    wait_ms = Self::HTTP_RETRY_DELAY.as_millis(),
+                    "指令请求命中 DFlow 限流，等待后重试"
+                );
+            } else {
+                self.record_swap_metrics("http_error", None, Some(status));
+                warn!(
+                    target: "dflow::swap_instructions",
+                    status = status.as_u16(),
+                    endpoint = %url,
+                    body = %body_summary,
+                    attempt,
+                    wait_ms = Self::HTTP_RETRY_DELAY.as_millis(),
+                    "指令请求返回非 200 状态，等待后重试"
+                );
+            }
+
+            if attempt >= Self::HTTP_MAX_ATTEMPTS {
+                if is_rate_limited {
+                    return Err(DflowError::RateLimited {
+                        endpoint: url,
+                        status,
+                        body: body_summary,
+                    });
+                } else {
+                    return Err(DflowError::ApiStatus {
+                        endpoint: url,
+                        status,
+                        body: body_summary,
+                    });
+                }
+            }
+
+            sleep(Self::HTTP_RETRY_DELAY).await;
+            continue;
+        };
 
         let status = response.status();
         let value: Value = response.json().await.map_err(|err| {

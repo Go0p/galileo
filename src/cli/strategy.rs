@@ -13,9 +13,10 @@ use crate::cli::context::{
 use crate::config;
 use crate::config::{AppConfig, IntermediumConfig};
 use crate::engine::{
-    AccountPrechecker, BuilderConfig, ComputeUnitPriceMode, EngineError, EngineIdentity,
-    EngineResult, EngineSettings, ProfitConfig, ProfitEvaluator, QuoteConfig, QuoteExecutor,
-    Scheduler, StrategyEngine, SwapInstructionFetcher, TipConfig, TransactionBuilder,
+    AccountPrechecker, BLIND_COMPUTE_UNIT_LIMIT, BuilderConfig, ComputeUnitPriceMode, EngineError,
+    EngineIdentity, EngineResult, EngineSettings, ProfitConfig, ProfitEvaluator, QuoteConfig,
+    QuoteExecutor, Scheduler, StrategyEngine, SwapInstructionFetcher, TipConfig,
+    TransactionBuilder,
 };
 use crate::flashloan::marginfi::{MarginfiAccountRegistry, MarginfiFlashloanManager};
 use crate::jupiter::{JupiterBinaryManager, JupiterError};
@@ -24,6 +25,7 @@ use crate::monitoring::events;
 use crate::strategy::{
     BlindStrategy, PureBlindRouteBuilder, PureBlindStrategy, Strategy, StrategyEvent,
 };
+use rand::Rng as _;
 use solana_sdk::pubkey::Pubkey;
 
 /// 控制策略以正式模式还是 dry-run 模式运行。
@@ -159,7 +161,11 @@ async fn run_blind_engine(
     let (only_direct_default, restrict_default) = quote_defaults_tuple;
     let trade_pairs = build_blind_trade_pairs(blind_config, &config.galileo.intermedium)?;
     let trade_amounts = build_blind_trade_amounts(blind_config)?;
-    let profit_config = build_blind_profit_config(blind_config);
+    let profit_config = build_blind_profit_config(
+        blind_config,
+        &config.lander.lander,
+        &compute_unit_price_mode,
+    );
     let scheduler_delay = resolve_blind_scheduler_delay(blind_config);
     let quote_config =
         build_blind_quote_config(blind_config, only_direct_default, restrict_default);
@@ -410,7 +416,6 @@ fn build_blind_trade_amounts(config: &config::BlindStrategyConfig) -> EngineResu
 }
 
 fn generate_amounts_for_base(base: &config::BlindBaseMintConfig) -> Vec<u64> {
-    const TWEAK_FACTOR: f64 = 0.99;
     if base.trade_size_range.is_empty() {
         return Vec::new();
     }
@@ -435,28 +440,70 @@ fn generate_amounts_for_base(base: &config::BlindBaseMintConfig) -> Vec<u64> {
         }
     }
 
+    let mut rng = rand::rng();
     let mut tweaked: BTreeSet<u64> = BTreeSet::new();
     for amount in values {
-        let adjusted = ((amount as f64) * TWEAK_FACTOR).round() as u64;
-        tweaked.insert(adjusted.max(1));
+        let basis_points: u16 = rng.random_range(930..=999);
+        let adjusted = (((amount as u128) * basis_points as u128) + 999) / 1_000;
+        let normalized = adjusted.max(1).min(u128::from(u64::MAX)) as u64;
+        tweaked.insert(normalized);
     }
 
     tweaked.into_iter().collect()
 }
 
-fn build_blind_profit_config(config: &config::BlindStrategyConfig) -> ProfitConfig {
-    let min_profit = config
+fn build_blind_profit_config(
+    config: &config::BlindStrategyConfig,
+    lander_settings: &config::LanderSettings,
+    compute_unit_price_mode: &Option<ComputeUnitPriceMode>,
+) -> ProfitConfig {
+    let min_profit_from_routes = config
         .base_mints
         .iter()
         .filter_map(|mint| mint.min_quote_profit)
         .min()
         .unwrap_or(0);
 
+    let compute_unit_fee = compute_unit_price_mode
+        .as_ref()
+        .map(|mode| match mode {
+            ComputeUnitPriceMode::Fixed(value) => compute_unit_fee_lamports(*value),
+            ComputeUnitPriceMode::Random { min, max } => {
+                let upper = (*min).max(*max);
+                compute_unit_fee_lamports(upper)
+            }
+        })
+        .unwrap_or(0);
+
+    let tip_fee = lander_settings
+        .jito
+        .as_ref()
+        .and_then(|cfg| {
+            if let Some(fixed) = cfg.fixed_tip {
+                Some(fixed)
+            } else if !cfg.range_tips.is_empty() {
+                cfg.range_tips.iter().copied().max()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+
+    let required_profit_floor = compute_unit_fee.saturating_add(tip_fee);
+
+    let threshold = min_profit_from_routes.max(required_profit_floor);
+
     ProfitConfig {
-        min_profit_threshold_lamports: min_profit,
+        min_profit_threshold_lamports: threshold,
         max_tip_lamports: 0,
         tip: TipConfig::default(),
     }
+}
+
+fn compute_unit_fee_lamports(price_micro_lamports: u64) -> u64 {
+    let limit = BLIND_COMPUTE_UNIT_LIMIT as u128;
+    let numerator = (price_micro_lamports as u128).saturating_mul(limit);
+    ((numerator + 999_999) / 1_000_000).min(u128::from(u64::MAX)) as u64
 }
 
 fn resolve_blind_scheduler_delay(config: &config::BlindStrategyConfig) -> Duration {
@@ -475,15 +522,16 @@ fn build_blind_quote_config(
     only_direct_routes_default: bool,
     restrict_intermediate_tokens_default: bool,
 ) -> QuoteConfig {
-    let only_direct_routes = if config.base_mints.iter().any(|mint| {
+    let has_three_hop = config.base_mints.iter().any(|mint| {
         mint.route_types
             .iter()
-            .any(|t| t.eq_ignore_ascii_case("2hop"))
-    }) {
-        true
-    } else {
-        only_direct_routes_default
-    };
+            .any(|t| t.eq_ignore_ascii_case("3hop"))
+    });
+
+    let mut only_direct_routes = only_direct_routes_default;
+    if has_three_hop {
+        only_direct_routes = false;
+    }
 
     QuoteConfig {
         slippage_bps: 0,
@@ -491,6 +539,7 @@ fn build_blind_quote_config(
         restrict_intermediate_tokens: restrict_intermediate_tokens_default,
         quote_max_accounts: None,
         dex_whitelist: config.enable_dexs.clone(),
+        dex_blacklist: config.exclude_dexes.clone(),
     }
 }
 

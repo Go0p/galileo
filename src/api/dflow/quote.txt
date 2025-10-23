@@ -1,285 +1,68 @@
-Query Parameters
-​
-inputMint
-stringrequired
-Base58-encoded input mint address
+# DFlow Quote 接口说明
 
-​
-outputMint
-stringrequired
-Base58-encoded output mint address
+## 请求参数（Query Parameters）
 
-​
-amount
-integerrequired
-Input amount as a scaled integer. For example, 1 SOL is 1000000000.
+| 字段 | 类型 | 必填 | 中文说明 |
+| --- | --- | --- | --- |
+| `inputMint` | string | 是 | Base58 编码的输入代币 Mint 地址。 |
+| `outputMint` | string | 是 | Base58 编码的输出代币 Mint 地址。 |
+| `amount` | integer | 是 | 输入代币数量，按最小单位表示（例如 1 SOL = 1_000_000_000），要求 `>= 0`。 |
+| `slippageBps` | integer \| `"auto"` | 否 | 允许的最大滑点，单位为基点（bps）。可填写 `u16` 数值或 `"auto"` 让服务端自动计算，要求 `>= 0`。 |
+| `dexes` | string | 否 | 以逗号分隔的 DEX 名称列表，仅在这些 DEX 中选路。未填代表使用全部支持的 DEX。 |
+| `excludeDexes` | string | 否 | 以逗号分隔的 DEX 名称列表，从候选路线中排除这些 DEX。 |
+| `platformFeeBps` | integer | 否 | 平台手续费的基点值。仅在实际收取手续费时填写；需确保手续费账户可在执行时收款，且数值 `>= 0`。 |
+| `platformFeeMode` | enum | 否 | 手续费计价代币，默认 `outputMint`，可选 `outputMint` 或 `inputMint`。 |
+| `sponsoredSwap` | boolean | 否 | 若报价将用于赞助交易（sponsored swap）需设为 `true`，会额外考虑 Token 2022 的赞助转账费用。 |
+| `destinationSwap` | boolean | 否 | 若报价用于目的地 Token 账户（destination account）兑换，设为 `true` 以计算 Token 2022 目的地费用。 |
+| `onlyDirectRoutes` | boolean | 否 | 限制仅使用单腿（single-leg）路线。 |
+| `maxRouteLength` | integer | 否 | 最大路线腿数，要求 `>= 0`。当 `onlyDirectRoutes = true` 时该值被忽略。 |
 
-Required range: x >= 0
-​
-slippageBps
+## 成功响应（HTTP 200, `application/json`）
 
-integer
-Max allowed slippage for the swap. Allowed values are:
+| 字段 | 类型 | 必填 | 中文说明 |
+| --- | --- | --- | --- |
+| `contextSlot` | integer | 是 | 报价计算所在的 Solana slot，高度 `>= 0`。 |
+| `inAmount` | string | 是 | 最大可消耗的输入代币数量，最小单位字符串。 |
+| `inputMint` | string | 是 | 输入代币的 Base58 Mint 地址。 |
+| `minOutAmount` | string | 是 | 最低可接受的输出代币数量（与 `otherAmountThreshold` 含义一致）。 |
+| `otherAmountThreshold` | string | 是 | 扣除所有费用后必须得到的最小输出代币数量，若低于该值交易将失败。 |
+| `outAmount` | string | 是 | 预期得到的输出代币数量（已扣费），最小单位字符串。 |
+| `outputMint` | string | 是 | 输出代币的 Base58 Mint 地址。 |
+| `priceImpactPct` | string | 是 | 价格冲击估算值，例如 `"0.01"` 表示 1% 冲击。 |
+| `routePlan` | array | 是 | 规划好的路线腿（legs）列表，见下文详细说明。 |
+| `slippageBps` | integer | 是 | 最大允许滑点（基点）。 |
+| `outTransferFee` | string | 否 | 若有，代表为满足报价预扣的转账费用。 |
+| `platformFee` | object \| null | 否 | 平台手续费信息，为 `null` 表示未收取，字段详见「平台手续费」。 |
+| `requestId` | string | 否 | 服务端生成的请求标识。 |
+| `simulatedComputeUnits` | integer \| null | 否 | 报价模拟消耗的计算单元（CU），可能为空。 |
 
-a u16 which specifies the maximum allowed slippage in basis points
-the string value "auto", where the server determines the maximum allowed slippage automatically Slippage tolerance specified in basis points
-Required range: x >= 0
-​
-dexes
-string
-Comma-separated list of DEXes to include. If not specified, all DEXes will be included.
+### 路线腿（`routePlan`）元素
 
-​
-excludeDexes
-string
-Comma-separated list of DEXes to exclude. If not specified, all DEXes will be included.
+| 字段 | 类型 | 必填 | 中文说明 |
+| --- | --- | --- | --- |
+| `inAmount` | string | 是 | 当前腿可使用的输入代币数量，最小单位字符串。 |
+| `inputMint` | string | 是 | 当前腿输入代币的 Base58 Mint 地址。 |
+| `inputMintDecimals` | integer | 是 | 当前腿输入代币的小数位数，要求 `>= 0`。 |
+| `marketKey` | string | 是 | 当前腿对应流动性市场或交易对的标识。 |
+| `outAmount` | string | 是 | 当前腿预期输出的代币数量，最小单位字符串。 |
+| `outputMint` | string | 是 | 当前腿输出代币的 Base58 Mint 地址。 |
+| `outputMintDecimals` | integer | 是 | 当前腿输出代币的小数位数，要求 `>= 0`。 |
+| `venue` | string | 是 | 当前腿使用的流动性来源（例如具体 DEX 名称）。 |
+| `data` | string | 否 | 若返回该字段，表示执行当前腿所需的原始指令数据（Base64 编码）。部分路线不会提供。 |
 
-​
-platformFeeBps
-integer
-Optional platform fee in basis points. This should only be nonzero if the swap will collect
-the platform fee. The swap must specify a valid fee account and that fee account must be
-able to collect the fee mint at execution time.
+### 平台手续费（`platformFee`）
 
-Required range: x >= 0
-​
-platformFeeMode
-enum<string>
-Optional platform fee mode. If not specified, the default is outputMint.
+| 字段 | 类型 | 必填 | 中文说明 |
+| --- | --- | --- | --- |
+| `amount` | string | 是 | 平台手续费金额（最小单位字符串）。 |
+| `feeAccount` | string | 是 | 收取手续费的 Token 账户地址。 |
+| `feeBps` | integer | 是 | 手续费百分比，单位为基点，需 `>= 0`。 |
+| `segmenterFeeAmount` | string | 是 | Segmenter 分润金额，最小单位字符串。 |
+| `segmenterFeePct` | integer | 是 | Segmenter 分润百分比，要求 `>= 0`。 |
 
-Available options: outputMint, inputMint 
-​
-sponsoredSwap
-boolean
-This should be specified as true if and only if the quote will be used for a sponsored swap.
-If true, then the quote will account for any additional token 2022 transfer fees that apply
-to the input and output mints for a sponsored swap.
+### 响应示例
 
-​
-destinationSwap
-boolean
-This should be specified as true if and only if the quote will be used for a destination
-token account swap. If true, then the quote will account for any additional token 2022
-transfer fees that apply to the output mint for a destination token account swap.
-
-​
-onlyDirectRoutes
-boolean
-If true, only use single-leg routes
-
-​
-maxRouteLength
-integer
-If specified, the route will be limited to the specified number of legs. Ignored if
-only_direct_routes is true.
-
-Required range: x >= 0
-
-
-
-
-Response
-
-200
-
-application/json
-Imperative swap quote
-
-​
-contextSlot
-integerrequired
-Slot at which the request was evaluated
-
-Required range: x >= 0
-​
-inAmount
-stringrequired
-Maximum input amount as a scaled integer. For example, 1 SOL is 1000000000.
-
-​
-inputMint
-stringrequired
-Base58-encoded input mint address
-
-​
-minOutAmount
-stringrequired
-Same as other_amount_threshold
-
-​
-otherAmountThreshold
-stringrequired
-Minimum output amount after all fees as a scaled integer. If the swap transaction doesn't
-produce at least this amount of the output token, the transaction will fail.
-
-​
-outAmount
-stringrequired
-Expected output amount after all fees as a scaled integer. For example, 1 SOL is 1000000000.
-
-​
-outputMint
-stringrequired
-Base58-encoded output mint address
-
-​
-priceImpactPct
-stringrequired
-Price impact of the swap. This is an estimate of the percentage difference between the
-expected price for the swap and the price for the same swap with the smallest input amount
-possible. For example, "0.01" means 1% price impact.
-
-​
-routePlan
-object[]required
-Route that the swap will take
-
-Option1 
-data
-stringrequired
-Data for the leg
-
-​
-inAmount
-stringrequired
-Maximum input amount for the leg as a scaled integer. For example, 1 SOL is 1000000000.
-
-​
-inputMint
-stringrequired
-Base58-encoded input mint address
-
-​
-inputMintDecimals
-integerrequired
-Decimals for the input mint
-
-Required range: x >= 0
-​
-marketKey
-stringrequired
-Key identifying the market on the venue
-
-​
-outAmount
-stringrequired
-Expected output amount for the leg as a scaled integer. For example, 1 SOL is 1000000000.
-
-​
-outputMint
-stringrequired
-Base58-encoded output mint address
-
-​
-outputMintDecimals
-integerrequired
-Decimals for the output mint
-
-Required range: x >= 0
-​
-venue
-stringrequired
-Venue for the leg
-
-
-Option2:
-inAmount
-stringrequired
-Maximum input amount for the leg as a scaled integer. For example, 1 SOL is 1000000000.
-
-​
-inputMint
-stringrequired
-Base58-encoded input mint address
-
-​
-inputMintDecimals
-integerrequired
-Decimals for the input mint
-
-Required range: x >= 0
-​
-marketKey
-stringrequired
-Key identifying the market on the venue
-
-​
-outAmount
-stringrequired
-Expected output amount for the leg as a scaled integer. For example, 1 SOL is 1000000000.
-
-​
-outputMint
-stringrequired
-Base58-encoded output mint address
-
-​
-outputMintDecimals
-integerrequired
-Decimals for the output mint
-
-Required range: x >= 0
-​
-venue
-stringrequired
-Venue for the leg
-
-
-slippageBps
-integerrequired
-Max allowed slippage % in basis points
-
-Required range: x >= 0
-​
-outTransferFee
-string
-Transfer fee amount that was applied to the quote, if any
-
-​
-platformFee
-object | null
-Platform fee that was applied to the quote, if any
-platformFee.amount
-stringrequired
-Platform fee as a scaled integer. For example, 1 SOL is 1000000000.
-
-​
-platformFee.feeAccount
-stringrequired
-Token account that will receive the platform fee
-
-​
-platformFee.feeBps
-integerrequired
-Platform fee in basis points
-
-Required range: x >= 0
-​
-platformFee.segmenterFeeAmount
-stringrequired
-Segmenter fee as a scaled integer. For example, 1 SOL is 1000000000.
-
-​
-platformFee.segmenterFeePct
-integerrequired
-Segmenter fee in percent
-
-Required range: x >= 0
-
-
-requestId
-string
-Identifier for the request
-
-​
-simulatedComputeUnits
-integer | null
-Compute units consumed by quote simulation
-
-Required range: x >= 0
-
-
-respone 200
+```json
 {
   "contextSlot": 1,
   "inAmount": "<string>",
@@ -308,9 +91,15 @@ respone 200
   "simulatedComputeUnits": 1,
   "slippageBps": 1
 }
+```
 
-400 500 503
+## 错误响应（HTTP 400 / 500 / 503）
+
+```json
 {
   "code": "<enum<string>>",
   "msg": "<string>"
 }
+```
+
+`code` 标识错误类别，`msg` 为人类可读的错误信息。

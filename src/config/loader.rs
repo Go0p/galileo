@@ -22,6 +22,10 @@ pub enum ConfigError {
     },
     #[error("failed to parse config at {path}: {message}")]
     Parse { path: PathBuf, message: String },
+    #[error(
+        "已将私钥加密写入 {encrypted:?}，并清理配置文件。请确认配置已同步提交或备份后，重新启动 Galileo。"
+    )]
+    WalletEncrypted { encrypted: PathBuf },
 }
 
 pub fn load_config(path: Option<PathBuf>) -> Result<AppConfig, ConfigError> {
@@ -57,6 +61,10 @@ pub fn load_config(path: Option<PathBuf>) -> Result<AppConfig, ConfigError> {
                 }
             }
         }
+
+        return Err(ConfigError::WalletEncrypted {
+            encrypted: enc_path,
+        });
     }
 
     let mut lander_candidates = Vec::new();

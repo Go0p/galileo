@@ -1,8 +1,8 @@
 global:
   # rpc url
-  rpc_url: "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
+  # rpc_url: "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
   # rpc_url: "https://mainnet.solana.validationcloud.io/v1/4YlOowpz6fTe6Jl31oWxYGSusOS12UzTxXkpdoC1I5A"
-  # rpc_url: "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
+  rpc_url: "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
   # rpc_url: "https://solana-rpc.publicnode.com"
   # rpc_url: "http://127.0.0.1:8899"
   # yellowstone grpc url
@@ -73,16 +73,33 @@ engine:
       wrap_and_unwrap_sol: false
   dflow:
     enable: true
-    # api_base: "https://aggregator-api.dflow.workers.dev"
-    api_base: "https://quote-api.dflow.net/"
-    api_proxy: "http://192.168.124.4:9999"
+    # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
+    api_quote_base: "https://quote-api.dflow.net"
+    api_swap_base: "https://quote-api.dflow.net"
+    api_proxy: ""
     quote_config:
       use_auto_slippage: false
       only_direct_routes: false
+      max_route_length: 3
     swap_config:
       dynamic_compute_unit_limit: true
       wrap_and_unwrap_sol: false
-
+  titan:
+    enable: true
+    # 开启 loopback 后仅订阅 base→base 的单条 Titan 流，根据 out>in 判断套利
+    ws_url: "wss://api.titan.exchange/api/v1/ws"
+    # Titan 目前要求使用内置账户发起报价，如需自定义可在拿到白名单后修改
+    default_pubkey: "Titan11111111111111111111111111111111111111"
+    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjA2OTAwOTcsImV4cCI6MTc2MDY5MDk5Nywic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.lb2J4rncrBwUMaCW08juVXyNYL0MTCWFKOHnhv7WAHc"
+    # Titan , Okx , Metis , Pyth
+    providers:
+      - "Titan"
+      # - "Metis"
+    reverse_slippage_bps: 0
+    # 服务端推送报价更新的间隔，单位毫秒。
+    interval_ms: 800
+    # 每次更新最多返回的报价数量。
+    num_quotes: 2
 
 
 # 机器人会尝试找到盈利路线，具体方法是：获取给定交易规模的 base_mint 到 intermediate_mints 的报价，
@@ -159,7 +176,11 @@ blind_strategy:
       "Obric V2",
       "Aquifer",
       "Lifinity V2",
-      "DFlow JIT Router"
+      # "DFlow JIT Router"
+  ]
+  exclude_dexes: [
+    # 通过 exclude_dexes 会在 DFlow /quote 请求中拼接为 excludeDexes 参数
+    "DFlow JIT Router"
   ]
   enable_landers: [
         # "jito"
@@ -178,7 +199,7 @@ blind_strategy:
       # 固定规模报价则会同时发送两个报价。
       trade_range_strategy: "linear"
       # 最小利润
-      min_quote_profit: 0
+      min_quote_profit: 10000
       # 交易延时
       # 单位为毫秒。默认值表示机器人将等待 1000 毫秒，然后针对相同代币交易规模的对再次尝试。减少此值将增加立即捕捉价格变化的机会，但会增加读取 RPC 负载。
       process_delay: 1000

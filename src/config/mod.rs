@@ -178,6 +178,7 @@ impl Default for cfg::EngineConfig {
             backend: cfg::EngineBackend::default(),
             jupiter: cfg::JupiterEngineConfig::default(),
             dflow: cfg::DflowEngineConfig::default(),
+            titan: cfg::TitanEngineConfig::default(),
         }
     }
 }
@@ -217,10 +218,26 @@ impl Default for cfg::DflowEngineConfig {
     fn default() -> Self {
         Self {
             enable: true,
-            api_base: None,
+            api_quote_base: None,
+            api_swap_base: None,
             api_proxy: None,
             quote_config: cfg::DflowQuoteConfig::default(),
             swap_config: cfg::DflowSwapConfig::default(),
+        }
+    }
+}
+
+impl Default for cfg::TitanEngineConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            ws_url: None,
+            default_pubkey: None,
+            jwt: None,
+            providers: Vec::new(),
+            reverse_slippage_bps: 0,
+            interval_ms: None,
+            num_quotes: None,
         }
     }
 }
@@ -230,6 +247,7 @@ impl Default for cfg::DflowQuoteConfig {
         Self {
             use_auto_slippage: true,
             only_direct_routes: false,
+            max_route_length: None,
         }
     }
 }
@@ -330,6 +348,7 @@ impl Default for cfg::BlindStrategyConfig {
             pure_mode: false,
             memo: String::new(),
             enable_dexs: Vec::new(),
+            exclude_dexes: Vec::new(),
             enable_landers: Vec::new(),
             base_mints: Vec::new(),
             pure_routes: Vec::new(),
