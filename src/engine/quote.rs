@@ -2,7 +2,7 @@ use std::convert::TryFrom;
 
 use tracing::debug;
 
-use crate::api::{JupiterApiClient, QuoteRequest, QuoteResponse};
+use crate::api::jupiter::{JupiterApiClient, QuoteRequest, QuoteResponse};
 use crate::config::JupiterQuoteConfig;
 use crate::strategy::types::TradePair;
 

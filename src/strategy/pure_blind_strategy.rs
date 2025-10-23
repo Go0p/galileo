@@ -44,10 +44,12 @@ impl<'a> PureBlindRouteBuilder<'a> {
             ));
         }
 
+        let base_mints = self.parse_enabled_base_mints()?;
+
         let mut plans = Vec::with_capacity(self.config.pure_routes.len());
 
         for route in &self.config.pure_routes {
-            plans.push(self.build_plan(route).await?);
+            plans.push(self.build_plan(route, &base_mints).await?);
         }
 
         Ok(plans)
@@ -57,6 +59,7 @@ impl<'a> PureBlindRouteBuilder<'a> {
     async fn build_plan(
         &self,
         route: &config::PureBlindRouteConfig,
+        base_mints: &[Pubkey],
     ) -> EngineResult<BlindRoutePlan> {
         let route_label = route.name.as_deref().unwrap_or("<pure_route>");
 
@@ -100,11 +103,13 @@ impl<'a> PureBlindRouteBuilder<'a> {
 
         let lookup_tables = self.resolve_lookup_tables(route, route_label).await?;
 
-        let forward = Self::build_closed_loop(&resolved).ok_or_else(|| {
-            EngineError::InvalidConfig(format!(
-                "pure_routes `{route_label}` 无法推导闭环资产流，请检查腿顺序与市场配置"
-            ))
-        })?;
+        let forward = Self::build_closed_loop(&resolved)
+            .ok_or_else(|| {
+                EngineError::InvalidConfig(format!(
+                    "pure_routes `{route_label}` 无法推导闭环资产流，请检查腿顺序与市场配置"
+                ))
+            })
+            .and_then(|steps| Self::align_with_base_mints(steps, base_mints, route_label))?;
         let reverse = Self::build_reverse_steps(&forward);
 
         Ok(BlindRoutePlan {
@@ -425,6 +430,74 @@ impl<'a> PureBlindRouteBuilder<'a> {
         }
 
         Ok(resolved)
+    }
+
+    fn parse_enabled_base_mints(&self) -> EngineResult<Vec<Pubkey>> {
+        let mut mints = Vec::with_capacity(self.config.base_mints.len());
+        for (idx, base) in self.config.base_mints.iter().enumerate() {
+            let value = base.mint.trim();
+            if value.is_empty() {
+                continue;
+            }
+            let pubkey = Pubkey::from_str(value).map_err(|err| {
+                EngineError::InvalidConfig(format!(
+                    "blind_strategy.base_mints[{idx}] mint `{}` 解析失败: {err}",
+                    base.mint
+                ))
+            })?;
+            mints.push(pubkey);
+        }
+
+        if mints.is_empty() {
+            return Err(EngineError::InvalidConfig(
+                "纯盲发模式需要至少一个有效的 blind_strategy.base_mints 配置".into(),
+            ));
+        }
+
+        Ok(mints)
+    }
+
+    fn align_with_base_mints(
+        steps: Vec<BlindStep>,
+        base_mints: &[Pubkey],
+        route_label: &str,
+    ) -> EngineResult<Vec<BlindStep>> {
+        if steps.is_empty() {
+            return Err(EngineError::InvalidConfig(format!(
+                "pure_routes `{route_label}` 未生成任何盲发步骤"
+            )));
+        }
+
+        let position = steps.iter().position(|step| {
+            base_mints
+                .iter()
+                .any(|candidate| step.input.mint == *candidate)
+        });
+
+        let Some(idx) = position else {
+            let allowed = base_mints
+                .iter()
+                .map(|mint| mint.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let available = steps
+                .iter()
+                .map(|step| step.input.mint.to_string())
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            return Err(EngineError::InvalidConfig(format!(
+                "pure_routes `{route_label}` 无法匹配 blind_strategy.base_mints，允许: [{allowed}]，可用闭环顺序: [{available}]"
+            )));
+        };
+
+        if idx == 0 {
+            return Ok(steps);
+        }
+
+        let mut rotated = Vec::with_capacity(steps.len());
+        rotated.extend(steps[idx..].iter().cloned());
+        rotated.extend(steps[..idx].iter().cloned());
+        Ok(rotated)
     }
 }
 

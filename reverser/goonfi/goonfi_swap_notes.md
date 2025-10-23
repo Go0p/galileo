@@ -134,6 +134,7 @@
   - Jupiter 分支下，第 7 个账户实际上传的是 swap authority PDA，本地样本中出现的 `ENpQ…`、`Ghgwm…` 等地址即由此生成；
   - 只有 `router_flag == 2`（GoonBlacklist）时才会携带黑名单相关的 PDA (`2gav…`)，Jupiter (`router_flag == 0`) 在执行时不会使用该常量。
 - `swap.txt` 的三条样本依旧表明：同一池子在不同用户下会获得不同的 signer（`ENpQ…` / `Ghgwm…`），而旧池子 `4ynTY…` 始终返回 `CdjV…`。要准确复刻这些地址，仍需继续分析 `function_6471`/`function_7865` 填充 `Vec<&[u8]>` 的细节，并明确用户 authority、两条 ATA 是怎么写入 seeds 的。
+- 2025-02-26：新增 `reverser/goonfi/dump_seed_fragments.py` 脚本，自动 dump `.rodata@0x16690`（856 字节 literal 池）以及 `0x09a6` 起的 38 条 `fmt::rt::Piece` 片段。脚本把每个 fragment 拆成 8 个 `u16` 值，便于比对 `function_9031`/`function_7764` 的半字节运算，后续可以据此逐步填补 `_dispatch_seed_builder` 尚未实现的占位符分支，并还原 seeds 的实际拼装顺序。
 
 > 推荐后续步骤：  
 > 1. 选取至少一条 GoonFi swap 成功交易，记录 26 个账户顺序，与 `function_6816` 的写入顺序比对，补完账户标签。  

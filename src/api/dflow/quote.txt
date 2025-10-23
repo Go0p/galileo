@@ -1,0 +1,316 @@
+Query Parameters
+​
+inputMint
+stringrequired
+Base58-encoded input mint address
+
+​
+outputMint
+stringrequired
+Base58-encoded output mint address
+
+​
+amount
+integerrequired
+Input amount as a scaled integer. For example, 1 SOL is 1000000000.
+
+Required range: x >= 0
+​
+slippageBps
+
+integer
+Max allowed slippage for the swap. Allowed values are:
+
+a u16 which specifies the maximum allowed slippage in basis points
+the string value "auto", where the server determines the maximum allowed slippage automatically Slippage tolerance specified in basis points
+Required range: x >= 0
+​
+dexes
+string
+Comma-separated list of DEXes to include. If not specified, all DEXes will be included.
+
+​
+excludeDexes
+string
+Comma-separated list of DEXes to exclude. If not specified, all DEXes will be included.
+
+​
+platformFeeBps
+integer
+Optional platform fee in basis points. This should only be nonzero if the swap will collect
+the platform fee. The swap must specify a valid fee account and that fee account must be
+able to collect the fee mint at execution time.
+
+Required range: x >= 0
+​
+platformFeeMode
+enum<string>
+Optional platform fee mode. If not specified, the default is outputMint.
+
+Available options: outputMint, inputMint 
+​
+sponsoredSwap
+boolean
+This should be specified as true if and only if the quote will be used for a sponsored swap.
+If true, then the quote will account for any additional token 2022 transfer fees that apply
+to the input and output mints for a sponsored swap.
+
+​
+destinationSwap
+boolean
+This should be specified as true if and only if the quote will be used for a destination
+token account swap. If true, then the quote will account for any additional token 2022
+transfer fees that apply to the output mint for a destination token account swap.
+
+​
+onlyDirectRoutes
+boolean
+If true, only use single-leg routes
+
+​
+maxRouteLength
+integer
+If specified, the route will be limited to the specified number of legs. Ignored if
+only_direct_routes is true.
+
+Required range: x >= 0
+
+
+
+
+Response
+
+200
+
+application/json
+Imperative swap quote
+
+​
+contextSlot
+integerrequired
+Slot at which the request was evaluated
+
+Required range: x >= 0
+​
+inAmount
+stringrequired
+Maximum input amount as a scaled integer. For example, 1 SOL is 1000000000.
+
+​
+inputMint
+stringrequired
+Base58-encoded input mint address
+
+​
+minOutAmount
+stringrequired
+Same as other_amount_threshold
+
+​
+otherAmountThreshold
+stringrequired
+Minimum output amount after all fees as a scaled integer. If the swap transaction doesn't
+produce at least this amount of the output token, the transaction will fail.
+
+​
+outAmount
+stringrequired
+Expected output amount after all fees as a scaled integer. For example, 1 SOL is 1000000000.
+
+​
+outputMint
+stringrequired
+Base58-encoded output mint address
+
+​
+priceImpactPct
+stringrequired
+Price impact of the swap. This is an estimate of the percentage difference between the
+expected price for the swap and the price for the same swap with the smallest input amount
+possible. For example, "0.01" means 1% price impact.
+
+​
+routePlan
+object[]required
+Route that the swap will take
+
+Option1 
+data
+stringrequired
+Data for the leg
+
+​
+inAmount
+stringrequired
+Maximum input amount for the leg as a scaled integer. For example, 1 SOL is 1000000000.
+
+​
+inputMint
+stringrequired
+Base58-encoded input mint address
+
+​
+inputMintDecimals
+integerrequired
+Decimals for the input mint
+
+Required range: x >= 0
+​
+marketKey
+stringrequired
+Key identifying the market on the venue
+
+​
+outAmount
+stringrequired
+Expected output amount for the leg as a scaled integer. For example, 1 SOL is 1000000000.
+
+​
+outputMint
+stringrequired
+Base58-encoded output mint address
+
+​
+outputMintDecimals
+integerrequired
+Decimals for the output mint
+
+Required range: x >= 0
+​
+venue
+stringrequired
+Venue for the leg
+
+
+Option2:
+inAmount
+stringrequired
+Maximum input amount for the leg as a scaled integer. For example, 1 SOL is 1000000000.
+
+​
+inputMint
+stringrequired
+Base58-encoded input mint address
+
+​
+inputMintDecimals
+integerrequired
+Decimals for the input mint
+
+Required range: x >= 0
+​
+marketKey
+stringrequired
+Key identifying the market on the venue
+
+​
+outAmount
+stringrequired
+Expected output amount for the leg as a scaled integer. For example, 1 SOL is 1000000000.
+
+​
+outputMint
+stringrequired
+Base58-encoded output mint address
+
+​
+outputMintDecimals
+integerrequired
+Decimals for the output mint
+
+Required range: x >= 0
+​
+venue
+stringrequired
+Venue for the leg
+
+
+slippageBps
+integerrequired
+Max allowed slippage % in basis points
+
+Required range: x >= 0
+​
+outTransferFee
+string
+Transfer fee amount that was applied to the quote, if any
+
+​
+platformFee
+object | null
+Platform fee that was applied to the quote, if any
+platformFee.amount
+stringrequired
+Platform fee as a scaled integer. For example, 1 SOL is 1000000000.
+
+​
+platformFee.feeAccount
+stringrequired
+Token account that will receive the platform fee
+
+​
+platformFee.feeBps
+integerrequired
+Platform fee in basis points
+
+Required range: x >= 0
+​
+platformFee.segmenterFeeAmount
+stringrequired
+Segmenter fee as a scaled integer. For example, 1 SOL is 1000000000.
+
+​
+platformFee.segmenterFeePct
+integerrequired
+Segmenter fee in percent
+
+Required range: x >= 0
+
+
+requestId
+string
+Identifier for the request
+
+​
+simulatedComputeUnits
+integer | null
+Compute units consumed by quote simulation
+
+Required range: x >= 0
+
+
+respone 200
+{
+  "contextSlot": 1,
+  "inAmount": "<string>",
+  "inputMint": "<string>",
+  "minOutAmount": "<string>",
+  "otherAmountThreshold": "<string>",
+  "outAmount": "<string>",
+  "outTransferFee": "<string>",
+  "outputMint": "<string>",
+  "platformFee": null,
+  "priceImpactPct": "<string>",
+  "requestId": "<string>",
+  "routePlan": [
+    {
+      "data": "<string>",
+      "inAmount": "<string>",
+      "inputMint": "<string>",
+      "inputMintDecimals": 1,
+      "marketKey": "<string>",
+      "outAmount": "<string>",
+      "outputMint": "<string>",
+      "outputMintDecimals": 1,
+      "venue": "<string>"
+    }
+  ],
+  "simulatedComputeUnits": 1,
+  "slippageBps": 1
+}
+
+400 500 503
+{
+  "code": "<enum<string>>",
+  "msg": "<string>"
+}

@@ -66,3 +66,26 @@ pub trait SwapAccountAssembler: Send + Sync {
 /// trait object 友好的助手类型。
 #[allow(dead_code)]
 pub type MetaArc<T> = Arc<T>;
+
+/// 统一描述已采集池子基础信息的结构。
+#[derive(Debug, Clone)]
+pub struct PoolMeta {
+    pub dex_label: &'static str,
+    pub program_id: Pubkey,
+    pub market: Pubkey,
+    pub base_mint: Pubkey,
+    pub quote_mint: Pubkey,
+    /// 预留字段：记录原始账户长度或其他补充信息。
+    pub raw_data_len: Option<usize>,
+}
+
+/// 池子索引器：负责从链上批量发现市场账户。
+pub trait PoolIndexer: Send + Sync {
+    type FetchFuture<'a>: Future<Output = Result<Vec<PoolMeta>>> + Send + 'a
+    where
+        Self: 'a;
+
+    fn program_id(&self) -> Pubkey;
+
+    fn fetch_pools<'a>(&'a self, client: &'a RpcClient) -> Self::FetchFuture<'a>;
+}

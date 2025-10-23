@@ -5,7 +5,9 @@ use tracing::warn;
 use super::error::{EngineError, EngineResult};
 use super::identity::EngineIdentity;
 use super::types::SwapOpportunity;
-use crate::api::{ComputeUnitPriceMicroLamports, JupiterApiClient, SwapInstructionsRequest};
+use crate::api::jupiter::{
+    ComputeUnitPriceMicroLamports, JupiterApiClient, SwapInstructionsRequest,
+};
 use crate::config::JupiterSwapConfig;
 use rand::Rng;
 
@@ -61,7 +63,7 @@ impl SwapInstructionFetcher {
         &self,
         opportunity: &SwapOpportunity,
         identity: &EngineIdentity,
-    ) -> EngineResult<crate::api::SwapInstructionsResponse> {
+    ) -> EngineResult<crate::api::jupiter::SwapInstructionsResponse> {
         let payload = opportunity
             .merged_quote
             .clone()

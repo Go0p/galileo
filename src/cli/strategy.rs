@@ -1,11 +1,11 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use tracing::{info, warn};
 
-use crate::api::JupiterApiClient;
+use crate::api::jupiter::JupiterApiClient;
 use crate::cli::context::{
     resolve_global_http_proxy, resolve_instruction_memo, resolve_rpc_client,
 };
@@ -16,7 +16,7 @@ use crate::engine::{
     EngineResult, EngineSettings, ProfitConfig, ProfitEvaluator, QuoteConfig, QuoteExecutor,
     Scheduler, StrategyEngine, SwapInstructionFetcher, TipConfig, TransactionBuilder,
 };
-use crate::flashloan::FlashloanManager;
+use crate::flashloan::marginfi::{MarginfiAccountRegistry, MarginfiFlashloanManager};
 use crate::jupiter::{JupiterBinaryManager, JupiterError};
 use crate::lander::LanderFactory;
 use crate::monitoring::events;
@@ -123,9 +123,9 @@ async fn run_blind_engine(
     let submission_client = submission_builder.build()?;
 
     let marginfi_cfg = &config.galileo.flashloan.marginfi;
-    let configured_marginfi = parse_marginfi_account(marginfi_cfg)?;
+    let marginfi_accounts = parse_marginfi_accounts(marginfi_cfg)?;
 
-    let prechecker = AccountPrechecker::new(rpc_client.clone(), configured_marginfi);
+    let prechecker = AccountPrechecker::new(rpc_client.clone(), marginfi_accounts.clone());
     let (summary, flashloan_precheck) = prechecker
         .ensure_accounts(
             &identity,
@@ -152,9 +152,27 @@ async fn run_blind_engine(
     if let Some(prep) = &flashloan_precheck {
         events::flashloan_account_precheck("blind", &prep.account, prep.created);
     }
+    let mut recorded_accounts: BTreeSet<Pubkey> = BTreeSet::new();
+    if let Some(prep) = &flashloan_precheck {
+        recorded_accounts.insert(prep.account);
+    }
+    if marginfi_accounts.has_per_mint_accounts() {
+        for account in marginfi_accounts.per_mint().values() {
+            if recorded_accounts.insert(*account) {
+                events::flashloan_account_precheck("blind", account, false);
+            }
+        }
+    }
+    if flashloan_precheck.is_none() {
+        if let Some(account) = marginfi_accounts.default() {
+            if recorded_accounts.insert(account) {
+                events::flashloan_account_precheck("blind", &account, false);
+            }
+        }
+    }
 
     let mut flashloan_manager =
-        FlashloanManager::new(marginfi_cfg, rpc_client.clone(), configured_marginfi);
+        MarginfiFlashloanManager::new(marginfi_cfg, rpc_client.clone(), marginfi_accounts.clone());
     let mut flashloan_precheck = flashloan_precheck;
     if let Some(prep) = flashloan_precheck.clone() {
         flashloan_manager.adopt_preparation(prep);
@@ -494,11 +512,65 @@ fn derive_compute_unit_price_mode(
     }
 }
 
-fn parse_marginfi_account(cfg: &config::FlashloanMarginfiConfig) -> Result<Option<Pubkey>> {
-    match cfg.marginfi_account.as_deref().map(str::trim) {
-        Some("") | None => Ok(None),
-        Some(value) => Pubkey::from_str(value)
-            .map(Some)
-            .map_err(|err| anyhow!("flashloan.marginfi.marginfi_account 无效: {err}")),
+fn parse_marginfi_accounts(
+    cfg: &config::FlashloanMarginfiConfig,
+) -> Result<MarginfiAccountRegistry> {
+    let default = match cfg.marginfi_account.as_deref().map(str::trim) {
+        Some("") | None => None,
+        Some(value) => Some(
+            Pubkey::from_str(value)
+                .map_err(|err| anyhow!("flashloan.marginfi.marginfi_account 无效: {err}"))?,
+        ),
+    };
+
+    let mut per_mint: HashMap<Pubkey, Pubkey> = HashMap::new();
+    for entry in &cfg.marginfi_accounts {
+        let key = entry.key.trim();
+        if key.is_empty() {
+            return Err(anyhow!(
+                "flashloan.marginfi.marginfi_accounts 含有空的资产标识"
+            ));
+        }
+        let mint = resolve_marginfi_mint_identifier(key).map_err(|err| {
+            anyhow!("flashloan.marginfi.marginfi_accounts `{key}` 无法解析为 mint: {err}")
+        })?;
+
+        let account_text = entry.account.trim();
+        if account_text.is_empty() {
+            return Err(anyhow!(
+                "flashloan.marginfi.marginfi_accounts `{key}` 的 account 不能为空"
+            ));
+        }
+        let account = Pubkey::from_str(account_text).map_err(|err| {
+            anyhow!("flashloan.marginfi.marginfi_accounts `{key}` account 无效: {err}")
+        })?;
+
+        if per_mint.insert(mint, account).is_some() {
+            return Err(anyhow!(format!(
+                "flashloan.marginfi.marginfi_accounts 重复定义了 mint `{mint}`"
+            )));
+        }
+    }
+
+    Ok(MarginfiAccountRegistry::new(default, per_mint))
+}
+
+fn resolve_marginfi_mint_identifier(src: &str) -> Result<Pubkey> {
+    const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
+    const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+    let trimmed = src.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("资产标识为空"));
+    }
+
+    if let Ok(pubkey) = Pubkey::from_str(trimmed) {
+        return Ok(pubkey);
+    }
+
+    match trimmed.to_ascii_lowercase().as_str() {
+        "wsol" | "sol" => Ok(Pubkey::from_str(WSOL_MINT).expect("内置 WSOL mint 常量必须有效")),
+        "usdc" => Ok(Pubkey::from_str(USDC_MINT).expect("内置 USDC mint 常量必须有效")),
+        other => Err(anyhow!("不支持的资产别名 `{other}`，请直接填入 mint 地址")),
     }
 }

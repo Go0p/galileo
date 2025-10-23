@@ -12,6 +12,7 @@ mod config;
 mod dexes;
 mod engine;
 mod flashloan;
+mod intermedium;
 mod jupiter;
 mod lander;
 mod monitoring;

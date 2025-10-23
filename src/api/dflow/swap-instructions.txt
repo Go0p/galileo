@@ -1,0 +1,332 @@
+Body
+application/json
+​
+quoteResponse
+objectrequired
+The response from the quote endpoint
+
+Hide child attributes
+
+​
+quoteResponse.contextSlot
+integerrequired
+Slot at which the request was evaluated
+
+Required range: x >= 0
+​
+quoteResponse.inAmount
+stringrequired
+Maximum input amount as a scaled integer. For example, 1 SOL is 1000000000.
+
+​
+quoteResponse.inputMint
+stringrequired
+Base58-encoded input mint address
+
+​
+quoteResponse.minOutAmount
+stringrequired
+Same as other_amount_threshold
+
+​
+quoteResponse.otherAmountThreshold
+stringrequired
+Minimum output amount after all fees as a scaled integer. If the swap transaction doesn't
+produce at least this amount of the output token, the transaction will fail.
+
+​
+quoteResponse.outAmount
+stringrequired
+Expected output amount after all fees as a scaled integer. For example, 1 SOL is 1000000000.
+
+​
+quoteResponse.outputMint
+stringrequired
+Base58-encoded output mint address
+
+​
+quoteResponse.priceImpactPct
+stringrequired
+Price impact of the swap. This is an estimate of the percentage difference between the
+expected price for the swap and the price for the same swap with the smallest input amount
+possible. For example, "0.01" means 1% price impact.
+
+​
+quoteResponse.routePlan
+object[]required
+Route that the swap will take
+/quote 接口返回的
+
+quoteResponse.slippageBps
+integerrequired
+Max allowed slippage % in basis points
+
+Required range: x >= 0
+​
+quoteResponse.outTransferFee
+string
+Transfer fee amount that was applied to the quote, if any
+
+​
+quoteResponse.platformFee
+object | null
+Platform fee that was applied to the quote, if any
+
+quoteResponse.platformFee.amount
+stringrequired
+Platform fee as a scaled integer. For example, 1 SOL is 1000000000.
+
+​
+quoteResponse.platformFee.feeAccount
+stringrequired
+Token account that will receive the platform fee
+
+​
+quoteResponse.platformFee.feeBps
+integerrequired
+Platform fee in basis points
+
+Required range: x >= 0
+​
+quoteResponse.platformFee.segmenterFeeAmount
+stringrequired
+Segmenter fee as a scaled integer. For example, 1 SOL is 1000000000.
+
+​
+quoteResponse.platformFee.segmenterFeePct
+integerrequired
+Segmenter fee in percent
+
+Required range: x >= 0
+
+
+userPublicKey
+stringrequired
+Base58-encoded address of the swapper's wallet
+
+​
+computeUnitPriceMicroLamports
+integer
+Compute unit price in micro-lamports. Mutually exclusive with prioritizationFeeLamports.
+
+Required range: x >= 0
+​
+createFeeAccount
+object
+If the fee account isn't a referral token account derived from the seeds
+["referral_ata", referral_account, mint] and the Referral program ID
+REFER4ZgmyYx9c6He5XfaTMiGfdLwRnkV4RPp9t9iF3, this should be unspecified. If specified, the
+transaction will create the fee_account if it doesn't already exist. The user pays for the
+creation of the fee account. Ignored if fee_account is unspecified.
+
+createFeeAccount.referralAccount
+stringrequired
+Base58-encoded address of the referral account associated with the fee account
+
+
+destinationTokenAccount
+object
+The account that will receive the output token. If not specified, the user's associated
+token account for the output mint will be used. Allowed values are:
+
+A base58-encoded address, which specifies the address of the destination token account or, if the output is native SOL, the destination wallet. If the output isn't native SOL, the specified account must exist before the swap executes, or else the swap will fail.
+An object which specifies the owner of the destination token account. In this case, the owner's associated token account for the output mint will be used as the destination token account. Note that this cannot be used if the output is native SOL. The object contains the following:
+associatedTokenAccount - object
+owner - base58-encoded address of the owner of the destination token account Use the specified owner's associated token account for the output mint as the destination token account. If the destination token account is uninitialized at swap execution time, the swap will create it. This cannot be used if the output is native SOL.
+有两种可能 option 1 和 2
+option 1
+destinationTokenAccount.associatedTokenAccount
+objectrequired
+Use the specified owner's associated token account for the output mint as the destination
+token account. If the destination token account is uninitialized at swap execution time, the
+swap will create it. This cannot be used if the output is native SOL.
+
+destinationTokenAccount.associatedTokenAccount.owner
+stringrequired
+Base58-encoded address of the owner of the destination token account
+
+option 2
+destinationTokenAccount.address
+stringrequired
+Use the specified base58-encoded address as the destination token account. The account must
+already be initialized at swap execution time or else the transaction will fail.
+
+
+dynamicComputeUnitLimit
+boolean
+If true, the server will simulate the transaction to determine its compute unit limit. If
+unspecified or false, the transaction will use the default compute unit limit.
+
+​
+feeAccount
+string
+Base58-encoded address of the token account that will receive the platform fee if a platform
+fee applies to the swap. If specified, this account's mint must match the fee mint for the
+swap.
+
+​
+includeJitoSandwichMitigationAccount
+boolean
+If true, the transaction will include a Jito sandwich mitigation account. The account will
+be included in the SetComputeUnitLimit instruction.
+See https://docs.jito.wtf/lowlatencytxnsend/#sandwich-mitigation for more details.
+
+​
+positiveSlippage
+object
+Positive slippage fee parameters. If specified, then the swap will pay some or all positive
+slippage to the specified account.
+
+positiveSlippage.limitPct
+integerrequired
+Limit on the positive slippage fee in percent. The positive slippage fee is limited to the
+lesser of (1) the excess actual out amount above the quoted amount and (2) this percentage
+of the actual out amount after platform fee.
+
+Required range: x >= 0
+​
+positiveSlippage.feeAccount
+string
+Base58-encoded address of the token account that will receive the positive slippage fee.
+This must be a token account for the output mint, regardless of the platform fee mode. If at
+swap execution time this account can't receive the positive slippage fee, then the positive
+slippage fee transfer is skipped. If the platform fee mode is outputMint and the platform
+fee account is specified, then this must be unspecified (in which case the platform fee
+account will be used) or match the platform fee account. Otherwise, this must be specified.
+
+
+preserveInputAta
+boolean
+If true, the transaction will never attempt to close the input token account
+
+​
+prioritizationFeeLamports
+
+Option 1 · object
+Prioritization fee in lamports. Mutually exclusive with computeUnitPriceMicroLamports.
+If both computeUnitPriceMicroLamports and prioritizationFeeLamports are unspecified, the
+default of prioritizationFeeLamports="auto" will be used.
+Allowed values are:
+
+a u32 which specifies the lamports
+the string value "auto", where the server determines the fee automatically, capped at 0.005 SOL
+the string value "disabled", where the server leaves the prioritization fee unspecified
+an object containing the following
+priorityLevelWithMaxLamports - object
+priorityLevel - string, either medium, high, or veryHigh
+maxLamports - integer, a cap on the prioritization fee
+an object containing the following
+autoMultiplier - a u32 which specifies how much to multiply the automatically determined fee by. The total prioritization fee will be capped at 0.005 SOL. A multiplier applied to the automatically-determined fee. The total is capped at 0.005 SOL.
+
+prioritizationFeeLamports.autoMultiplier
+integerrequired
+A multiplier applied to the automatically-determined fee. The total is capped at 0.005 SOL.
+
+Required range: x >= 0
+
+
+sponsor
+string
+Base58-encoded address of the sponsor's wallet. If specified, the sponsor will pay the
+transaction fee and for token account creation, and both the user and the sponsor must sign
+the swap transaction. This can be used to implement gasless swaps.
+
+​
+wrapAndUnwrapSol
+boolean
+If false, the transaction will use wrapped SOL
+
+
+
+Response
+
+{
+  "addressLookupTableAddresses": [
+    "<string>"
+  ],
+  "blockhashWithMetadata": {
+    "blockhash": "<string>",
+    "lastValidBlockHeight": 1
+  },
+  "cleanupInstructions": [
+    {
+      "accounts": [
+        {
+          "isSigner": true,
+          "isWritable": true,
+          "pubkey": "<string>"
+        }
+      ],
+      "data": "<string>",
+      "programId": "<string>"
+    }
+  ],
+  "computeBudgetInstructions": [
+    {
+      "accounts": [
+        {
+          "isSigner": true,
+          "isWritable": true,
+          "pubkey": "<string>"
+        }
+      ],
+      "data": "<string>",
+      "programId": "<string>"
+    }
+  ],
+  "computeUnitLimit": 1,
+  "otherInstructions": [
+    {
+      "accounts": [
+        {
+          "isSigner": true,
+          "isWritable": true,
+          "pubkey": "<string>"
+        }
+      ],
+      "data": "<string>",
+      "programId": "<string>"
+    }
+  ],
+  "prioritizationFeeLamports": 1,
+  "prioritizationType": null,
+  "setupInstructions": [
+    {
+      "accounts": [
+        {
+          "isSigner": true,
+          "isWritable": true,
+          "pubkey": "<string>"
+        }
+      ],
+      "data": "<string>",
+      "programId": "<string>"
+    }
+  ],
+  "swapInstruction": {
+    "accounts": [
+      {
+        "isSigner": true,
+        "isWritable": true,
+        "pubkey": "<string>"
+      }
+    ],
+    "data": "<string>",
+    "programId": "<string>"
+  }
+}
+
+
+400
+
+{
+  "code": "<enum<string>>",
+  "msg": "<string>"
+}
+
+500
+
+{
+  "code": "<enum<string>>",
+  "msg": "<string>"
+}

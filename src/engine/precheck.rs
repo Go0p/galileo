@@ -12,8 +12,9 @@ use solana_sdk::transaction::Transaction;
 use tracing::{info, warn};
 
 use super::{EngineError, EngineIdentity, EngineResult};
-use crate::flashloan::{
-    FlashloanError, FlashloanPreparation, build_initialize_instruction,
+use crate::flashloan::FlashloanError;
+use crate::flashloan::marginfi::{
+    MarginfiAccountRegistry, MarginfiFlashloanPreparation, build_initialize_instruction,
     find_marginfi_account_by_authority, marginfi_account_matches_authority,
 };
 use crate::strategy::types::TradePair;
@@ -96,14 +97,14 @@ pub struct PrecheckSummary {
 
 pub struct AccountPrechecker {
     rpc: Arc<RpcClient>,
-    marginfi_account: Option<Pubkey>,
+    marginfi_accounts: MarginfiAccountRegistry,
 }
 
 impl AccountPrechecker {
-    pub fn new(rpc: Arc<RpcClient>, marginfi_account: Option<Pubkey>) -> Self {
+    pub fn new(rpc: Arc<RpcClient>, marginfi_accounts: MarginfiAccountRegistry) -> Self {
         Self {
             rpc,
-            marginfi_account,
+            marginfi_accounts,
         }
     }
 
@@ -113,7 +114,7 @@ impl AccountPrechecker {
         identity: &EngineIdentity,
         trade_pairs: &[TradePair],
         flashloan_enabled: bool,
-    ) -> EngineResult<(PrecheckSummary, Option<FlashloanPreparation>)> {
+    ) -> EngineResult<(PrecheckSummary, Option<MarginfiFlashloanPreparation>)> {
         let candidates = self.collect_candidates(identity, trade_pairs)?;
         let (states, skipped) = self.classify_account_states(&candidates).await?;
 
@@ -146,8 +147,9 @@ impl AccountPrechecker {
 
         summary.created_accounts = missing_atas.len();
 
+        let marginfi_mints = self.collect_marginfi_mints(trade_pairs);
         let (marginfi_plan, flashloan_preparation) = if flashloan_enabled {
-            self.prepare_marginfi_plan(identity, &mut instructions)
+            self.prepare_marginfi_plan(identity, &marginfi_mints, &mut instructions)
                 .await?
         } else {
             (None, None)
@@ -243,6 +245,10 @@ impl AccountPrechecker {
         Ok(candidates)
     }
 
+    fn collect_marginfi_mints(&self, trade_pairs: &[TradePair]) -> BTreeSet<Pubkey> {
+        trade_pairs.iter().map(|pair| pair.input_pubkey).collect()
+    }
+
     async fn classify_account_states(
         &self,
         candidates: &[MintCandidate],
@@ -329,34 +335,58 @@ impl AccountPrechecker {
     async fn prepare_marginfi_plan(
         &self,
         identity: &EngineIdentity,
+        required_mints: &BTreeSet<Pubkey>,
         instructions: &mut Vec<Instruction>,
-    ) -> EngineResult<(Option<MarginfiCreationPlan>, Option<FlashloanPreparation>)> {
-        if let Some(configured) = self.marginfi_account {
-            let account = self
-                .rpc
-                .get_account(&configured)
-                .await
-                .map_err(EngineError::Rpc)?;
-            if marginfi_account_matches_authority(&account, &identity.pubkey) {
-                return Ok((
-                    None,
-                    Some(FlashloanPreparation {
-                        account: configured,
-                        created: false,
-                    }),
-                ));
-            } else {
-                return Err(EngineError::InvalidConfig(format!(
-                    "配置的 flashloan.marginfi.marginfi_account ({configured}) 不属于当前钱包"
-                )));
+    ) -> EngineResult<(
+        Option<MarginfiCreationPlan>,
+        Option<MarginfiFlashloanPreparation>,
+    )> {
+        if self.marginfi_accounts.has_per_mint_accounts() {
+            let mut verified: HashSet<Pubkey> = HashSet::new();
+            for mint in required_mints {
+                let Some(account) = self.marginfi_accounts.per_mint().get(mint) else {
+                    return Err(EngineError::InvalidConfig(format!(
+                        "缺少 mint {mint} 对应的 flashloan.marginfi.marginfi_accounts 配置"
+                    )));
+                };
+                if verified.insert(*account) {
+                    let context = format!("flashloan.marginfi.marginfi_accounts[{mint}]");
+                    self.verify_marginfi_account(identity, *account, &context)
+                        .await?;
+                }
             }
+            // 额外校验用户配置但当前未启用的账户，提前发现权限问题
+            for (&mint, &account) in self.marginfi_accounts.per_mint() {
+                if verified.insert(account) {
+                    let context = format!("flashloan.marginfi.marginfi_accounts[{mint}]");
+                    self.verify_marginfi_account(identity, account, &context)
+                        .await?;
+                }
+            }
+            return Ok((None, None));
+        }
+
+        if let Some(configured) = self.marginfi_accounts.default() {
+            self.verify_marginfi_account(
+                identity,
+                configured,
+                "flashloan.marginfi.marginfi_account",
+            )
+            .await?;
+            return Ok((
+                None,
+                Some(MarginfiFlashloanPreparation {
+                    account: configured,
+                    created: false,
+                }),
+            ));
         }
 
         let lookup = find_marginfi_account_by_authority(&self.rpc, &identity.pubkey).await;
         match lookup {
             Ok(Some(account)) => Ok((
                 None,
-                Some(FlashloanPreparation {
+                Some(MarginfiFlashloanPreparation {
                     account,
                     created: false,
                 }),
@@ -366,7 +396,7 @@ impl AccountPrechecker {
                 let instruction = build_initialize_instruction(keypair.pubkey(), &identity.pubkey)
                     .map_err(EngineError::from)?;
                 instructions.insert(0, instruction);
-                let preparation = FlashloanPreparation {
+                let preparation = MarginfiFlashloanPreparation {
                     account: keypair.pubkey(),
                     created: true,
                 };
@@ -382,13 +412,33 @@ impl AccountPrechecker {
                 let instruction = build_initialize_instruction(keypair.pubkey(), &identity.pubkey)
                     .map_err(EngineError::from)?;
                 instructions.insert(0, instruction);
-                let preparation = FlashloanPreparation {
+                let preparation = MarginfiFlashloanPreparation {
                     account: keypair.pubkey(),
                     created: true,
                 };
                 Ok((Some(MarginfiCreationPlan { keypair }), Some(preparation)))
             }
             Err(other) => Err(EngineError::from(other)),
+        }
+    }
+
+    async fn verify_marginfi_account(
+        &self,
+        identity: &EngineIdentity,
+        account: Pubkey,
+        context: &str,
+    ) -> EngineResult<()> {
+        let fetched = self
+            .rpc
+            .get_account(&account)
+            .await
+            .map_err(EngineError::Rpc)?;
+        if marginfi_account_matches_authority(&fetched, &identity.pubkey) {
+            Ok(())
+        } else {
+            Err(EngineError::InvalidConfig(format!(
+                "{context} ({account}) 不属于当前钱包"
+            )))
         }
     }
 

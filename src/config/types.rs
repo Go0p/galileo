@@ -227,6 +227,44 @@ pub struct FlashloanMarginfiConfig {
     pub prefer_wallet_balance: bool,
     #[serde(default)]
     pub marginfi_account: Option<String>,
+    #[serde(default)]
+    pub marginfi_accounts: Vec<MarginfiAccountConfigEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MarginfiAccountConfigEntry {
+    pub key: String,
+    pub account: String,
+}
+
+impl<'de> Deserialize<'de> for MarginfiAccountConfigEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use std::collections::BTreeMap;
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum RawEntry {
+            Pair { mint: String, account: String },
+            Map(BTreeMap<String, String>),
+        }
+
+        let raw = RawEntry::deserialize(deserializer)?;
+        match raw {
+            RawEntry::Pair { mint, account } => Ok(Self { key: mint, account }),
+            RawEntry::Map(map) => {
+                if map.len() != 1 {
+                    return Err(D::Error::custom(
+                        "flashloan.marginfi.marginfi_accounts 每项必须只有一个键值对",
+                    ));
+                }
+                let (key, account) = map.into_iter().next().unwrap();
+                Ok(Self { key, account })
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

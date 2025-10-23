@@ -1,0 +1,141 @@
+{
+  "11111111111111111111111111111111": {
+    "owner": "NativeLoader1111111111111111111111111111111",
+    "lamports": 1
+  },
+  "2afj1RQnpRyJdSq3hD7nWaQhz86QTbowZgzD8iQBinWL": {
+    "owner": null,
+    "lamports": 0
+  },
+  "2jHgHDRgtwvXRE54hGtDqfTs397R2a8AooUaYtaoJAo5": {
+    "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "lamports": 2039280
+  },
+  "2ny7eGyZCoeEVTkNLf5HcnJFBKkyA4p4gcrtb3b8y8ou": {
+    "owner": "E2uCGJ4TtYyKPGaK57UMfbs9sgaumwDEZF1aAY6fF3mS",
+    "lamports": 2060161
+  },
+  "2uVaeXJu9QjZ7JgzUFCwJWLZ3jgBrLkDhxtoNDh2Zm9Q": {
+    "owner": "11111111111111111111111111111111",
+    "lamports": 23030763827
+  },
+  "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc": {
+    "owner": "SV2EYYJyRz2YhfXwXnhNAevDEui5Q6yrfyo13WtupPF",
+    "lamports": 34987980,
+    "label": "SolFi V2 WSOL-USDC market state"
+  },
+  "6n9VhCwQ7EwK6NqFDjnHPzEk6wZdRBTfh43RFgHQWHuQ": {
+    "owner": "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "lamports": 12934430,
+    "label": "HumidiFi WSOL-USDC market token account (USDC vault)"
+  },
+  "7Rf8Gu8YemSoGjZT3z1cL5BT9HLbGywcyaz8Mrbhd1MH": {
+    "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "lamports": 2044300,
+    "label": "HumidiFi WSOL-USDC market token account (WSOL vault)"
+  },
+  "8xeaWCsJYxRoudEZGJWURdfrtFhLYZz9b4iHJnW5tb3d": {
+    "owner": "11111111111111111111111111111111",
+    "lamports": 1004005
+  },
+  "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp": {
+    "owner": "BPFLoaderUpgradeab1e11111111111111111111111",
+    "lamports": 1141546,
+    "label": "HumidiFi program"
+  },
+  "9wg6jEjNCRc7v96SG847KDnyJvXmYeEPMzeNpCBmBqGA": {
+    "owner": "BPFLoaderUpgradeab1e11111111111111111111111",
+    "lamports": 1141440
+  },
+  "9yPwvfTgHve2tqgAfN9S15B1pHArfpE4rr1ykykYUJgk": {
+    "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "lamports": 106044348645
+  },
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL": {
+    "owner": "BPFLoader2111111111111111111111111111111111",
+    "lamports": 731913600
+  },
+  "ATur6F13xF2aSkySrCoaDTmZ2ugdp2g8zp8faEzRmv7X": {
+    "owner": "9wg6jEjNCRc7v96SG847KDnyJvXmYeEPMzeNpCBmBqGA",
+    "lamports": 1596000
+  },
+  "CRo8DBwrmd97DJfAnvCv96tZPL5Mktf2NZy2ZnhDer1A": {
+    "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "lamports": 16805872548001,
+    "label": "SolFi V2 market WSOL vault"
+  },
+  "ComputeBudget111111111111111111111111111111": {
+    "owner": "NativeLoader1111111111111111111111111111111",
+    "lamports": 1
+  },
+  "Cv9St5tDTGwpbG5UVvM6QvFmf3FYSXc14W9BYvQN5wAZ": {
+    "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "lamports": 422723229049
+  },
+  "D8cy77BBepLMngZx6ZukaTff5hCt1HrWyKk3Hnd9oitf": {
+    "owner": "11111111111111111111111111111111",
+    "lamports": 3596051
+  },
+  "DF1ow4tspfHX9JwWJsAb9epbkA8hmpSEAtxXy1V27QBH": {
+    "owner": "BPFLoaderUpgradeab1e11111111111111111111111",
+    "lamports": 1145443
+  },
+  "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL": {
+    "owner": "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt",
+    "lamports": 979149
+  },
+  "EHb1GFAo3nnctjS2LSRrDWfNW4zPgjpYbBQrgqo6iJ3K": {
+    "owner": null,
+    "lamports": 0
+  },
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
+    "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "lamports": 419265667861
+  },
+  "Ew8NdrRrxiAdAMmS9DrevjMh9cVcRgKcif88kN9zpiSS": {
+    "owner": null,
+    "lamports": 0
+  },
+  "FmxXDSR9WvpJTCh738D1LEDuhMoA8geCtZgHb3isy7Dp": {
+    "owner": "SV2EYYJyRz2YhfXwXnhNAevDEui5Q6yrfyo13WtupPF",
+    "lamports": 7298979843
+  },
+  "GhFfLFSprPpfoRaWakPMmJTMJBHuz6C694jYwxy2dAic": {
+    "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "lamports": 2039282,
+    "label": "SolFi V2 market USDC vault"
+  },
+  "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4": {
+    "owner": "BPFLoaderUpgradeab1e11111111111111111111111",
+    "lamports": 2729681029
+  },
+  "SV2EYYJyRz2YhfXwXnhNAevDEui5Q6yrfyo13WtupPF": {
+    "owner": "BPFLoaderUpgradeab1e11111111111111111111111",
+    "lamports": 1141441,
+    "label": "SolFi V2 program"
+  },
+  "So11111111111111111111111111111111111111112": {
+    "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "lamports": 1178512878065
+  },
+  "Sysvar1nstructions1111111111111111111111111": {
+    "owner": null,
+    "lamports": 0
+  },
+  "SysvarC1ock11111111111111111111111111111111": {
+    "owner": "Sysvar1111111111111111111111111111111111111",
+    "lamports": 1
+  },
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": {
+    "owner": "BPFLoader2111111111111111111111111111111111",
+    "lamports": 934087680
+  },
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": {
+    "owner": "BPFLoader2111111111111111111111111111111111",
+    "lamports": 9619722240
+  },
+  "jitodontfron11111111111111111JustUseJupiter": {
+    "owner": null,
+    "lamports": 0
+  }
+}

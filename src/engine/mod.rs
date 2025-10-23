@@ -31,7 +31,7 @@ use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::pubkey::Pubkey;
 use tracing::{debug, info, trace, warn};
 
-use crate::api::SwapInstructionsResponse;
+use crate::api::jupiter::SwapInstructionsResponse;
 use crate::dexes::clmm::RaydiumClmmAdapter;
 use crate::dexes::dlmm::MeteoraDlmmAdapter;
 use crate::dexes::framework::{SwapAccountAssembler, SwapAccountsContext, SwapFlow};
@@ -41,7 +41,8 @@ use crate::dexes::solfi_v2::SolFiV2Adapter;
 use crate::dexes::tessera_v::TesseraVAdapter;
 use crate::dexes::whirlpool::WhirlpoolAdapter;
 use crate::dexes::zerofi::ZeroFiAdapter;
-use crate::flashloan::{FlashloanManager, FlashloanOutcome};
+use crate::flashloan::FlashloanOutcome;
+use crate::flashloan::marginfi::MarginfiFlashloanManager;
 use crate::lander::{Deadline, LanderStack};
 use crate::monitoring::events;
 use crate::strategy::types::{BlindDex, BlindMarketMeta, BlindOrder, BlindStep, TradePair};
@@ -106,7 +107,7 @@ where
     swap_fetcher: SwapInstructionFetcher,
     tx_builder: TransactionBuilder,
     scheduler: Scheduler,
-    flashloan: Option<FlashloanManager>,
+    flashloan: Option<MarginfiFlashloanManager>,
     settings: EngineSettings,
     trade_pairs: Vec<TradePair>,
     trade_amounts: Vec<u64>,
@@ -127,7 +128,7 @@ where
         swap_fetcher: SwapInstructionFetcher,
         tx_builder: TransactionBuilder,
         scheduler: Scheduler,
-        flashloan: Option<FlashloanManager>,
+        flashloan: Option<MarginfiFlashloanManager>,
         settings: EngineSettings,
         trade_pairs: Vec<TradePair>,
         trade_amounts: Vec<u64>,

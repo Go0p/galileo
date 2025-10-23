@@ -33,7 +33,7 @@
    - [x] 根据需要将 `global.logging.json` 设为 `false` 以启用文本日志。  
 2. **策略最小自检**  
    - [x] 准备必需环境变量（`GALILEO_USER_PUBKEY` 等）。  
-   - [x] 运行 `cargo run -- strategy` 检查初始化与身份解析是否顺利。  
+   - [x] 运行 `cargo run -- run` 检查初始化与身份解析是否顺利。  
    - [x] 确认 Jupiter API base URL 正常解析（本地或远端）。
 3. **文档对齐**  
    - [x] 将 `docs/demo.md` 更新为涵盖 blind_strategy / back_run_strategy 调用流程要点。  

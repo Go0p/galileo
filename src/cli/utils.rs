@@ -1,4 +1,4 @@
-use crate::api::QuoteRequest;
+use crate::api::jupiter::QuoteRequest;
 use crate::config::JupiterQuoteConfig;
 
 /// 解析 `key=value` 形式的额外查询参数。

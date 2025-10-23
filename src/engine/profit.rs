@@ -3,7 +3,7 @@ use rust_decimal::Decimal;
 use tracing::debug;
 
 use super::types::{DoubleQuote, SwapOpportunity};
-use crate::api::{QuoteResponse, QuoteResponsePayload};
+use crate::api::jupiter::{QuoteResponse, QuoteResponsePayload};
 
 #[derive(Debug, Clone)]
 pub struct TipConfig {

@@ -12,7 +12,7 @@ use solana_sdk::signature::Keypair;
 use solana_sdk::transaction::VersionedTransaction;
 use tracing::{debug, warn};
 
-use crate::api::SwapInstructionsResponse;
+use crate::api::jupiter::SwapInstructionsResponse;
 
 use super::error::{EngineError, EngineResult};
 use super::identity::EngineIdentity;

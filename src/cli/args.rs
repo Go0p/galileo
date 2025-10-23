@@ -33,7 +33,8 @@ pub enum Command {
     /// 请求 Jupiter API Swap 指令
     SwapInstructions(SwapInstructionsCmd),
     /// 运行已配置的套利策略循环
-    Strategy,
+    #[command(name = "run", alias = "strategy")]
+    Run,
     /// 运行套利策略（dry-run 模式）
     #[command(name = "dry-run")]
     StrategyDryRun,

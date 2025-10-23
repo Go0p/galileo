@@ -2,9 +2,9 @@ global:
   # rpc url
   # rpc_url: "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
   # rpc_url: "https://mainnet.solana.validationcloud.io/v1/4YlOowpz6fTe6Jl31oWxYGSusOS12UzTxXkpdoC1I5A"
-  # rpc_url: "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
+  rpc_url: "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
   # rpc_url: "https://solana-rpc.publicnode.com"
-  rpc_url: "http://127.0.0.1:8899"
+  # rpc_url: "http://127.0.0.1:8899"
   # yellowstone grpc url
   # proxy: "http://192.168.124.4:2080"
   yellowstone_grpc_url: ""
@@ -127,7 +127,9 @@ flashloan:
     # 优先使用钱包余额；若交易规模在余额内，则跳过闪电贷
     prefer_wallet_balance: true
     # marginfi_account: "AfXar5qXsgS5H2NYXcmcfZxrsxUFah7uUrpFcgxo91ZJ"
-    marginfi_account: "DkLdmQPbFn3U6HDqspGrTeN8wcAo17GxHyczo5YV7KpW"
+    marginfi_accounts:
+      - wsol: "DkLdmQPbFn3U6HDqspGrTeN8wcAo17GxHyczo5YV7KpW"
+      - usdc: ""
 
 # lander 相关配置已移至独立的 lander.yaml
 
@@ -192,9 +194,9 @@ blind_strategy:
         # - market: "DRciepTenS2bwfA9YJkZraZrFzcUpmVebR4aZgo2zj1k"
         # SolFi V2
         # - market: "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc"
-        - market: "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW"
-        - market: "HktfL7iwGKT5QHjywQkcDnZXScoh811k7akrMZJkCcEF"
-        - market: "BqkNuLTbUZLifWuUtfF5CkyRegTQhYYgUnNeUaxoWC8S"
+        - market: "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW" # Humidifi WSOL-USDC
+        - market: "HktfL7iwGKT5QHjywQkcDnZXScoh811k7akrMZJkCcEF"  # whirlpool SOL-WETH
+        - market: "BqkNuLTbUZLifWuUtfF5CkyRegTQhYYgUnNeUaxoWC8S"  # ZeroFi WETH-USDC
       lookup_tables:
         - 3RRynG7FN6FkVaAyZPHwZSAGYUWzxb1EmtM5CfrShhsw
         - "AW3raiF9cvqu8d5JgCXmCi8kh16Aba86gWVi9pbNYNNc"

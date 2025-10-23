@@ -3,7 +3,7 @@ use std::str::FromStr;
 use anyhow::{Result, anyhow};
 use tracing::info;
 
-use crate::api::{
+use crate::api::jupiter::{
     ComputeUnitPriceMicroLamports, JupiterApiClient, QuoteRequest, SwapInstructionsRequest,
 };
 use crate::cli::args::{Cli, Command};
@@ -153,7 +153,7 @@ async fn dispatch(
             let instructions = api_client.swap_instructions(&request).await?;
             println!("{}", serde_json::to_string_pretty(&instructions.raw)?);
         }
-        Command::Strategy => {
+        Command::Run => {
             run_strategy(&config, &manager, &api_client, StrategyMode::Live).await?;
         }
         Command::StrategyDryRun => {
@@ -203,7 +203,7 @@ impl SwapArgsExt for crate::cli::args::SwapInstructionsCmd {
 
 fn command_needs_jupiter(command: &Command, config: &AppConfig) -> bool {
     match command {
-        Command::Strategy | Command::StrategyDryRun => {
+        Command::Run | Command::StrategyDryRun => {
             let blind = &config.galileo.blind_strategy;
             !(blind.enable && blind.pure_mode)
         }

@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crate::api::{QuoteResponse, QuoteResponsePayload};
+use crate::api::jupiter::{QuoteResponse, QuoteResponsePayload};
 use crate::strategy::types::TradePair;
 
 #[derive(Debug, Clone)]

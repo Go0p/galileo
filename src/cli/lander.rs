@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, anyhow};
 use tracing::info;
 
-use crate::api::SwapInstructionsResponse;
+use crate::api::jupiter::SwapInstructionsResponse;
 use crate::cli::args::{LanderCmd, LanderSendArgs};
 use crate::cli::context::{resolve_global_http_proxy, resolve_rpc_client};
 use crate::config;
