@@ -1,3 +1,4 @@
+mod aggregator;
 mod builder;
 mod context;
 mod error;
@@ -10,6 +11,7 @@ mod scheduler;
 mod swap;
 mod types;
 
+pub use aggregator::SwapInstructionsVariant;
 pub use builder::{BuilderConfig, TransactionBuilder};
 pub use context::{Action, StrategyContext, StrategyResources};
 pub use error::{EngineError, EngineResult};
@@ -268,11 +270,8 @@ where
 
         let mut compute_budget_instructions =
             vec![compute_unit_limit_instruction(BLIND_COMPUTE_UNIT_LIMIT)];
-        let mut prioritization_fee_lamports = 0u64;
         if let Some(price) = self.swap_fetcher.sample_compute_unit_price() {
             compute_budget_instructions.push(compute_unit_price_instruction(price));
-            prioritization_fee_lamports =
-                price.saturating_mul(BLIND_COMPUTE_UNIT_LIMIT as u64) / 1_000_000;
         }
 
         let lookup_table_accounts = order.lookup_tables.clone();
@@ -291,12 +290,13 @@ where
             other_instructions: Vec::new(),
             address_lookup_table_addresses: lookup_table_addresses,
             resolved_lookup_tables: lookup_table_accounts,
-            prioritization_fee_lamports,
+            prioritization_fee_lamports: 0,
             compute_unit_limit: BLIND_COMPUTE_UNIT_LIMIT,
             prioritization_type: None,
             dynamic_slippage_report: None,
             simulation_error: None,
         };
+        let response_variant = SwapInstructionsVariant::Jupiter(response);
 
         let pair = TradePair::from_pubkeys(source_mint, destination_mint);
         let flashloan_opportunity = SwapOpportunity {
@@ -312,11 +312,11 @@ where
             metadata: flashloan_meta,
         } = match &self.flashloan {
             Some(manager) => manager
-                .assemble(&self.identity, &flashloan_opportunity, &response)
+                .assemble(&self.identity, &flashloan_opportunity, &response_variant)
                 .await
                 .map_err(EngineError::from)?,
             None => FlashloanOutcome {
-                instructions: response.flatten_instructions(),
+                instructions: response_variant.flatten_instructions(),
                 metadata: None,
             },
         };
@@ -335,7 +335,7 @@ where
 
         let prepared = self
             .tx_builder
-            .build_with_sequence(&self.identity, &response, final_instructions, 0)
+            .build_with_sequence(&self.identity, &response_variant, final_instructions, 0)
             .await?;
 
         let dispatch_strategy = self.settings.dispatch_strategy;
@@ -639,11 +639,15 @@ where
             .swap_fetcher
             .fetch(&opportunity, &self.identity)
             .await?;
+        let compute_unit_limit = instructions.compute_unit_limit();
+        let prioritization_fee = instructions
+            .prioritization_fee_lamports()
+            .unwrap_or_default();
         events::swap_fetched(
             strategy_name,
             &opportunity,
-            instructions.compute_unit_limit,
-            instructions.prioritization_fee_lamports,
+            compute_unit_limit,
+            prioritization_fee,
         );
 
         let FlashloanOutcome {

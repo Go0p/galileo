@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -8,7 +7,7 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 
 use crate::config::{AutoUnwrapConfig, FlashloanMarginfiConfig, WalletConfig};
-use crate::engine::{EngineIdentity, SwapOpportunity};
+use crate::engine::{EngineIdentity, SwapInstructionsVariant, SwapOpportunity};
 use crate::flashloan::FlashloanProtocol;
 use crate::strategy::types::TradePair;
 
@@ -79,10 +78,9 @@ async fn marginfi_wraps_instructions() {
         enable: true,
         prefer_wallet_balance: false,
         marginfi_account: None,
-        marginfi_accounts: Vec::new(),
     };
     let rpc = Arc::new(RpcClient::new_mock("mock://marginfi".to_string()));
-    let registry = MarginfiAccountRegistry::new(None, HashMap::new());
+    let registry = MarginfiAccountRegistry::new(None);
     let mut manager = MarginfiFlashloanManager::new(&config, rpc, registry);
     manager.adopt_preparation(MarginfiFlashloanPreparation {
         account: marginfi_account,
@@ -90,7 +88,7 @@ async fn marginfi_wraps_instructions() {
     });
     assert!(manager.is_enabled());
 
-    let response = sample_swap_response();
+    let response = SwapInstructionsVariant::Jupiter(sample_swap_response());
     let opportunity = sample_opportunity();
     let outcome = manager
         .assemble(&identity, &opportunity, &response)
@@ -113,16 +111,15 @@ async fn marginfi_wraps_instructions() {
 #[tokio::test]
 async fn disabled_flashloan_passthrough() {
     let identity = make_identity();
-    let response = sample_swap_response();
+    let response = SwapInstructionsVariant::Jupiter(sample_swap_response());
     let opportunity = sample_opportunity();
     let config = FlashloanMarginfiConfig {
         enable: false,
         prefer_wallet_balance: false,
         marginfi_account: None,
-        marginfi_accounts: Vec::new(),
     };
     let rpc = Arc::new(RpcClient::new_mock("mock://marginfi".to_string()));
-    let registry = MarginfiAccountRegistry::new(None, HashMap::new());
+    let registry = MarginfiAccountRegistry::new(None);
     let manager = MarginfiFlashloanManager::new(&config, rpc, registry);
     assert!(!manager.is_enabled());
     let outcome = manager

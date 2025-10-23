@@ -1,10 +1,11 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use tracing::{info, warn};
 
+use crate::api::dflow::DflowApiClient;
 use crate::api::jupiter::JupiterApiClient;
 use crate::cli::context::{
     resolve_global_http_proxy, resolve_instruction_memo, resolve_rpc_client,
@@ -31,11 +32,20 @@ pub enum StrategyMode {
     DryRun,
 }
 
+pub enum StrategyBackend<'a> {
+    Jupiter {
+        manager: &'a JupiterBinaryManager,
+        api_client: &'a JupiterApiClient,
+    },
+    Dflow {
+        api_client: &'a DflowApiClient,
+    },
+}
+
 /// 主策略入口，按配置在盲发与 copy 之间切换。
 pub async fn run_strategy(
     config: &AppConfig,
-    manager: &JupiterBinaryManager,
-    api_client: &JupiterApiClient,
+    backend: &StrategyBackend<'_>,
     mode: StrategyMode,
 ) -> Result<()> {
     let dry_run = matches!(mode, StrategyMode::DryRun) || config.galileo.bot.dry_run;
@@ -43,13 +53,12 @@ pub async fn run_strategy(
         warn!(target: "strategy", "盲发策略未启用，直接退出");
         return Ok(());
     }
-    run_blind_engine(config, manager, api_client, dry_run).await
+    run_blind_engine(config, backend, dry_run).await
 }
 
 async fn run_blind_engine(
     config: &AppConfig,
-    manager: &JupiterBinaryManager,
-    api_client: &JupiterApiClient,
+    backend: &StrategyBackend<'_>,
     dry_run: bool,
 ) -> Result<()> {
     let blind_config = &config.galileo.blind_strategy;
@@ -60,48 +69,100 @@ async fn run_blind_engine(
     }
 
     let pure_mode = blind_config.pure_mode;
+    let compute_unit_price_mode = derive_compute_unit_price_mode(&config.lander.lander);
     let mut jupiter_started = false;
-    if pure_mode {
-        info!(
-            target: "strategy",
-            "纯盲发模式已开启，不启动本地 Jupiter 二进制"
-        );
-    } else if !manager.disable_local_binary {
-        match manager.start(false).await {
-            Ok(()) => {
-                info!(target: "strategy", "已启动本地 Jupiter 二进制");
-                jupiter_started = true;
-            }
-            Err(JupiterError::AlreadyRunning) => {
-                info!(target: "strategy", "本地 Jupiter 二进制已在运行");
-                jupiter_started = true;
-            }
-            Err(err) => return Err(err.into()),
-        }
-    } else {
-        info!(
-            target: "strategy",
-            "已禁用本地 Jupiter 二进制，将使用远端 API"
-        );
-    }
 
     let rpc_client = resolve_rpc_client(&config.galileo.global)?;
     let mut identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
-    identity.set_skip_user_accounts_rpc_calls(
-        config
-            .galileo
-            .engine
-            .jupiter
-            .swap_config
-            .skip_user_accounts_rpc_calls,
-    );
+
+    let (quote_executor, swap_fetcher, quote_defaults_tuple) = match backend {
+        StrategyBackend::Jupiter {
+            manager,
+            api_client,
+        } => {
+            if pure_mode {
+                info!(
+                    target: "strategy",
+                    "纯盲发模式已开启，不启动本地 Jupiter 二进制"
+                );
+            } else if !manager.disable_local_binary {
+                match manager.start(false).await {
+                    Ok(()) => {
+                        info!(target: "strategy", "已启动本地 Jupiter 二进制");
+                        jupiter_started = true;
+                    }
+                    Err(JupiterError::AlreadyRunning) => {
+                        info!(target: "strategy", "本地 Jupiter 二进制已在运行");
+                        jupiter_started = true;
+                    }
+                    Err(err) => return Err(err.into()),
+                }
+            } else {
+                info!(
+                    target: "strategy",
+                    "已禁用本地 Jupiter 二进制，将使用远端 API"
+                );
+            }
+
+            identity.set_skip_user_accounts_rpc_calls(
+                config
+                    .galileo
+                    .engine
+                    .jupiter
+                    .swap_config
+                    .skip_user_accounts_rpc_calls,
+            );
+
+            let quote_defaults_cfg = config.galileo.engine.jupiter.quote_config.clone();
+            let swap_defaults_cfg = config.galileo.engine.jupiter.swap_config.clone();
+            let quote_executor =
+                QuoteExecutor::for_jupiter((*api_client).clone(), quote_defaults_cfg.clone());
+            let swap_fetcher = SwapInstructionFetcher::for_jupiter(
+                (*api_client).clone(),
+                swap_defaults_cfg.clone(),
+                compute_unit_price_mode.clone(),
+            );
+            (
+                quote_executor,
+                swap_fetcher,
+                (
+                    quote_defaults_cfg.only_direct_routes,
+                    quote_defaults_cfg.restrict_intermediate_tokens,
+                ),
+            )
+        }
+        StrategyBackend::Dflow { api_client } => {
+            if pure_mode {
+                info!(target: "strategy", "纯盲发模式已开启，使用 DFlow 聚合器");
+            } else {
+                info!(target: "strategy", "使用 DFlow 聚合器，不启动本地 Jupiter 二进制");
+            }
+            identity.set_skip_user_accounts_rpc_calls(false);
+
+            let dflow_quote_cfg = config.galileo.engine.dflow.quote_config.clone();
+            let quote_executor =
+                QuoteExecutor::for_dflow((*api_client).clone(), dflow_quote_cfg.clone());
+            let swap_fetcher = SwapInstructionFetcher::for_dflow(
+                (*api_client).clone(),
+                config.galileo.engine.dflow.swap_config.clone(),
+                compute_unit_price_mode.clone(),
+            );
+            (
+                quote_executor,
+                swap_fetcher,
+                (dflow_quote_cfg.only_direct_routes, true),
+            )
+        }
+    };
+
+    let (only_direct_default, restrict_default) = quote_defaults_tuple;
     let trade_pairs = build_blind_trade_pairs(blind_config, &config.galileo.intermedium)?;
     let trade_amounts = build_blind_trade_amounts(blind_config)?;
     let profit_config = build_blind_profit_config(blind_config);
     let scheduler_delay = resolve_blind_scheduler_delay(blind_config);
-    let quote_defaults = config.galileo.engine.jupiter.quote_config.clone();
-    let quote_config = build_blind_quote_config(blind_config, &quote_defaults);
+    let quote_config =
+        build_blind_quote_config(blind_config, only_direct_default, restrict_default);
     tracing::info!(
         target: "engine::config",
         dex_whitelist = ?quote_config.dex_whitelist,
@@ -111,7 +172,6 @@ async fn run_blind_engine(
 
     let builder_config =
         BuilderConfig::new(resolve_instruction_memo(&config.galileo.global.instruction));
-    let swap_defaults = config.galileo.engine.jupiter.swap_config.clone();
     let mut submission_builder = reqwest::Client::builder();
     if let Some(proxy_url) = resolve_global_http_proxy(&config.galileo.global) {
         let proxy = reqwest::Proxy::all(&proxy_url)
@@ -156,13 +216,6 @@ async fn run_blind_engine(
     if let Some(prep) = &flashloan_precheck {
         recorded_accounts.insert(prep.account);
     }
-    if marginfi_accounts.has_per_mint_accounts() {
-        for account in marginfi_accounts.per_mint().values() {
-            if recorded_accounts.insert(*account) {
-                events::flashloan_account_precheck("blind", account, false);
-            }
-        }
-    }
     if flashloan_precheck.is_none() {
         if let Some(account) = marginfi_accounts.default() {
             if recorded_accounts.insert(account) {
@@ -199,7 +252,6 @@ async fn run_blind_engine(
         )
         .map_err(|err| anyhow!(err))?;
 
-    let compute_unit_price_mode = derive_compute_unit_price_mode(&config.lander.lander);
     let engine_settings = EngineSettings::new(quote_config)
         .with_dispatch_strategy(config.lander.lander.sending_strategy)
         .with_landing_timeout(landing_timeout)
@@ -214,9 +266,9 @@ async fn run_blind_engine(
             PureBlindStrategy::new(routes).map_err(|err| anyhow!(err))?,
             lander_stack,
             identity,
-            QuoteExecutor::new(api_client.clone(), quote_defaults),
-            ProfitEvaluator::new(profit_config),
-            SwapInstructionFetcher::new(api_client.clone(), swap_defaults, compute_unit_price_mode),
+            quote_executor.clone(),
+            ProfitEvaluator::new(profit_config.clone()),
+            swap_fetcher.clone(),
             TransactionBuilder::new(rpc_client.clone(), builder_config),
             Scheduler::new(scheduler_delay),
             flashloan,
@@ -232,9 +284,9 @@ async fn run_blind_engine(
             BlindStrategy::new(),
             lander_stack,
             identity,
-            QuoteExecutor::new(api_client.clone(), quote_defaults),
+            quote_executor,
             ProfitEvaluator::new(profit_config),
-            SwapInstructionFetcher::new(api_client.clone(), swap_defaults, compute_unit_price_mode),
+            swap_fetcher,
             TransactionBuilder::new(rpc_client.clone(), builder_config),
             Scheduler::new(scheduler_delay),
             flashloan,
@@ -248,12 +300,14 @@ async fn run_blind_engine(
     }
 
     if !pure_mode && jupiter_started {
-        if let Err(err) = manager.stop().await {
-            warn!(
-                target: "strategy",
-                error = %err,
-                "停止 Jupiter 二进制失败"
-            );
+        if let StrategyBackend::Jupiter { manager, .. } = backend {
+            if let Err(err) = manager.stop().await {
+                warn!(
+                    target: "strategy",
+                    error = %err,
+                    "停止 Jupiter 二进制失败"
+                );
+            }
         }
     }
 
@@ -356,6 +410,7 @@ fn build_blind_trade_amounts(config: &config::BlindStrategyConfig) -> EngineResu
 }
 
 fn generate_amounts_for_base(base: &config::BlindBaseMintConfig) -> Vec<u64> {
+    const TWEAK_FACTOR: f64 = 0.99;
     if base.trade_size_range.is_empty() {
         return Vec::new();
     }
@@ -380,7 +435,13 @@ fn generate_amounts_for_base(base: &config::BlindBaseMintConfig) -> Vec<u64> {
         }
     }
 
-    values.into_iter().collect()
+    let mut tweaked: BTreeSet<u64> = BTreeSet::new();
+    for amount in values {
+        let adjusted = ((amount as f64) * TWEAK_FACTOR).round() as u64;
+        tweaked.insert(adjusted.max(1));
+    }
+
+    tweaked.into_iter().collect()
 }
 
 fn build_blind_profit_config(config: &config::BlindStrategyConfig) -> ProfitConfig {
@@ -411,7 +472,8 @@ fn resolve_blind_scheduler_delay(config: &config::BlindStrategyConfig) -> Durati
 
 fn build_blind_quote_config(
     config: &config::BlindStrategyConfig,
-    defaults: &config::JupiterQuoteConfig,
+    only_direct_routes_default: bool,
+    restrict_intermediate_tokens_default: bool,
 ) -> QuoteConfig {
     let only_direct_routes = if config.base_mints.iter().any(|mint| {
         mint.route_types
@@ -420,13 +482,13 @@ fn build_blind_quote_config(
     }) {
         true
     } else {
-        defaults.only_direct_routes
+        only_direct_routes_default
     };
 
     QuoteConfig {
         slippage_bps: 0,
         only_direct_routes,
-        restrict_intermediate_tokens: defaults.restrict_intermediate_tokens,
+        restrict_intermediate_tokens: restrict_intermediate_tokens_default,
         quote_max_accounts: None,
         dex_whitelist: config.enable_dexs.clone(),
     }
@@ -523,54 +585,5 @@ fn parse_marginfi_accounts(
         ),
     };
 
-    let mut per_mint: HashMap<Pubkey, Pubkey> = HashMap::new();
-    for entry in &cfg.marginfi_accounts {
-        let key = entry.key.trim();
-        if key.is_empty() {
-            return Err(anyhow!(
-                "flashloan.marginfi.marginfi_accounts 含有空的资产标识"
-            ));
-        }
-        let mint = resolve_marginfi_mint_identifier(key).map_err(|err| {
-            anyhow!("flashloan.marginfi.marginfi_accounts `{key}` 无法解析为 mint: {err}")
-        })?;
-
-        let account_text = entry.account.trim();
-        if account_text.is_empty() {
-            return Err(anyhow!(
-                "flashloan.marginfi.marginfi_accounts `{key}` 的 account 不能为空"
-            ));
-        }
-        let account = Pubkey::from_str(account_text).map_err(|err| {
-            anyhow!("flashloan.marginfi.marginfi_accounts `{key}` account 无效: {err}")
-        })?;
-
-        if per_mint.insert(mint, account).is_some() {
-            return Err(anyhow!(format!(
-                "flashloan.marginfi.marginfi_accounts 重复定义了 mint `{mint}`"
-            )));
-        }
-    }
-
-    Ok(MarginfiAccountRegistry::new(default, per_mint))
-}
-
-fn resolve_marginfi_mint_identifier(src: &str) -> Result<Pubkey> {
-    const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
-    const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-
-    let trimmed = src.trim();
-    if trimmed.is_empty() {
-        return Err(anyhow!("资产标识为空"));
-    }
-
-    if let Ok(pubkey) = Pubkey::from_str(trimmed) {
-        return Ok(pubkey);
-    }
-
-    match trimmed.to_ascii_lowercase().as_str() {
-        "wsol" | "sol" => Ok(Pubkey::from_str(WSOL_MINT).expect("内置 WSOL mint 常量必须有效")),
-        "usdc" => Ok(Pubkey::from_str(USDC_MINT).expect("内置 USDC mint 常量必须有效")),
-        other => Err(anyhow!("不支持的资产别名 `{other}`，请直接填入 mint 地址")),
-    }
+    Ok(MarginfiAccountRegistry::new(default))
 }

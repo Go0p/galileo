@@ -10,9 +10,8 @@ use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::Mutex;
 
-use crate::api::jupiter::SwapInstructionsResponse;
 use crate::config::FlashloanMarginfiConfig;
-use crate::engine::{EngineIdentity, SwapOpportunity};
+use crate::engine::{EngineIdentity, SwapInstructionsVariant, SwapOpportunity};
 use crate::flashloan::{FlashloanError, FlashloanOutcome, FlashloanResult};
 
 use super::account::{MarginfiAccountEnsure, ensure_marginfi_account};
@@ -24,12 +23,11 @@ const BALANCE_CACHE_TTL: Duration = Duration::from_millis(500);
 #[derive(Debug, Clone, Default)]
 pub struct MarginfiAccountRegistry {
     default: Option<Pubkey>,
-    per_mint: HashMap<Pubkey, Pubkey>,
 }
 
 impl MarginfiAccountRegistry {
-    pub fn new(default: Option<Pubkey>, per_mint: HashMap<Pubkey, Pubkey>) -> Self {
-        Self { default, per_mint }
+    pub fn new(default: Option<Pubkey>) -> Self {
+        Self { default }
     }
 
     pub fn default(&self) -> Option<Pubkey> {
@@ -38,14 +36,6 @@ impl MarginfiAccountRegistry {
 
     pub fn configured_default(&self) -> Option<Pubkey> {
         self.default
-    }
-
-    pub fn per_mint(&self) -> &HashMap<Pubkey, Pubkey> {
-        &self.per_mint
-    }
-
-    pub fn has_per_mint_accounts(&self) -> bool {
-        !self.per_mint.is_empty()
     }
 }
 
@@ -67,7 +57,6 @@ pub struct MarginfiFlashloanManager {
     prefer_wallet_balance: bool,
     configured_default: Option<Pubkey>,
     fallback_marginfi: Option<MarginfiFlashloan>,
-    per_mint_marginfi: HashMap<Pubkey, MarginfiFlashloan>,
     balance_cache: Mutex<HashMap<Pubkey, BalanceCacheEntry>>,
 }
 
@@ -78,11 +67,6 @@ impl MarginfiFlashloanManager {
         accounts: MarginfiAccountRegistry,
     ) -> Self {
         let configured_default = accounts.configured_default();
-        let per_mint_marginfi = accounts
-            .per_mint()
-            .iter()
-            .map(|(mint, account)| (*mint, MarginfiFlashloan::new(*account)))
-            .collect::<HashMap<_, _>>();
         let fallback_marginfi = configured_default.map(MarginfiFlashloan::new);
         Self {
             rpc,
@@ -90,7 +74,6 @@ impl MarginfiFlashloanManager {
             prefer_wallet_balance: cfg.prefer_wallet_balance,
             configured_default,
             fallback_marginfi,
-            per_mint_marginfi,
             balance_cache: Mutex::new(HashMap::new()),
         }
     }
@@ -118,16 +101,6 @@ impl MarginfiFlashloanManager {
             return Ok(None);
         }
 
-        if !self.per_mint_marginfi.is_empty() {
-            if let Some(existing) = &self.fallback_marginfi {
-                return Ok(Some(MarginfiFlashloanPreparation {
-                    account: existing.account(),
-                    created: false,
-                }));
-            }
-            return Ok(None);
-        }
-
         if let Some(existing) = &self.fallback_marginfi {
             return Ok(Some(MarginfiFlashloanPreparation {
                 account: existing.account(),
@@ -145,7 +118,7 @@ impl MarginfiFlashloanManager {
         &self,
         identity: &EngineIdentity,
         opportunity: &SwapOpportunity,
-        response: &SwapInstructionsResponse,
+        response: &SwapInstructionsVariant,
     ) -> FlashloanResult<FlashloanOutcome> {
         let mut flattened = response.flatten_instructions();
         if flattened.is_empty() {
@@ -156,7 +129,7 @@ impl MarginfiFlashloanManager {
         }
 
         let prefix_len = response
-            .compute_budget_instructions
+            .compute_budget_instructions()
             .len()
             .min(flattened.len());
         let body = flattened.split_off(prefix_len);
@@ -164,9 +137,7 @@ impl MarginfiFlashloanManager {
 
         let base_mint = opportunity.pair.input_pubkey;
 
-        let marginfi = if let Some(entry) = self.per_mint_marginfi.get(&base_mint) {
-            entry
-        } else if let Some(entry) = &self.fallback_marginfi {
+        let marginfi = if let Some(entry) = &self.fallback_marginfi {
             entry
         } else {
             return Ok(FlashloanOutcome {
@@ -230,7 +201,6 @@ impl fmt::Debug for MarginfiFlashloanManager {
             .field("prefer_wallet_balance", &self.prefer_wallet_balance)
             .field("configured_default", &self.configured_default)
             .field("fallback_marginfi", &self.fallback_marginfi.is_some())
-            .field("per_mint_accounts", &self.per_mint_marginfi.len())
             .finish()
     }
 }

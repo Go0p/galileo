@@ -2,8 +2,12 @@ use std::convert::TryFrom;
 
 use tracing::debug;
 
-use crate::api::jupiter::{JupiterApiClient, QuoteRequest, QuoteResponse};
-use crate::config::JupiterQuoteConfig;
+use super::aggregator::QuoteResponseVariant;
+use crate::api::dflow::{
+    DflowApiClient, QuoteRequest as DflowQuoteRequest, SlippageBps, SlippagePreset,
+};
+use crate::api::jupiter::{JupiterApiClient, QuoteRequest};
+use crate::config::{DflowQuoteConfig, JupiterQuoteConfig};
 use crate::strategy::types::TradePair;
 
 use super::error::{EngineError, EngineResult};
@@ -21,14 +25,33 @@ pub struct QuoteConfig {
 impl QuoteConfig {}
 
 #[derive(Clone)]
+pub enum QuoteBackend {
+    Jupiter {
+        client: JupiterApiClient,
+        defaults: JupiterQuoteConfig,
+    },
+    Dflow {
+        client: DflowApiClient,
+        defaults: DflowQuoteConfig,
+    },
+}
+
+#[derive(Clone)]
 pub struct QuoteExecutor {
-    client: JupiterApiClient,
-    defaults: JupiterQuoteConfig,
+    backend: QuoteBackend,
 }
 
 impl QuoteExecutor {
-    pub fn new(client: JupiterApiClient, defaults: JupiterQuoteConfig) -> Self {
-        Self { client, defaults }
+    pub fn for_jupiter(client: JupiterApiClient, defaults: JupiterQuoteConfig) -> Self {
+        Self {
+            backend: QuoteBackend::Jupiter { client, defaults },
+        }
+    }
+
+    pub fn for_dflow(client: DflowApiClient, defaults: DflowQuoteConfig) -> Self {
+        Self {
+            backend: QuoteBackend::Dflow { client, defaults },
+        }
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
@@ -39,7 +62,7 @@ impl QuoteExecutor {
     ) -> EngineResult<Option<DoubleQuote>> {
         let forward = self.quote_once(&task.pair, task.amount, config).await?;
 
-        let first_out = forward.out_amount as u128;
+        let first_out = forward.out_amount() as u128;
         if first_out == 0 {
             debug!(
                 target: "engine::quote",
@@ -68,6 +91,16 @@ impl QuoteExecutor {
             .quote_once(&reverse_pair, second_amount, config)
             .await?;
 
+        if forward.kind() != reverse.kind() {
+            debug!(
+                target: "engine::quote",
+                forward_kind = ?forward.kind(),
+                reverse_kind = ?reverse.kind(),
+                "前后腿聚合器类型不一致，跳过"
+            );
+            return Ok(None);
+        }
+
         Ok(Some(DoubleQuote { forward, reverse }))
     }
 
@@ -77,37 +110,66 @@ impl QuoteExecutor {
         pair: &TradePair,
         amount: u64,
         config: &QuoteConfig,
-    ) -> EngineResult<QuoteResponse> {
-        let mut request = QuoteRequest::new(
-            pair.input_pubkey,
-            pair.output_pubkey,
-            amount,
-            config.slippage_bps,
-        );
-        request.only_direct_routes = Some(config.only_direct_routes);
-        request.restrict_intermediate_tokens = Some(config.restrict_intermediate_tokens);
-        if let Some(max_accounts) = config.quote_max_accounts {
-            request.max_accounts = Some(max_accounts as usize);
-        }
+    ) -> EngineResult<QuoteResponseVariant> {
+        match &self.backend {
+            QuoteBackend::Jupiter { client, defaults } => {
+                let mut request = QuoteRequest::new(
+                    pair.input_pubkey,
+                    pair.output_pubkey,
+                    amount,
+                    config.slippage_bps,
+                );
+                request.only_direct_routes = Some(config.only_direct_routes);
+                request.restrict_intermediate_tokens = Some(config.restrict_intermediate_tokens);
+                if let Some(max_accounts) = config.quote_max_accounts {
+                    request.max_accounts = Some(max_accounts as usize);
+                }
 
-        if !config.dex_whitelist.is_empty() {
-            let dexes = config.dex_whitelist.join(",");
-            request.dexes = Some(dexes);
-        }
+                if !config.dex_whitelist.is_empty() {
+                    let dexes = config.dex_whitelist.join(",");
+                    request.dexes = Some(dexes);
+                }
 
-        self.apply_defaults(&mut request);
-        self.client.quote(&request).await.map_err(EngineError::from)
+                apply_jupiter_defaults(defaults, &mut request);
+                client
+                    .quote(&request)
+                    .await
+                    .map(QuoteResponseVariant::Jupiter)
+                    .map_err(EngineError::from)
+            }
+            QuoteBackend::Dflow { client, defaults } => {
+                let mut request =
+                    DflowQuoteRequest::new(pair.input_pubkey, pair.output_pubkey, amount);
+                if config.only_direct_routes {
+                    request.only_direct_routes = Some(true);
+                }
+                if !config.dex_whitelist.is_empty() {
+                    request.dexes = Some(config.dex_whitelist.join(","));
+                }
+                if defaults.use_auto_slippage {
+                    request.slippage_bps = Some(SlippageBps::Preset(SlippagePreset::Auto));
+                } else {
+                    request.slippage_bps = Some(SlippageBps::Fixed(config.slippage_bps));
+                }
+
+                client
+                    .quote(&request)
+                    .await
+                    .map(QuoteResponseVariant::Dflow)
+                    .map_err(EngineError::from)
+            }
+        }
+    }
+}
+
+fn apply_jupiter_defaults(defaults: &JupiterQuoteConfig, request: &mut QuoteRequest) {
+    if !request.only_direct_routes.unwrap_or(false) && defaults.only_direct_routes {
+        request.only_direct_routes = Some(true);
     }
 
-    fn apply_defaults(&self, request: &mut QuoteRequest) {
-        if !request.only_direct_routes.unwrap_or(false) && self.defaults.only_direct_routes {
-            request.only_direct_routes = Some(true);
-        }
-
-        if request.restrict_intermediate_tokens.unwrap_or(true)
-            && !self.defaults.restrict_intermediate_tokens
-        {
-            request.restrict_intermediate_tokens = Some(false);
-        }
+    if request.restrict_intermediate_tokens.unwrap_or(true)
+        && !defaults.restrict_intermediate_tokens
+    {
+        request.restrict_intermediate_tokens = Some(false);
     }
 }

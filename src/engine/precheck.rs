@@ -147,9 +147,8 @@ impl AccountPrechecker {
 
         summary.created_accounts = missing_atas.len();
 
-        let marginfi_mints = self.collect_marginfi_mints(trade_pairs);
         let (marginfi_plan, flashloan_preparation) = if flashloan_enabled {
-            self.prepare_marginfi_plan(identity, &marginfi_mints, &mut instructions)
+            self.prepare_marginfi_plan(identity, &mut instructions)
                 .await?
         } else {
             (None, None)
@@ -245,10 +244,6 @@ impl AccountPrechecker {
         Ok(candidates)
     }
 
-    fn collect_marginfi_mints(&self, trade_pairs: &[TradePair]) -> BTreeSet<Pubkey> {
-        trade_pairs.iter().map(|pair| pair.input_pubkey).collect()
-    }
-
     async fn classify_account_states(
         &self,
         candidates: &[MintCandidate],
@@ -335,37 +330,11 @@ impl AccountPrechecker {
     async fn prepare_marginfi_plan(
         &self,
         identity: &EngineIdentity,
-        required_mints: &BTreeSet<Pubkey>,
         instructions: &mut Vec<Instruction>,
     ) -> EngineResult<(
         Option<MarginfiCreationPlan>,
         Option<MarginfiFlashloanPreparation>,
     )> {
-        if self.marginfi_accounts.has_per_mint_accounts() {
-            let mut verified: HashSet<Pubkey> = HashSet::new();
-            for mint in required_mints {
-                let Some(account) = self.marginfi_accounts.per_mint().get(mint) else {
-                    return Err(EngineError::InvalidConfig(format!(
-                        "缺少 mint {mint} 对应的 flashloan.marginfi.marginfi_accounts 配置"
-                    )));
-                };
-                if verified.insert(*account) {
-                    let context = format!("flashloan.marginfi.marginfi_accounts[{mint}]");
-                    self.verify_marginfi_account(identity, *account, &context)
-                        .await?;
-                }
-            }
-            // 额外校验用户配置但当前未启用的账户，提前发现权限问题
-            for (&mint, &account) in self.marginfi_accounts.per_mint() {
-                if verified.insert(account) {
-                    let context = format!("flashloan.marginfi.marginfi_accounts[{mint}]");
-                    self.verify_marginfi_account(identity, account, &context)
-                        .await?;
-                }
-            }
-            return Ok((None, None));
-        }
-
         if let Some(configured) = self.marginfi_accounts.default() {
             self.verify_marginfi_account(
                 identity,

@@ -4,6 +4,26 @@ pub mod quote;
 pub mod serde_helpers;
 pub mod swap_instructions;
 
+mod headers;
+
+use std::time::Duration;
+
+use metrics::{counter, histogram};
+use reqwest::{
+    StatusCode, Url,
+    header::{HOST, HeaderValue},
+};
+use serde_json::Value;
+use thiserror::Error;
+use tracing::{debug, info, trace, warn};
+use url::form_urlencoded;
+
+use crate::config::{BotConfig, LoggingConfig, LoggingProfile};
+use crate::monitoring::metrics::prometheus_enabled;
+use crate::monitoring::{LatencyMetadata, guard_with_level};
+
+use self::headers::build_header_map;
+
 #[allow(unused_imports)]
 pub use quote::{
     PlatformFee, PlatformFeeMode, QuoteRequest, QuoteResponse, QuoteResponsePayload, RoutePlanLeg,
@@ -17,3 +37,400 @@ pub use swap_instructions::{
     PrioritizationFeePreset, PrioritizationType, PriorityLevel, PriorityLevelWithMaxLamports,
     SwapInstructionsRequest, SwapInstructionsResponse,
 };
+
+#[derive(Debug, Error)]
+pub enum DflowError {
+    #[error("failed to call DFlow API: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("failed to parse response body: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("API request to {endpoint} failed with status {status}: {body}")]
+    ApiStatus {
+        endpoint: String,
+        status: StatusCode,
+        body: String,
+    },
+    #[error("unexpected response schema: {0}")]
+    Schema(String),
+    #[error("failed to generate x-client headers: {0}")]
+    Header(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct DflowApiClient {
+    base_url: String,
+    client: reqwest::Client,
+    quote_timeout: Duration,
+    swap_timeout: Duration,
+    log_profile: LoggingProfile,
+    slow_quote_warn_ms: u64,
+    slow_swap_warn_ms: u64,
+}
+
+impl DflowApiClient {
+    pub fn new(
+        client: reqwest::Client,
+        base_url: String,
+        bot_config: &BotConfig,
+        logging: &LoggingConfig,
+    ) -> Self {
+        let quote_timeout = Duration::from_millis(bot_config.quote_ms);
+        let swap_ms = bot_config.swap_ms.unwrap_or(bot_config.quote_ms);
+        let swap_timeout = Duration::from_millis(swap_ms);
+        Self {
+            base_url,
+            client,
+            quote_timeout,
+            swap_timeout,
+            log_profile: logging.profile,
+            slow_quote_warn_ms: logging.slow_quote_warn_ms,
+            slow_swap_warn_ms: logging.slow_swap_warn_ms,
+        }
+    }
+
+    fn endpoint(&self, path: &str) -> String {
+        format!(
+            "{}/{}",
+            self.base_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        )
+    }
+
+    pub async fn quote(&self, request: &QuoteRequest) -> Result<QuoteResponse, DflowError> {
+        let path = "/quote";
+        let url = self.endpoint(path);
+        let metadata = LatencyMetadata::new(
+            [
+                ("stage".to_string(), "quote".to_string()),
+                ("url".to_string(), url.clone()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let latency_level = if self.log_profile.is_verbose() {
+            tracing::Level::INFO
+        } else {
+            tracing::Level::DEBUG
+        };
+        let guard = guard_with_level("dflow.quote", latency_level, metadata);
+
+        debug!(
+            target: "dflow::quote",
+            input_mint = %request.input_mint,
+            output_mint = %request.output_mint,
+            amount = request.amount,
+            slippage = ?request.slippage_bps,
+            only_direct_routes = request.only_direct_routes.unwrap_or(false),
+            "开始请求 DFlow 报价"
+        );
+
+        let http_request = self
+            .client
+            .get(&url)
+            .timeout(self.quote_timeout)
+            .query(request);
+
+        let serialized_internal = serde_urlencoded::to_string(request)
+            .map_err(|err| DflowError::Schema(format!("序列化报价参数失败: {err}")))?;
+        let query_pairs: Vec<(String, String)> =
+            form_urlencoded::parse(serialized_internal.as_bytes())
+                .into_owned()
+                .collect();
+        let final_url = reqwest::Url::parse_with_params(
+            &url,
+            query_pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+        )
+        .map_err(|err| DflowError::Schema(format!("构造报价 URL 失败: {err}")))?;
+        let mut path_with_query = final_url.path().to_string();
+        if let Some(query) = final_url.query() {
+            path_with_query.push('?');
+            path_with_query.push_str(query);
+        }
+        let mut header_map = build_header_map(&path_with_query, "")
+            .map_err(|err| DflowError::Header(err.to_string()))?;
+        if let Some(host) = host_header_from_url(&final_url) {
+            let header_value = HeaderValue::from_str(&host)
+                .map_err(|err| DflowError::Header(format!("构造 Host 头失败: {err}")))?;
+            header_map.insert(HOST, header_value);
+        }
+        let http_request = http_request.headers(header_map);
+        trace!(
+            target: "dflow::quote",
+            url = %final_url,
+            "即将发起 DFlow 报价请求"
+        );
+
+        let response = http_request.send().await.map_err(|err| {
+            self.record_quote_metrics("transport_error", None, None);
+            DflowError::from(err)
+        })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body_text = response
+                .text()
+                .await
+                .unwrap_or_else(|err| format!("<body decode failed: {err}>"));
+            let body_summary = summarize_error_body(body_text);
+            warn!(
+                target: "dflow::quote",
+                status = status.as_u16(),
+                endpoint = %url,
+                body = %body_summary,
+                "报价请求返回非 200 状态"
+            );
+            self.record_quote_metrics("http_error", None, Some(status));
+            return Err(DflowError::ApiStatus {
+                endpoint: url,
+                status,
+                body: body_summary,
+            });
+        }
+
+        let status = response.status();
+        let value: Value = response.json().await.map_err(|err| {
+            self.record_quote_metrics("decode_error", None, Some(status));
+            DflowError::from(err)
+        })?;
+        let quote = QuoteResponse::try_from_value(value).map_err(|err| {
+            self.record_quote_metrics("schema_error", None, Some(status));
+            DflowError::Schema(format!("解析报价响应失败: {err}"))
+        })?;
+
+        let elapsed = guard.finish();
+        let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
+        self.record_quote_metrics("success", Some(elapsed_ms), Some(status));
+        info!(
+            target: "dflow::quote",
+            input_mint = %quote.payload().input_mint,
+            output_mint = %quote.payload().output_mint,
+            in_amount = quote.payload().in_amount,
+            out_amount = quote.payload().out_amount,
+            route_len = quote.payload().route_plan.len(),
+            elapsed_ms = format_args!("{elapsed_ms:.3}"),
+            "报价响应成功"
+        );
+        if elapsed_ms > self.slow_quote_warn_ms as f64 {
+            warn!(
+                target: "dflow::quote",
+                elapsed_ms = format_args!("{elapsed_ms:.3}"),
+                slow_threshold_ms = self.slow_quote_warn_ms,
+                input_mint = %quote.payload().input_mint,
+                output_mint = %quote.payload().output_mint,
+                route_len = quote.payload().route_plan.len(),
+                "报价耗时超过告警阈值"
+            );
+        }
+
+        Ok(quote)
+    }
+
+    pub async fn swap_instructions(
+        &self,
+        request: &SwapInstructionsRequest,
+    ) -> Result<SwapInstructionsResponse, DflowError> {
+        let path = "/swap-instructions";
+        let url = self.endpoint(path);
+        let metadata = LatencyMetadata::new(
+            [
+                ("stage".to_string(), "swap-instructions".to_string()),
+                ("url".to_string(), url.clone()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let latency_level = if self.log_profile.is_verbose() {
+            tracing::Level::INFO
+        } else {
+            tracing::Level::DEBUG
+        };
+        let guard = guard_with_level("dflow.swap_instructions", latency_level, metadata);
+
+        let mut body = serde_json::to_value(request)
+            .map_err(|err| DflowError::Schema(format!("序列化指令参数失败: {err}")))?;
+        prune_nulls(&mut body);
+        trace!(
+            target: "dflow::swap_instructions",
+            payload = %body,
+            "即将发起 DFlow 指令请求"
+        );
+
+        let body_json = serde_json::to_string(&body)
+            .map_err(|err| DflowError::Schema(format!("序列化指令 JSON 失败: {err}")))?;
+        let mut header_map = build_header_map(path, &body_json)
+            .map_err(|err| DflowError::Header(err.to_string()))?;
+        let parsed_url = Url::parse(&url)
+            .map_err(|err| DflowError::Schema(format!("解析指令 URL 失败: {err}")))?;
+        if let Some(host) = host_header_from_url(&parsed_url) {
+            let header_value = HeaderValue::from_str(&host)
+                .map_err(|err| DflowError::Header(format!("构造 Host 头失败: {err}")))?;
+            header_map.insert(HOST, header_value);
+        }
+
+        let response = self
+            .client
+            .post(&url)
+            .timeout(self.swap_timeout)
+            .json(&body)
+            .headers(header_map)
+            .send()
+            .await
+            .map_err(|err| {
+                self.record_swap_metrics("transport_error", None, None);
+                DflowError::from(err)
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body_text = response
+                .text()
+                .await
+                .unwrap_or_else(|err| format!("<body decode failed: {err}>"));
+            let body_summary = summarize_error_body(body_text);
+            warn!(
+                target: "dflow::swap_instructions",
+                status = status.as_u16(),
+                endpoint = %url,
+                body = %body_summary,
+                "指令请求返回非 200 状态"
+            );
+            self.record_swap_metrics("http_error", None, Some(status));
+            return Err(DflowError::ApiStatus {
+                endpoint: url,
+                status,
+                body: body_summary,
+            });
+        }
+
+        let status = response.status();
+        let value: Value = response.json().await.map_err(|err| {
+            self.record_swap_metrics("decode_error", None, Some(status));
+            DflowError::from(err)
+        })?;
+        let instructions = SwapInstructionsResponse::try_from(value).map_err(|err| {
+            self.record_swap_metrics("schema_error", None, Some(status));
+            DflowError::Schema(format!("解析指令响应失败: {err}"))
+        })?;
+
+        let elapsed = guard.finish();
+        let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
+        self.record_swap_metrics("success", Some(elapsed_ms), Some(status));
+        info!(
+            target: "dflow::swap_instructions",
+            compute_unit_limit = instructions.compute_unit_limit,
+            prioritization_fee = instructions
+                .prioritization_fee_lamports
+                .unwrap_or_default(),
+            elapsed_ms = format_args!("{elapsed_ms:.3}"),
+            "指令响应成功"
+        );
+        if elapsed_ms > self.slow_swap_warn_ms as f64 {
+            warn!(
+                target: "dflow::swap_instructions",
+                elapsed_ms = format_args!("{elapsed_ms:.3}"),
+                slow_threshold_ms = self.slow_swap_warn_ms,
+                "指令请求耗时超过告警阈值"
+            );
+        }
+
+        Ok(instructions)
+    }
+
+    fn record_quote_metrics(
+        &self,
+        outcome: &str,
+        elapsed_ms: Option<f64>,
+        status: Option<StatusCode>,
+    ) {
+        if prometheus_enabled() {
+            counter!(
+                "galileo_dflow_quote_total",
+                "outcome" => outcome.to_string(),
+            )
+            .increment(1);
+            if let Some(value) = elapsed_ms {
+                histogram!("galileo_dflow_quote_latency_ms").record(value);
+            }
+            if let Some(code) = status {
+                debug!(
+                    target: "dflow::metrics",
+                    status = code.as_u16(),
+                    "DFlow quote status"
+                );
+            }
+        }
+    }
+
+    fn record_swap_metrics(
+        &self,
+        outcome: &str,
+        elapsed_ms: Option<f64>,
+        status: Option<StatusCode>,
+    ) {
+        if prometheus_enabled() {
+            counter!(
+                "galileo_dflow_swap_total",
+                "outcome" => outcome.to_string(),
+            )
+            .increment(1);
+            if let Some(value) = elapsed_ms {
+                histogram!("galileo_dflow_swap_latency_ms").record(value);
+            }
+            if let Some(code) = status {
+                debug!(
+                    target: "dflow::metrics",
+                    status = code.as_u16(),
+                    "DFlow swap status"
+                );
+            }
+        }
+    }
+}
+
+fn host_header_from_url(url: &Url) -> Option<String> {
+    let host = url.host_str()?;
+    let mut value = host.to_string();
+    if let Some(port) = url.port() {
+        value.push(':');
+        value.push_str(&port.to_string());
+    }
+    Some(value)
+}
+
+fn summarize_error_body(body: String) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        "(empty response body)".to_string()
+    } else {
+        let mut single_line = trimmed.replace(['\n', '\r'], " ");
+        const MAX_LEN: usize = 512;
+        if single_line.len() > MAX_LEN {
+            single_line.truncate(MAX_LEN);
+            single_line.push_str("…");
+        }
+        single_line
+    }
+}
+
+fn prune_nulls(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            let keys: Vec<String> = map.keys().cloned().collect();
+            for key in keys {
+                if let Some(entry) = map.get_mut(&key) {
+                    prune_nulls(entry);
+                    if entry.is_null() {
+                        map.remove(&key);
+                    }
+                }
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                prune_nulls(item);
+            }
+            arr.retain(|item| !item.is_null());
+        }
+        _ => {}
+    }
+}

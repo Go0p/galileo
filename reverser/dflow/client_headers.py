@@ -24,7 +24,7 @@ def make_headers(path: str, body: Dict[str, Any] | str) -> Dict[str, str]:
 
     timestamp = int(time.time() * 1000)
     payload = f"{path}5_{body}k".encode("utf-8")
-    ts_bytes = timestamp.to_bytes(8, byteorder="big", signed=False)
+    ts_bytes = timestamp.to_bytes(8, byteorder="little", signed=False)
 
     digest = hashlib.sha256(payload + ts_bytes).digest()[:15].hex()
 

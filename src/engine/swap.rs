@@ -2,13 +2,18 @@ use std::str::FromStr;
 
 use tracing::warn;
 
+use super::aggregator::{QuotePayloadVariant, SwapInstructionsVariant};
 use super::error::{EngineError, EngineResult};
 use super::identity::EngineIdentity;
 use super::types::SwapOpportunity;
+use crate::api::dflow::{
+    ComputeUnitPriceMicroLamports as DflowComputeUnitPriceMicroLamports, DflowApiClient,
+    SwapInstructionsRequest as DflowSwapInstructionsRequest,
+};
 use crate::api::jupiter::{
     ComputeUnitPriceMicroLamports, JupiterApiClient, SwapInstructionsRequest,
 };
-use crate::config::JupiterSwapConfig;
+use crate::config::{DflowSwapConfig, JupiterSwapConfig};
 use rand::Rng;
 
 #[derive(Clone, Debug)]
@@ -39,21 +44,48 @@ impl ComputeUnitPriceMode {
 }
 
 #[derive(Clone)]
+pub enum SwapBackend {
+    Jupiter {
+        client: JupiterApiClient,
+        defaults: JupiterSwapConfig,
+    },
+    Dflow {
+        client: DflowApiClient,
+        defaults: DflowSwapConfig,
+    },
+}
+
+#[derive(Clone)]
 pub struct SwapInstructionFetcher {
-    client: JupiterApiClient,
-    request_defaults: JupiterSwapConfig,
+    backend: SwapBackend,
     compute_unit_price: Option<ComputeUnitPriceMode>,
 }
 
 impl SwapInstructionFetcher {
-    pub fn new(
+    pub fn for_jupiter(
         client: JupiterApiClient,
         request_defaults: JupiterSwapConfig,
         compute_unit_price: Option<ComputeUnitPriceMode>,
     ) -> Self {
         Self {
-            client,
-            request_defaults,
+            backend: SwapBackend::Jupiter {
+                client,
+                defaults: request_defaults,
+            },
+            compute_unit_price,
+        }
+    }
+
+    pub fn for_dflow(
+        client: DflowApiClient,
+        request_defaults: DflowSwapConfig,
+        compute_unit_price: Option<ComputeUnitPriceMode>,
+    ) -> Self {
+        Self {
+            backend: SwapBackend::Dflow {
+                client,
+                defaults: request_defaults,
+            },
             compute_unit_price,
         }
     }
@@ -63,40 +95,80 @@ impl SwapInstructionFetcher {
         &self,
         opportunity: &SwapOpportunity,
         identity: &EngineIdentity,
-    ) -> EngineResult<crate::api::jupiter::SwapInstructionsResponse> {
+    ) -> EngineResult<SwapInstructionsVariant> {
         let payload = opportunity
             .merged_quote
             .clone()
             .ok_or_else(|| EngineError::InvalidConfig("套利机会缺少报价数据".into()))?;
-        let mut request = SwapInstructionsRequest::from_payload(payload, identity.pubkey);
 
-        request.wrap_and_unwrap_sol = self.request_defaults.wrap_and_unwrap_sol;
-        request.dynamic_compute_unit_limit = self.request_defaults.dynamic_compute_unit_limit;
-        request.use_shared_accounts = Some(identity.use_shared_accounts());
-        request.skip_user_accounts_rpc_calls = identity.skip_user_accounts_rpc_calls();
-        if let Some(fee) = identity.fee_account() {
-            match solana_sdk::pubkey::Pubkey::from_str(fee) {
-                Ok(pubkey) => request.fee_account = Some(pubkey),
-                Err(err) => {
-                    warn!(
-                        target: "engine::swap",
-                        fee_account = fee,
-                        error = %err,
-                        "手续费账户解析失败，忽略配置"
-                    );
+        match (&self.backend, payload) {
+            (SwapBackend::Jupiter { client, defaults }, QuotePayloadVariant::Jupiter(inner)) => {
+                let mut request = SwapInstructionsRequest::from_payload(inner, identity.pubkey);
+
+                request.wrap_and_unwrap_sol = defaults.wrap_and_unwrap_sol;
+                request.dynamic_compute_unit_limit = defaults.dynamic_compute_unit_limit;
+                request.use_shared_accounts = Some(identity.use_shared_accounts());
+                request.skip_user_accounts_rpc_calls = identity.skip_user_accounts_rpc_calls();
+                if let Some(fee) = identity.fee_account() {
+                    match solana_sdk::pubkey::Pubkey::from_str(fee) {
+                        Ok(pubkey) => request.fee_account = Some(pubkey),
+                        Err(err) => {
+                            warn!(
+                                target: "engine::swap",
+                                fee_account = fee,
+                                error = %err,
+                                "手续费账户解析失败，忽略配置"
+                            );
+                        }
+                    }
                 }
-            }
-        }
-        if let Some(strategy) = &self.compute_unit_price {
-            let price = strategy.sample();
-            request.compute_unit_price_micro_lamports =
-                Some(ComputeUnitPriceMicroLamports::MicroLamports(price));
-        }
+                if let Some(strategy) = &self.compute_unit_price {
+                    let price = strategy.sample();
+                    request.compute_unit_price_micro_lamports =
+                        Some(ComputeUnitPriceMicroLamports::MicroLamports(price));
+                }
 
-        self.client
-            .swap_instructions(&request)
-            .await
-            .map_err(EngineError::from)
+                client
+                    .swap_instructions(&request)
+                    .await
+                    .map(SwapInstructionsVariant::Jupiter)
+                    .map_err(EngineError::from)
+            }
+            (SwapBackend::Dflow { client, defaults }, QuotePayloadVariant::Dflow(inner)) => {
+                let mut request =
+                    DflowSwapInstructionsRequest::from_payload(inner, identity.pubkey);
+                request.wrap_and_unwrap_sol = defaults.wrap_and_unwrap_sol;
+                request.dynamic_compute_unit_limit = Some(defaults.dynamic_compute_unit_limit);
+                if let Some(fee) = identity.fee_account() {
+                    match solana_sdk::pubkey::Pubkey::from_str(fee) {
+                        Ok(pubkey) => request.fee_account = Some(pubkey),
+                        Err(err) => {
+                            warn!(
+                                target: "engine::swap",
+                                fee_account = fee,
+                                error = %err,
+                                "手续费账户解析失败，忽略配置"
+                            );
+                        }
+                    }
+                }
+                if let Some(strategy) = &self.compute_unit_price {
+                    let price = strategy.sample();
+                    request.compute_unit_price_micro_lamports =
+                        Some(DflowComputeUnitPriceMicroLamports(price));
+                }
+
+                client
+                    .swap_instructions(&request)
+                    .await
+                    .map(SwapInstructionsVariant::Dflow)
+                    .map_err(EngineError::from)
+            }
+            (SwapBackend::Jupiter { .. }, QuotePayloadVariant::Dflow(_))
+            | (SwapBackend::Dflow { .. }, QuotePayloadVariant::Jupiter(_)) => Err(
+                EngineError::InvalidConfig("套利机会聚合器类型与落地器不匹配".into()),
+            ),
+        }
     }
 
     pub fn sample_compute_unit_price(&self) -> Option<u64> {

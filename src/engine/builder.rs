@@ -12,8 +12,7 @@ use solana_sdk::signature::Keypair;
 use solana_sdk::transaction::VersionedTransaction;
 use tracing::{debug, warn};
 
-use crate::api::jupiter::SwapInstructionsResponse;
-
+use super::aggregator::SwapInstructionsVariant;
 use super::error::{EngineError, EngineResult};
 use super::identity::EngineIdentity;
 
@@ -52,7 +51,7 @@ impl TransactionBuilder {
     pub async fn build(
         &self,
         identity: &EngineIdentity,
-        instructions: &SwapInstructionsResponse,
+        instructions: &SwapInstructionsVariant,
         tip_lamports: u64,
     ) -> EngineResult<PreparedTransaction> {
         self.build_internal(identity, instructions, None, tip_lamports)
@@ -62,7 +61,7 @@ impl TransactionBuilder {
     pub async fn build_with_sequence(
         &self,
         identity: &EngineIdentity,
-        instructions: &SwapInstructionsResponse,
+        instructions: &SwapInstructionsVariant,
         sequence: Vec<Instruction>,
         tip_lamports: u64,
     ) -> EngineResult<PreparedTransaction> {
@@ -73,15 +72,16 @@ impl TransactionBuilder {
     async fn build_internal(
         &self,
         identity: &EngineIdentity,
-        instructions: &SwapInstructionsResponse,
+        instructions: &SwapInstructionsVariant,
         override_sequence: Option<Vec<Instruction>>,
         tip_lamports: u64,
     ) -> EngineResult<PreparedTransaction> {
-        let lookup_accounts = if instructions.resolved_lookup_tables.is_empty() {
-            self.load_lookup_tables(&instructions.address_lookup_table_addresses)
+        let resolved_tables = instructions.resolved_lookup_tables();
+        let lookup_accounts = if resolved_tables.is_empty() {
+            self.load_lookup_tables(instructions.address_lookup_table_addresses())
                 .await?
         } else {
-            instructions.resolved_lookup_tables.clone()
+            resolved_tables.to_vec()
         };
 
         let blockhash = self

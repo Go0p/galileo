@@ -175,7 +175,9 @@ impl Default for cfg::GlobalConfig {
 impl Default for cfg::EngineConfig {
     fn default() -> Self {
         Self {
+            backend: cfg::EngineBackend::default(),
             jupiter: cfg::JupiterEngineConfig::default(),
+            dflow: cfg::DflowEngineConfig::default(),
         }
     }
 }
@@ -205,6 +207,36 @@ impl Default for cfg::JupiterSwapConfig {
     fn default() -> Self {
         Self {
             skip_user_accounts_rpc_calls: false,
+            dynamic_compute_unit_limit: true,
+            wrap_and_unwrap_sol: false,
+        }
+    }
+}
+
+impl Default for cfg::DflowEngineConfig {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            api_base: None,
+            api_proxy: None,
+            quote_config: cfg::DflowQuoteConfig::default(),
+            swap_config: cfg::DflowSwapConfig::default(),
+        }
+    }
+}
+
+impl Default for cfg::DflowQuoteConfig {
+    fn default() -> Self {
+        Self {
+            use_auto_slippage: true,
+            only_direct_routes: false,
+        }
+    }
+}
+
+impl Default for cfg::DflowSwapConfig {
+    fn default() -> Self {
+        Self {
             dynamic_compute_unit_limit: true,
             wrap_and_unwrap_sol: false,
         }

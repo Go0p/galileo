@@ -85,7 +85,24 @@ pub struct InstructionConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct EngineConfig {
     #[serde(default)]
+    pub backend: EngineBackend,
+    #[serde(default)]
     pub jupiter: JupiterEngineConfig,
+    #[serde(default)]
+    pub dflow: DflowEngineConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EngineBackend {
+    Jupiter,
+    Dflow,
+}
+
+impl Default for EngineBackend {
+    fn default() -> Self {
+        Self::Jupiter
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -114,6 +131,36 @@ pub struct JupiterQuoteConfig {
 pub struct JupiterSwapConfig {
     #[serde(default)]
     pub skip_user_accounts_rpc_calls: bool,
+    #[serde(default = "super::default_true")]
+    pub dynamic_compute_unit_limit: bool,
+    #[serde(default)]
+    pub wrap_and_unwrap_sol: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DflowEngineConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub api_base: Option<String>,
+    #[serde(default)]
+    pub api_proxy: Option<String>,
+    #[serde(default)]
+    pub quote_config: DflowQuoteConfig,
+    #[serde(default)]
+    pub swap_config: DflowSwapConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DflowQuoteConfig {
+    #[serde(default = "super::default_true")]
+    pub use_auto_slippage: bool,
+    #[serde(default)]
+    pub only_direct_routes: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DflowSwapConfig {
     #[serde(default = "super::default_true")]
     pub dynamic_compute_unit_limit: bool,
     #[serde(default)]
@@ -227,44 +274,6 @@ pub struct FlashloanMarginfiConfig {
     pub prefer_wallet_balance: bool,
     #[serde(default)]
     pub marginfi_account: Option<String>,
-    #[serde(default)]
-    pub marginfi_accounts: Vec<MarginfiAccountConfigEntry>,
-}
-
-#[derive(Debug, Clone)]
-pub struct MarginfiAccountConfigEntry {
-    pub key: String,
-    pub account: String,
-}
-
-impl<'de> Deserialize<'de> for MarginfiAccountConfigEntry {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        use std::collections::BTreeMap;
-
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum RawEntry {
-            Pair { mint: String, account: String },
-            Map(BTreeMap<String, String>),
-        }
-
-        let raw = RawEntry::deserialize(deserializer)?;
-        match raw {
-            RawEntry::Pair { mint, account } => Ok(Self { key: mint, account }),
-            RawEntry::Map(map) => {
-                if map.len() != 1 {
-                    return Err(D::Error::custom(
-                        "flashloan.marginfi.marginfi_accounts 每项必须只有一个键值对",
-                    ));
-                }
-                let (key, account) = map.into_iter().next().unwrap();
-                Ok(Self { key, account })
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

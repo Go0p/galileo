@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crate::api::jupiter::{QuoteResponse, QuoteResponsePayload};
+use super::aggregator::{QuotePayloadVariant, QuoteResponseVariant};
 use crate::strategy::types::TradePair;
 
 #[derive(Debug, Clone)]
@@ -28,8 +28,8 @@ impl StrategyTick {
 
 #[derive(Debug, Clone)]
 pub struct DoubleQuote {
-    pub forward: QuoteResponse,
-    pub reverse: QuoteResponse,
+    pub forward: QuoteResponseVariant,
+    pub reverse: QuoteResponseVariant,
 }
 
 #[derive(Debug, Clone)]
@@ -38,7 +38,7 @@ pub struct SwapOpportunity {
     pub amount_in: u64,
     pub profit_lamports: u64,
     pub tip_lamports: u64,
-    pub merged_quote: Option<QuoteResponsePayload>,
+    pub merged_quote: Option<QuotePayloadVariant>,
 }
 
 impl SwapOpportunity {

@@ -1,9 +1,8 @@
 use rand::prelude::IndexedRandom;
-use rust_decimal::Decimal;
 use tracing::debug;
 
+use super::aggregator::{AggregatorKind, QuotePayloadVariant, QuoteResponseVariant};
 use super::types::{DoubleQuote, SwapOpportunity};
-use crate::api::jupiter::{QuoteResponse, QuoteResponsePayload};
 
 #[derive(Debug, Clone)]
 pub struct TipConfig {
@@ -51,7 +50,17 @@ impl ProfitEvaluator {
         double_quote: &DoubleQuote,
         pair: &crate::strategy::types::TradePair,
     ) -> Option<SwapOpportunity> {
-        let second_out = double_quote.reverse.out_amount as u128;
+        if double_quote.forward.kind() != double_quote.reverse.kind() {
+            debug!(
+                target: "engine::profit",
+                forward = ?double_quote.forward.kind(),
+                reverse = ?double_quote.reverse.kind(),
+                "前后腿聚合器类型不一致，跳过"
+            );
+            return None;
+        }
+
+        let second_out = double_quote.reverse.out_amount() as u128;
 
         let profit = second_out.saturating_sub(amount_in as u128);
         let profit_u64 = profit.min(u128::from(u64::MAX)) as u64;
@@ -124,26 +133,39 @@ impl TipCalculator {
 }
 
 fn merge_quotes(
-    forward: &QuoteResponse,
-    reverse: &QuoteResponse,
+    forward: &QuoteResponseVariant,
+    reverse: &QuoteResponseVariant,
     original_amount: u64,
     tip_lamports: u64,
-) -> QuoteResponsePayload {
-    let mut merged = (**forward).clone();
-    let total_out = (original_amount as u128)
-        .saturating_add(tip_lamports as u128)
-        .min(u128::from(u64::MAX)) as u64;
+) -> QuotePayloadVariant {
+    match (forward.kind(), reverse.kind()) {
+        (AggregatorKind::Jupiter, AggregatorKind::Jupiter)
+        | (AggregatorKind::Dflow, AggregatorKind::Dflow) => {
+            let mut merged = forward.clone_payload();
+            let reverse_payload = reverse.clone_payload();
 
-    merged.output_mint = reverse.output_mint;
-    merged.out_amount = total_out;
-    merged.other_amount_threshold = total_out;
-    merged.price_impact_pct = Decimal::ZERO;
-    merged.context_slot = merged.context_slot.max(reverse.context_slot);
-    merged.time_taken = merged.time_taken.max(reverse.time_taken);
+            let total_out = (original_amount as u128)
+                .saturating_add(tip_lamports as u128)
+                .min(u128::from(u64::MAX)) as u64;
 
-    if !reverse.route_plan.is_empty() {
-        merged.route_plan.extend(reverse.route_plan.iter().cloned());
+            merged.set_output_mint(reverse_payload.output_mint());
+            merged.set_out_amount(total_out);
+            merged.set_price_impact_zero();
+
+            let max_slot = merged.context_slot().max(reverse_payload.context_slot());
+            merged.set_context_slot(max_slot);
+
+            let max_time = merged.time_taken().max(reverse_payload.time_taken());
+            merged.set_time_taken(max_time);
+
+            if reverse_payload.route_len() > 0 {
+                merged.extend_route(&reverse_payload);
+            }
+
+            merged
+        }
+        _ => {
+            panic!("不支持混合聚合器的报价合并");
+        }
     }
-
-    merged
 }

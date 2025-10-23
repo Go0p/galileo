@@ -8,7 +8,9 @@ use crate::cli::args::{LanderCmd, LanderSendArgs};
 use crate::cli::context::{resolve_global_http_proxy, resolve_rpc_client};
 use crate::config;
 use crate::config::AppConfig;
-use crate::engine::{BuilderConfig, EngineIdentity, TransactionBuilder, TxVariantPlanner};
+use crate::engine::{
+    BuilderConfig, EngineIdentity, SwapInstructionsVariant, TransactionBuilder, TxVariantPlanner,
+};
 use crate::lander::{Deadline, LanderFactory};
 
 /// Lander 子命令：用于离线重放 Swap 指令并测试落地器链路。
@@ -70,9 +72,10 @@ async fn send_transaction(
     let value: serde_json::Value = serde_json::from_str(&raw)?;
     let instructions = SwapInstructionsResponse::try_from(value)
         .map_err(|err| anyhow!("解析 Swap 指令失败: {err}"))?;
+    let instructions_variant = SwapInstructionsVariant::Jupiter(instructions);
 
     let prepared = builder
-        .build(&identity, &instructions, args.tip_lamports)
+        .build(&identity, &instructions_variant, args.tip_lamports)
         .await
         .map_err(|err| anyhow!(err))?;
 

@@ -5,6 +5,7 @@ use reqwest::Error as ReqwestError;
 use solana_client::client_error::ClientError;
 use thiserror::Error;
 
+use crate::api::dflow::DflowError;
 use crate::jupiter::error::JupiterError;
 
 #[derive(Debug, Error)]
@@ -15,6 +16,8 @@ pub enum EngineError {
     ParseAmount(#[from] ParseIntError),
     #[error("Jupiter API 错误: {0}")]
     Jupiter(#[from] JupiterError),
+    #[error("DFlow API 错误: {0}")]
+    Dflow(#[from] DflowError),
     #[error("JSON 处理失败: {0}")]
     Json(#[from] serde_json::Error),
     #[error("RPC 请求失败: {0}")]

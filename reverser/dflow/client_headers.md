@@ -3,7 +3,7 @@
 该脚本复现了前端在 `reverser/dflow/1.js` (`m6e` 函数) 中生成 `x-client-timestamp` 与 `x-client-request-id` 的逻辑，便于在本地调试及后续用 Rust 实现。
 
 ## 生成流程
-- 取当前毫秒时间戳 `timestamp = Date.now()` 并转成 8 字节大端序；
+- 取当前毫秒时间戳 `timestamp = Date.now()` 并转成 8 字节 **小端序**（`BigUint64Array` 在浏览器中使用主机序，实测为 little endian）；
 - 将 `"{path}5_{body}k"` 用 UTF-8 编码，与时间戳字节拼接后做 `SHA-256`，只保留前 15 个字节并转成 30 位十六进制小写串；
 - 随机生成 UUID，抽取第 15、20 个字符分别插入到哈希的第 13、16 字符位置；
 - 按 UUID 模式切段：`8-4-4-4-12`，组合成最终的 `x-client-request-id`；

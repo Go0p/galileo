@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,8 +56,6 @@ pub struct QuoteRequest {
     pub only_direct_routes: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_route_length: Option<u8>,
-    #[serde(skip)]
-    pub extra_query_params: HashMap<String, String>,
 }
 
 impl QuoteRequest {
@@ -77,7 +73,6 @@ impl QuoteRequest {
             destination_swap: None,
             only_direct_routes: None,
             max_route_length: None,
-            extra_query_params: HashMap::new(),
         }
     }
 }
