@@ -24,7 +24,7 @@ DEFAULT_INPUT_MINT = "So11111111111111111111111111111111111111112"
 DEFAULT_OUTPUT_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 DEFAULT_AMOUNT = "1000000000"
 DEFAULT_SLIPPAGE_BPS = "auto"
-DEFAULT_PROXY = "http://192.168.124.4:9999"
+DEFAULT_PROXY = "http://192.168.3.3:9999"
 
 STATIC_HEADERS: Dict[str, str] = {
     "host": "aggregator-api-proxy.dflow.workers.dev",
@@ -84,7 +84,8 @@ def request_quote(
         "outputMint": output_mint,
         "amount": amount,
         "slippageBps": slippage_bps,
-        "dexes":"HumidiFi,SolFi,SolFi V2,Tessera V,ZeroFi,Whirlpools,Obric V2,Aquifer,Lifinity V2,DFlow JIT Router"
+        "dexes":"HumidiFi,SolFi,SolFi V2,Tessera V,ZeroFi,Whirlpools,Obric V2,Aquifer,Lifinity V2,DFlowxxx JIT Router",
+        "onlyDirectRoutes": "true"
     }
     query = urlencode(params)
     path_with_query = f"/quote?{query}"
