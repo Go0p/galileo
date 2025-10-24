@@ -153,6 +153,10 @@ pub struct DflowEngineConfig {
     pub quote_config: DflowQuoteConfig,
     #[serde(default)]
     pub swap_config: DflowSwapConfig,
+    #[serde(default = "super::default_dflow_max_consecutive_failures")]
+    pub max_consecutive_failures: u32,
+    #[serde(default = "super::default_dflow_wait_on_429_ms")]
+    pub wait_on_429_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

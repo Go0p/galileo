@@ -32,7 +32,7 @@ static MARGINFI_ASSETS: Lazy<Vec<MarginfiAsset>> = Lazy::new(|| {
         },
         MarginfiAsset {
             mint: parse_pubkey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
-            bank: parse_pubkey("Ek5JSFJFD8QgXM6rPDCzf31XhDp1q3xezaWYSkJWqbqc"),
+            bank: parse_pubkey("2s37akK2eyBbp8DZgCm7RtsaEz8eJP3Nxd4urLHQv7yB"),
             token_program: *TOKEN_PROGRAM_ID,
             remaining_accounts: vec![parse_pubkey("Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX")],
         },

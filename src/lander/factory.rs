@@ -105,6 +105,9 @@ impl LanderFactory {
                     Some(LanderVariant::Staked(StakedLander::new(
                         endpoints,
                         self.http_client.clone(),
+                        settings.skip_preflight,
+                        settings.max_retries,
+                        settings.min_context_slot,
                     )))
                 }
             }),

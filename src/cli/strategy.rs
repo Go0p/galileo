@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ use crate::config::{AppConfig, IntermediumConfig};
 use crate::engine::{
     AccountPrechecker, BLIND_COMPUTE_UNIT_LIMIT, BuilderConfig, ComputeUnitPriceMode, EngineError,
     EngineIdentity, EngineResult, EngineSettings, ProfitConfig, ProfitEvaluator, QuoteConfig,
-    QuoteExecutor, Scheduler, StrategyEngine, SwapInstructionFetcher, TipConfig,
+    QuoteExecutor, Scheduler, StrategyEngine, SwapInstructionFetcher, TipConfig, TradeProfile,
     TransactionBuilder,
 };
 use crate::flashloan::marginfi::{MarginfiAccountRegistry, MarginfiFlashloanManager};
@@ -43,6 +43,8 @@ pub enum StrategyBackend<'a> {
         api_client: &'a DflowApiClient,
     },
 }
+
+const DEFAULT_PROCESS_DELAY_MS: u64 = 200;
 
 /// 主策略入口，按配置在盲发与 copy 之间切换。
 pub async fn run_strategy(
@@ -160,13 +162,13 @@ async fn run_blind_engine(
 
     let (only_direct_default, restrict_default) = quote_defaults_tuple;
     let trade_pairs = build_blind_trade_pairs(blind_config, &config.galileo.intermedium)?;
-    let trade_amounts = build_blind_trade_amounts(blind_config)?;
+    let trade_profiles = build_blind_trade_profiles(blind_config)?;
     let profit_config = build_blind_profit_config(
         blind_config,
         &config.lander.lander,
         &compute_unit_price_mode,
     );
-    let scheduler_delay = resolve_blind_scheduler_delay(blind_config);
+    let scheduler_delay = resolve_blind_scheduler_delay(&trade_profiles);
     let quote_config =
         build_blind_quote_config(blind_config, only_direct_default, restrict_default);
     tracing::info!(
@@ -258,10 +260,21 @@ async fn run_blind_engine(
         )
         .map_err(|err| anyhow!(err))?;
 
+    let failure_limit = if matches!(
+        config.galileo.engine.backend,
+        crate::config::EngineBackend::Dflow
+    ) {
+        let raw = config.galileo.engine.dflow.max_consecutive_failures as usize;
+        if raw == 0 { None } else { Some(raw) }
+    } else {
+        None
+    };
+
     let engine_settings = EngineSettings::new(quote_config)
         .with_dispatch_strategy(config.lander.lander.sending_strategy)
         .with_landing_timeout(landing_timeout)
-        .with_dry_run(dry_run);
+        .with_dry_run(dry_run)
+        .with_failure_tolerance(failure_limit);
 
     if pure_mode {
         let routes = PureBlindRouteBuilder::new(blind_config, rpc_client.as_ref())
@@ -279,8 +292,8 @@ async fn run_blind_engine(
             Scheduler::new(scheduler_delay),
             flashloan,
             engine_settings,
-            trade_pairs,
-            trade_amounts,
+            trade_pairs.clone(),
+            trade_profiles.clone(),
         );
         drive_engine(strategy_engine)
             .await
@@ -298,7 +311,7 @@ async fn run_blind_engine(
             flashloan,
             engine_settings,
             trade_pairs,
-            trade_amounts,
+            trade_profiles,
         );
         drive_engine(strategy_engine)
             .await
@@ -398,21 +411,47 @@ fn build_blind_trade_pairs(
         .collect()
 }
 
-fn build_blind_trade_amounts(config: &config::BlindStrategyConfig) -> EngineResult<Vec<u64>> {
-    let mut amounts: BTreeSet<u64> = BTreeSet::new();
-    for mint in &config.base_mints {
-        for value in generate_amounts_for_base(mint) {
-            amounts.insert(value);
+fn build_blind_trade_profiles(
+    config: &config::BlindStrategyConfig,
+) -> EngineResult<BTreeMap<Pubkey, TradeProfile>> {
+    let mut per_mint: BTreeMap<Pubkey, TradeProfile> = BTreeMap::new();
+
+    for base in &config.base_mints {
+        let mint_str = base.mint.trim();
+        if mint_str.is_empty() {
+            continue;
         }
+        let mint = Pubkey::from_str(mint_str).map_err(|err| {
+            EngineError::InvalidConfig(format!(
+                "blind_strategy.base_mints 中的 mint `{mint_str}` 解析失败: {err}"
+            ))
+        })?;
+
+        let amounts = generate_amounts_for_base(base);
+        if amounts.is_empty() {
+            continue;
+        }
+        let delay_ms = base
+            .process_delay
+            .unwrap_or(DEFAULT_PROCESS_DELAY_MS)
+            .max(1);
+        let process_delay = Duration::from_millis(delay_ms);
+        per_mint.insert(
+            mint,
+            TradeProfile {
+                amounts,
+                process_delay,
+            },
+        );
     }
 
-    if amounts.is_empty() {
+    if per_mint.is_empty() {
         return Err(EngineError::InvalidConfig(
             "盲发策略未配置有效的交易规模".into(),
         ));
     }
 
-    Ok(amounts.into_iter().collect())
+    Ok(per_mint)
 }
 
 fn generate_amounts_for_base(base: &config::BlindBaseMintConfig) -> Vec<u64> {
@@ -506,15 +545,12 @@ fn compute_unit_fee_lamports(price_micro_lamports: u64) -> u64 {
     ((numerator + 999_999) / 1_000_000).min(u128::from(u64::MAX)) as u64
 }
 
-fn resolve_blind_scheduler_delay(config: &config::BlindStrategyConfig) -> Duration {
-    let delay = config
-        .base_mints
-        .iter()
-        .filter_map(|mint| mint.process_delay)
+fn resolve_blind_scheduler_delay(profiles: &BTreeMap<Pubkey, TradeProfile>) -> Duration {
+    profiles
+        .values()
+        .map(|profile| profile.process_delay)
         .min()
-        .unwrap_or(200)
-        .max(1);
-    Duration::from_millis(delay as u64)
+        .unwrap_or_else(|| Duration::from_millis(DEFAULT_PROCESS_DELAY_MS))
 }
 
 fn build_blind_quote_config(

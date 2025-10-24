@@ -120,15 +120,14 @@ impl LanderStack {
         self.landers.len()
     }
 
-    pub fn plan_capacity(&self, strategy: DispatchStrategy) -> usize {
+    pub fn variant_layout(&self, strategy: DispatchStrategy) -> Vec<usize> {
         match strategy {
-            DispatchStrategy::AllAtOnce => 1,
+            DispatchStrategy::AllAtOnce => vec![1; self.landers.len()],
             DispatchStrategy::OneByOne => self
                 .landers
                 .iter()
-                .map(|lander| lander.one_by_one_capacity())
-                .sum::<usize>()
-                .max(1),
+                .map(|lander| lander.one_by_one_capacity().max(1))
+                .collect(),
         }
     }
 
@@ -141,7 +140,7 @@ impl LanderStack {
         if self.landers.is_empty() {
             return Err(LanderError::fatal("no lander configured"));
         }
-        if plan.variants().is_empty() {
+        if plan.is_empty() {
             return Err(LanderError::fatal("dispatch plan missing variants"));
         }
 
@@ -160,11 +159,6 @@ impl LanderStack {
         deadline: Deadline,
         strategy_name: &str,
     ) -> Result<LanderReceipt, LanderError> {
-        let variant = plan
-            .primary_variant()
-            .cloned()
-            .ok_or_else(|| LanderError::fatal("dispatch plan missing primary variant"))?;
-        let variant_id = variant.id();
         let dispatch_label = plan.strategy().as_str();
         let total_passes = self.max_retries.saturating_add(1);
         let mut attempt_idx = 0usize;
@@ -177,59 +171,58 @@ impl LanderStack {
 
             let mut futures = FuturesUnordered::new();
 
-            for lander in &self.landers {
-                let endpoints = lander.endpoints();
-                let targets: Vec<Option<String>> = if endpoints.is_empty() {
-                    vec![None]
-                } else {
-                    endpoints.into_iter().map(Some).collect()
+            for (lander_idx, lander) in self.landers.iter().enumerate() {
+                if deadline.expired() {
+                    return Err(LanderError::fatal("deadline expired before submission"));
+                }
+
+                let variant = match plan.variants_for_lander(lander_idx).first() {
+                    Some(variant) => variant.clone(),
+                    None => continue,
                 };
 
-                for endpoint in targets {
-                    if deadline.expired() {
-                        return Err(LanderError::fatal("deadline expired before submission"));
-                    }
+                let lander_clone = lander.clone();
+                let lander_name = lander.name();
+                let variant_id = variant.id();
+                let variant_signature = variant.signature();
+                let current_attempt = attempt_idx;
+                let deadline_copy = deadline;
 
-                    let lander_clone = lander.clone();
-                    let variant_clone = variant.clone();
-                    let variant_signature = variant_clone.signature();
-                    let lander_name = lander.name();
-                    let current_attempt = attempt_idx;
-                    let deadline_copy = deadline;
-                    let endpoint_label = endpoint.clone();
+                events::lander_attempt(
+                    strategy_name,
+                    dispatch_label,
+                    lander_name,
+                    variant_id,
+                    current_attempt,
+                );
+                attempt_idx += 1;
 
-                    events::lander_attempt(
-                        strategy_name,
-                        dispatch_label,
+                futures.push(async move {
+                    let result = lander_clone
+                        .submit_variant(variant, deadline_copy, None)
+                        .await;
+                    (
                         lander_name,
-                        variant_id,
                         current_attempt,
-                    );
-                    attempt_idx += 1;
-
-                    futures.push(async move {
-                        let result = lander_clone
-                            .submit_variant(variant_clone, deadline_copy, endpoint_label.as_deref())
-                            .await;
-                        (
-                            lander_name,
-                            endpoint_label,
-                            current_attempt,
-                            variant_signature,
-                            result,
-                        )
-                    });
-                }
+                        variant_id,
+                        variant_signature,
+                        result,
+                    )
+                });
             }
 
-            while let Some((lander_name, endpoint, attempt, signature, result)) =
+            while let Some((lander_name, attempt, variant_id, signature, result)) =
                 futures.next().await
             {
                 match result {
                     Ok(receipt) => {
                         events::lander_success(strategy_name, dispatch_label, attempt, &receipt);
                         if let Some(sig) = receipt.signature.as_deref() {
-                            info!(target: "lander::stack", signature = sig, "lander submission succeeded");
+                            info!(
+                                target: "lander::stack",
+                                signature = sig,
+                                "lander submission succeeded"
+                            );
                         } else {
                             info!(target: "lander::stack", "lander submission succeeded");
                         }
@@ -244,23 +237,12 @@ impl LanderStack {
                             attempt,
                             &err,
                         );
-                        match endpoint {
-                            Some(ref endpoint_name) => {
-                                warn!(
-                                    target: "lander::stack",
-                                    endpoint = endpoint_name.as_str(),
-                                    tx_signature = signature.as_deref().unwrap_or(""),
-                                    "lander submission failed"
-                                );
-                            }
-                            None => {
-                                warn!(
-                                    target: "lander::stack",
-                                    tx_signature = signature.as_deref().unwrap_or(""),
-                                    "lander submission failed"
-                                );
-                            }
-                        }
+                        warn!(
+                            target: "lander::stack",
+                            lander = lander_name,
+                            tx_signature = signature.as_deref().unwrap_or(""),
+                            "lander submission failed"
+                        );
                         last_err = Some(err);
                     }
                 }
@@ -284,111 +266,124 @@ impl LanderStack {
         let mut last_err: Option<LanderError> = None;
 
         for _ in 0..total_passes {
-            for variant in plan.variants() {
-                let variant_id = variant.id();
-                let variant_signature = variant.signature();
-                for lander in &self.landers {
+            if deadline.expired() {
+                return Err(LanderError::fatal("deadline expired before submission"));
+            }
+
+            let mut futures = FuturesUnordered::new();
+
+            for (lander_idx, lander) in self.landers.iter().enumerate() {
+                let variants = plan.variants_for_lander(lander_idx);
+                if variants.is_empty() {
+                    continue;
+                }
+
+                let deliveries: Vec<(Option<String>, TxVariant)> = {
                     let endpoints = lander.endpoints();
                     if endpoints.is_empty() {
-                        if deadline.expired() {
-                            return Err(LanderError::fatal("deadline expired before submission"));
+                        vec![(None, variants[0].clone())]
+                    } else {
+                        variants
+                            .iter()
+                            .cloned()
+                            .zip(endpoints.into_iter())
+                            .map(|(variant, endpoint)| (Some(endpoint), variant))
+                            .collect()
+                    }
+                };
+
+                for (endpoint_label, variant) in deliveries {
+                    if deadline.expired() {
+                        return Err(LanderError::fatal("deadline expired before submission"));
+                    }
+
+                    let lander_clone = lander.clone();
+                    let lander_name = lander.name();
+                    let variant_id = variant.id();
+                    let variant_signature = variant.signature();
+                    let current_attempt = attempt_idx;
+                    let deadline_copy = deadline;
+
+                    events::lander_attempt(
+                        strategy_name,
+                        dispatch_label,
+                        lander_name,
+                        variant_id,
+                        current_attempt,
+                    );
+                    attempt_idx += 1;
+
+                    futures.push(async move {
+                        let result = match endpoint_label.as_deref() {
+                            Some(endpoint) => {
+                                lander_clone
+                                    .submit_variant(variant, deadline_copy, Some(endpoint))
+                                    .await
+                            }
+                            None => {
+                                lander_clone
+                                    .submit_variant(variant, deadline_copy, None)
+                                    .await
+                            }
+                        };
+                        (
+                            lander_name,
+                            endpoint_label,
+                            current_attempt,
+                            variant_id,
+                            variant_signature,
+                            result,
+                        )
+                    });
+                }
+            }
+
+            while let Some((lander_name, endpoint, attempt, variant_id, signature, result)) =
+                futures.next().await
+            {
+                match result {
+                    Ok(receipt) => {
+                        events::lander_success(strategy_name, dispatch_label, attempt, &receipt);
+                        if let Some(sig) = receipt.signature.as_deref() {
+                            info!(
+                                target: "lander::stack",
+                                signature = sig,
+                                "lander submission succeeded"
+                            );
+                        } else {
+                            info!(target: "lander::stack", "lander submission succeeded");
                         }
-                        events::lander_attempt(
+                        return Ok(receipt);
+                    }
+                    Err(err) => {
+                        events::lander_failure(
                             strategy_name,
                             dispatch_label,
-                            lander.name(),
+                            lander_name,
                             variant_id,
-                            attempt_idx,
+                            attempt,
+                            &err,
                         );
-                        match lander.submit_variant(variant.clone(), deadline, None).await {
-                            Ok(receipt) => {
-                                events::lander_success(
-                                    strategy_name,
-                                    dispatch_label,
-                                    attempt_idx,
-                                    &receipt,
-                                );
-                                if let Some(sig) = receipt.signature.as_deref() {
-                                    info!(target: "lander::stack", signature = sig, "lander submission succeeded");
-                                } else {
-                                    info!(target: "lander::stack", "lander submission succeeded");
-                                }
-                                return Ok(receipt);
-                            }
-                            Err(err) => {
-                                events::lander_failure(
-                                    strategy_name,
-                                    dispatch_label,
-                                    lander.name(),
-                                    variant_id,
-                                    attempt_idx,
-                                    &err,
-                                );
+                        match endpoint {
+                            Some(endpoint_name) => {
                                 warn!(
                                     target: "lander::stack",
-                                    tx_signature = variant_signature
-                                        .as_deref()
-                                        .unwrap_or(""),
+                                    lander = lander_name,
+                                    endpoint = endpoint_name,
+                                    tx_signature = signature.as_deref().unwrap_or(""),
                                     "lander submission failed"
                                 );
-                                last_err = Some(err);
+                            }
+                            None => {
+                                warn!(
+                                    target: "lander::stack",
+                                    lander = lander_name,
+                                    tx_signature = signature.as_deref().unwrap_or(""),
+                                    "lander submission failed"
+                                );
                             }
                         }
-                        attempt_idx += 1;
-                    } else {
-                        for endpoint in endpoints {
-                            if deadline.expired() {
-                                return Err(LanderError::fatal(
-                                    "deadline expired before submission",
-                                ));
-                            }
-                            events::lander_attempt(
-                                strategy_name,
-                                dispatch_label,
-                                lander.name(),
-                                variant_id,
-                                attempt_idx,
-                            );
-                            match lander
-                                .submit_variant(variant.clone(), deadline, Some(&endpoint))
-                                .await
-                            {
-                                Ok(receipt) => {
-                                    events::lander_success(
-                                        strategy_name,
-                                        dispatch_label,
-                                        attempt_idx,
-                                        &receipt,
-                                    );
-                                    if let Some(sig) = receipt.signature.as_deref() {
-                                        info!(target: "lander::stack", signature = sig, "lander submission succeeded");
-                                    } else {
-                                        info!(target: "lander::stack", "lander submission succeeded");
-                                    }
-                                    return Ok(receipt);
-                                }
-                                Err(err) => {
-                                    events::lander_failure(
-                                        strategy_name,
-                                        dispatch_label,
-                                        lander.name(),
-                                        variant_id,
-                                        attempt_idx,
-                                        &err,
-                                    );
-                                    warn!(
-                                        target: "lander::stack",
-                                        endpoint = endpoint.as_str(),
-                                        tx_signature = variant_signature
-                                            .as_deref()
-                                            .unwrap_or(""),
-                                        "lander submission failed"
-                                    );
-                                    last_err = Some(err);
-                                }
-                            }
-                            attempt_idx += 1;
-                        }
+                        last_err = Some(err);
                     }
                 }
             }
@@ -502,7 +497,7 @@ mod tests {
     #[tokio::test]
     async fn all_at_once_dispatches_every_endpoint() {
         let variant = build_variant(0);
-        let plan = DispatchPlan::new(DispatchStrategy::AllAtOnce, vec![variant.clone()]);
+        let plan = DispatchPlan::new(DispatchStrategy::AllAtOnce, vec![vec![variant.clone()]]);
         let outcomes = vec![
             TestOutcome::Failure,
             TestOutcome::Success {
@@ -530,7 +525,10 @@ mod tests {
     #[tokio::test]
     async fn one_by_one_walks_endpoints_in_order() {
         let variant = build_variant(1);
-        let plan = DispatchPlan::new(DispatchStrategy::OneByOne, vec![variant.clone()]);
+        let plan = DispatchPlan::new(
+            DispatchStrategy::OneByOne,
+            vec![vec![variant.clone()], vec![variant.clone()]],
+        );
         let outcomes = vec![
             TestOutcome::Failure,
             TestOutcome::Success { signature: None },

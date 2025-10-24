@@ -90,7 +90,7 @@ pub struct LanderStack {
 }
 
 impl LanderStack {
-    pub fn plan_capacity(&self, strategy: DispatchStrategy) -> usize { /* ... */ }
+    pub fn variant_layout(&self, strategy: DispatchStrategy) -> Vec<usize> { /* ... */ }
 
     pub async fn submit_plan(
         &self,

@@ -35,7 +35,9 @@ impl Strategy for BlindStrategy {
                 };
 
                 if let Some(pair) = pairs.get(idx) {
-                    ctx.schedule_pair_all_amounts(pair);
+                    if let Some(amounts) = ctx.take_amounts_if_ready(&pair.input_pubkey) {
+                        ctx.push_quote_tasks(pair, &amounts);
+                    }
                     self.next_pair_index = (idx + 1) % pairs.len();
                 }
 

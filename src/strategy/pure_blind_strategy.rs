@@ -532,28 +532,27 @@ impl Strategy for PureBlindStrategy {
         "pure_blind"
     }
 
-    fn on_market_event(&mut self, event: &Self::Event, ctx: StrategyContext<'_>) -> Action {
+    fn on_market_event(&mut self, event: &Self::Event, mut ctx: StrategyContext<'_>) -> Action {
         match event {
             StrategyEvent::Tick(_) => {
-                let trade_amounts = ctx.trade_amounts();
-                if trade_amounts.is_empty() {
-                    return Action::Idle;
-                }
-
-                let mut batch = Vec::with_capacity(self.routes.len() * trade_amounts.len() * 2);
+                let mut batch: Vec<BlindOrder> = Vec::new();
 
                 for route in &self.routes {
-                    for &amount in trade_amounts {
-                        batch.push(BlindOrder {
-                            amount_in: amount,
-                            steps: route.forward.clone(),
-                            lookup_tables: route.lookup_tables.clone(),
-                        });
-                        batch.push(BlindOrder {
-                            amount_in: amount,
-                            steps: route.reverse.clone(),
-                            lookup_tables: route.lookup_tables.clone(),
-                        });
+                    if let Some(first_step) = route.forward.first() {
+                        if let Some(amounts) = ctx.take_amounts_if_ready(&first_step.input.mint) {
+                            for &amount in &amounts {
+                                batch.push(BlindOrder {
+                                    amount_in: amount,
+                                    steps: route.forward.clone(),
+                                    lookup_tables: route.lookup_tables.clone(),
+                                });
+                                batch.push(BlindOrder {
+                                    amount_in: amount,
+                                    steps: route.reverse.clone(),
+                                    lookup_tables: route.lookup_tables.clone(),
+                                });
+                            }
+                        }
                     }
                 }
 

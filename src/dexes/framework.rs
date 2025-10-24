@@ -68,6 +68,7 @@ pub trait SwapAccountAssembler: Send + Sync {
 pub type MetaArc<T> = Arc<T>;
 
 /// 统一描述已采集池子基础信息的结构。
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PoolMeta {
     pub dex_label: &'static str,
@@ -80,6 +81,7 @@ pub struct PoolMeta {
 }
 
 /// 池子索引器：负责从链上批量发现市场账户。
+#[allow(dead_code)]
 pub trait PoolIndexer: Send + Sync {
     type FetchFuture<'a>: Future<Output = Result<Vec<PoolMeta>>> + Send + 'a
     where

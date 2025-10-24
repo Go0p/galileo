@@ -33,6 +33,12 @@ pub struct DoubleQuote {
 }
 
 #[derive(Debug, Clone)]
+pub struct TradeProfile {
+    pub amounts: Vec<u64>,
+    pub process_delay: Duration,
+}
+
+#[derive(Debug, Clone)]
 pub struct SwapOpportunity {
     pub pair: TradePair,
     pub amount_in: u64,

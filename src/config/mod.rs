@@ -40,6 +40,14 @@ pub(crate) fn default_max_tokens_limit() -> u32 {
     20
 }
 
+pub(crate) fn default_dflow_max_consecutive_failures() -> u32 {
+    0
+}
+
+pub(crate) fn default_dflow_wait_on_429_ms() -> u64 {
+    0
+}
+
 pub(crate) fn default_quote_timeout_ms() -> u64 {
     2_000
 }
@@ -223,6 +231,8 @@ impl Default for cfg::DflowEngineConfig {
             api_proxy: None,
             quote_config: cfg::DflowQuoteConfig::default(),
             swap_config: cfg::DflowSwapConfig::default(),
+            max_consecutive_failures: default_dflow_max_consecutive_failures(),
+            wait_on_429_ms: default_dflow_wait_on_429_ms(),
         }
     }
 }

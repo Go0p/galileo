@@ -7,7 +7,7 @@ lander:
   sending_strategy: "AllAtOnce"
 
   # 固定优先费 单位是 lamports
-  fixed_compute_unit_price: 200
+  fixed_compute_unit_price: 10
   # 随机优先费范围 单位是 lamports
   random_compute_unit_price_range:
     - 3000
@@ -15,7 +15,7 @@ lander:
 
   skip_preflight: true
   # 设置为 null 以使用默认重试策略
-  max_retries: 3
+  max_retries: 0
   # 设置最小上下文 slot，默认不限制
   min_context_slot: 0
 
@@ -37,7 +37,7 @@ lander:
     tip_strategies: fixed
 
     # 使用固定的 lamports 作为小费
-    fixed_tip: 3000
+    fixed_tip: 2000
     # 随机小费，随机在 range_tips 中选择一个
     range_tips: [3000,5000]
 
@@ -63,7 +63,17 @@ lander:
   # 本质上是一个质押的 rpc 节点
   staked:
     endpoints:
-      - ""
+      - "https://acc.solayer.org"
+      - "https://solana-rpc.publicnode.com"
+      # go0p
+      - "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
+      - "https://mainnet.solana.validationcloud.io/v1/4YlOowpz6fTe6Jl31oWxYGSusOS12UzTxXkpdoC1I5A"
+      - "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
+      #sb
+      # - "https://rpc.shyft.to?api_key=dEA2ZMnWeFHn62ul"
+      # - "https://mainnet.solana.validationcloud.io/v1/DaSF8wCgDzURllPvFmWEyxqLSJ_Fs6blvxTNcmf7iHw"
+      # - "https://mainnet.helius-rpc.com/?api-key=7b76aea3-b322-4d3c-9b21-eb293c0cc55a"
+  # rpc_url: "https://solana-rpc.publicnode.com"
 
   # 第三方提供商，需要额外的发送 tip 
   temporal:

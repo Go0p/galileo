@@ -4,10 +4,12 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use solana_address_lookup_table_interface::state::AddressLookupTable;
 use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::account::Account;
 use solana_sdk::hash::Hash;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::message::v0::Message as V0Message;
 use solana_sdk::message::{AddressLookupTableAccount, VersionedMessage};
+use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::transaction::VersionedTransaction;
 use tracing::{debug, warn};
@@ -84,11 +86,14 @@ impl TransactionBuilder {
             resolved_tables.to_vec()
         };
 
-        let blockhash = self
-            .rpc
-            .get_latest_blockhash()
-            .await
-            .map_err(EngineError::Rpc)?;
+        let blockhash = if let Some(meta) = instructions.blockhash_with_metadata() {
+            meta.blockhash
+        } else {
+            self.rpc
+                .get_latest_blockhash()
+                .await
+                .map_err(EngineError::Rpc)?
+        };
 
         let slot = self.rpc.get_slot().await.map_err(EngineError::Rpc)?;
 
@@ -128,36 +133,76 @@ impl TransactionBuilder {
         &self,
         addresses: &[solana_sdk::pubkey::Pubkey],
     ) -> EngineResult<Vec<AddressLookupTableAccount>> {
+        const ALT_BATCH_LIMIT: usize = 100;
         let mut tables = Vec::new();
-        for address in addresses {
-            match self.rpc.get_account(address).await {
-                Ok(account) => match AddressLookupTable::deserialize(&account.data) {
-                    Ok(table) => {
-                        tables.push(AddressLookupTableAccount {
-                            key: *address,
-                            addresses: table.addresses.into_owned(),
-                        });
+        if addresses.is_empty() {
+            return Ok(tables);
+        }
+
+        for chunk in addresses.chunks(ALT_BATCH_LIMIT) {
+            match self.rpc.get_multiple_accounts(chunk).await {
+                Ok(accounts) => {
+                    for (address, maybe_account) in chunk.iter().zip(accounts.into_iter()) {
+                        match maybe_account {
+                            Some(account) => {
+                                Self::append_lookup_table(&mut tables, address, account);
+                            }
+                            None => {
+                                warn!(
+                                    target: "engine::builder",
+                                    address = %address,
+                                    "批量拉取 ALT 返回空账户"
+                                );
+                            }
+                        }
                     }
-                    Err(err) => {
-                        warn!(
-                            target: "engine::builder",
-                            address = %address,
-                            error = %err,
-                            "反序列化 ALT 失败"
-                        );
-                    }
-                },
+                }
                 Err(err) => {
                     warn!(
                         target: "engine::builder",
-                        address = %address,
                         error = %err,
-                        "拉取 ALT 账户失败"
+                        "批量拉取 ALT 失败，回退逐条查询"
                     );
+                    for address in chunk {
+                        match self.rpc.get_account(address).await {
+                            Ok(account) => Self::append_lookup_table(&mut tables, address, account),
+                            Err(err) => {
+                                warn!(
+                                    target: "engine::builder",
+                                    address = %address,
+                                    error = %err,
+                                    "拉取 ALT 账户失败"
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
         Ok(tables)
+    }
+
+    fn append_lookup_table(
+        tables: &mut Vec<AddressLookupTableAccount>,
+        address: &Pubkey,
+        account: Account,
+    ) {
+        match AddressLookupTable::deserialize(&account.data) {
+            Ok(table) => {
+                tables.push(AddressLookupTableAccount {
+                    key: *address,
+                    addresses: table.addresses.into_owned(),
+                });
+            }
+            Err(err) => {
+                warn!(
+                    target: "engine::builder",
+                    address = %address,
+                    error = %err,
+                    "反序列化 ALT 失败"
+                );
+            }
+        }
     }
 }
 

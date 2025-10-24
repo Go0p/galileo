@@ -22,9 +22,9 @@ pub use profit::{ProfitConfig, ProfitEvaluator, TipConfig};
 pub use quote::{QuoteConfig, QuoteExecutor};
 pub use scheduler::Scheduler;
 pub use swap::{ComputeUnitPriceMode, SwapInstructionFetcher};
-pub use types::{ExecutionPlan, QuoteTask, StrategyTick, SwapOpportunity};
+pub use types::{ExecutionPlan, QuoteTask, StrategyTick, SwapOpportunity, TradeProfile};
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::mem;
 use std::time::{Duration, Instant};
 
@@ -64,12 +64,48 @@ pub const BLIND_COMPUTE_UNIT_LIMIT: u32 = 230_000;
 const COMPUTE_BUDGET_PROGRAM_ID: Pubkey =
     solana_sdk::pubkey!("ComputeBudget111111111111111111111111111111");
 
+pub(super) struct MintSchedule {
+    amounts: Vec<u64>,
+    next_index: usize,
+    process_delay: Duration,
+    next_ready: Instant,
+}
+
+impl MintSchedule {
+    fn from_profile(profile: TradeProfile) -> Self {
+        Self {
+            amounts: profile.amounts,
+            next_index: 0,
+            process_delay: profile.process_delay,
+            next_ready: Instant::now(),
+        }
+    }
+
+    fn next_amount(&mut self) -> Option<u64> {
+        if self.amounts.is_empty() {
+            return None;
+        }
+        let amount = self.amounts[self.next_index];
+        self.next_index = (self.next_index + 1) % self.amounts.len();
+        Some(amount)
+    }
+
+    fn ready(&self, now: Instant) -> bool {
+        now >= self.next_ready
+    }
+
+    fn mark_dispatched(&mut self, now: Instant) {
+        self.next_ready = now + self.process_delay;
+    }
+}
+
 #[derive(Clone)]
 pub struct EngineSettings {
     pub landing_timeout: Duration,
     pub quote: QuoteConfig,
     pub dry_run: bool,
     pub dispatch_strategy: DispatchStrategy,
+    pub max_consecutive_failures: Option<usize>,
 }
 
 impl EngineSettings {
@@ -79,6 +115,7 @@ impl EngineSettings {
             quote,
             dry_run: false,
             dispatch_strategy: DispatchStrategy::default(),
+            max_consecutive_failures: None,
         }
     }
 
@@ -94,6 +131,11 @@ impl EngineSettings {
 
     pub fn with_dispatch_strategy(mut self, strategy: DispatchStrategy) -> Self {
         self.dispatch_strategy = strategy;
+        self
+    }
+
+    pub fn with_failure_tolerance(mut self, limit: Option<usize>) -> Self {
+        self.max_consecutive_failures = limit;
         self
     }
 }
@@ -113,8 +155,9 @@ where
     flashloan: Option<MarginfiFlashloanManager>,
     settings: EngineSettings,
     trade_pairs: Vec<TradePair>,
-    trade_amounts: Vec<u64>,
+    trade_profiles: BTreeMap<Pubkey, MintSchedule>,
     variant_planner: TxVariantPlanner,
+    consecutive_lander_failures: usize,
 }
 
 impl<S> StrategyEngine<S>
@@ -134,8 +177,12 @@ where
         flashloan: Option<MarginfiFlashloanManager>,
         settings: EngineSettings,
         trade_pairs: Vec<TradePair>,
-        trade_amounts: Vec<u64>,
+        trade_profiles: BTreeMap<Pubkey, TradeProfile>,
     ) -> Self {
+        let trade_profiles = trade_profiles
+            .into_iter()
+            .map(|(mint, profile)| (mint, MintSchedule::from_profile(profile)))
+            .collect();
         Self {
             strategy,
             landers,
@@ -148,8 +195,9 @@ where
             flashloan,
             settings,
             trade_pairs,
-            trade_amounts,
+            trade_profiles,
             variant_planner: TxVariantPlanner::new(),
+            consecutive_lander_failures: 0,
         }
     }
 
@@ -340,10 +388,10 @@ where
             .await?;
 
         let dispatch_strategy = self.settings.dispatch_strategy;
-        let variant_budget = self.landers.plan_capacity(dispatch_strategy);
+        let variant_layout = self.landers.variant_layout(dispatch_strategy);
         let plan = self
             .variant_planner
-            .plan(dispatch_strategy, &prepared, variant_budget);
+            .plan(dispatch_strategy, &prepared, &variant_layout);
 
         let deadline = Deadline::from_instant(Instant::now() + self.settings.landing_timeout);
 
@@ -603,6 +651,16 @@ where
             }
         };
         events::quote_end(strategy_name, &task, true, quote_started.elapsed());
+        let forward_out = double_quote.forward.out_amount();
+        let reverse_out = double_quote.reverse.out_amount();
+        let aggregator = format!("{:?}", double_quote.forward.kind());
+        events::quote_round_trip(
+            strategy_name,
+            &task,
+            aggregator.as_str(),
+            forward_out,
+            reverse_out,
+        );
 
         let opportunity =
             match self
@@ -639,23 +697,46 @@ where
         let instructions = match self.swap_fetcher.fetch(&opportunity, &self.identity).await {
             Ok(value) => value,
             Err(err) => {
-                if let EngineError::Dflow(DflowError::ApiStatus { status, body, .. }) = &err {
+                if let EngineError::Dflow(dflow_err @ DflowError::ApiStatus { status, body, .. }) =
+                    &err
+                {
                     if status.as_u16() == 500 && body.contains("failed_to_compute_swap") {
+                        let detail = dflow_err.describe();
                         warn!(
                             target: "engine::swap",
                             status = status.as_u16(),
+                            error = %detail,
                             "DFlow swap 指令生成失败，跳过当前机会。Error: {body}"
                         );
                         return Ok(());
                     }
                 }
-                if let EngineError::Dflow(DflowError::RateLimited { status, body, .. }) = &err {
+                if let EngineError::Dflow(
+                    dflow_err @ DflowError::RateLimited { status, body, .. },
+                ) = &err
+                {
+                    let detail = dflow_err.describe();
                     warn!(
                         target: "engine::swap",
                         status = status.as_u16(),
                         input_mint = %opportunity.pair.input_mint,
                         output_mint = %opportunity.pair.output_mint,
+                        error = %detail,
                         "DFlow 指令命中限流，放弃当前机会: {body}"
+                    );
+                    return Ok(());
+                }
+                if let EngineError::Dflow(DflowError::ConsecutiveFailureLimit { .. }) = &err {
+                    return Err(err);
+                }
+                if let EngineError::Dflow(other) = &err {
+                    let detail = other.describe();
+                    warn!(
+                        target: "engine::swap",
+                        input_mint = %opportunity.pair.input_mint,
+                        output_mint = %opportunity.pair.output_mint,
+                        error = %detail,
+                        "DFlow 指令失败，跳过当前机会"
                     );
                     return Ok(());
                 }
@@ -726,10 +807,10 @@ where
         }
 
         let dispatch_strategy = self.settings.dispatch_strategy;
-        let variant_budget = self.landers.plan_capacity(dispatch_strategy);
+        let variant_layout = self.landers.variant_layout(dispatch_strategy);
         let plan = self
             .variant_planner
-            .plan(dispatch_strategy, &prepared, variant_budget);
+            .plan(dispatch_strategy, &prepared, &variant_layout);
 
         let deadline = Deadline::from_instant(deadline);
         let tx_signature = plan
@@ -741,7 +822,10 @@ where
             .submit_plan(&plan, deadline, strategy_name)
             .await
         {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                self.consecutive_lander_failures = 0;
+                Ok(())
+            }
             Err(err) => {
                 debug!(
                     target: "engine::lander",
@@ -749,15 +833,32 @@ where
                     tx_signature = tx_signature.as_deref().unwrap_or(""),
                     "lander submission detail"
                 );
+                let message = tx_signature
+                    .as_ref()
+                    .map(|sig| format!("交易 {sig} 落地失败"))
+                    .unwrap_or_else(|| "交易落地失败".to_string());
+                self.consecutive_lander_failures =
+                    self.consecutive_lander_failures.saturating_add(1);
+                let consecutive = self.consecutive_lander_failures;
+                if let Some(limit) = self.settings.max_consecutive_failures {
+                    if limit != 0 && consecutive >= limit {
+                        warn!(
+                            target: "engine::lander",
+                            tx_signature = tx_signature.as_deref().unwrap_or(""),
+                            consecutive = consecutive,
+                            limit = limit,
+                            "落地失败，连续失败达到上限"
+                        );
+                        return Err(EngineError::Landing(message));
+                    }
+                }
                 warn!(
                     target: "engine::lander",
                     tx_signature = tx_signature.as_deref().unwrap_or(""),
-                    "落地失败"
+                    consecutive = consecutive,
+                    "落地失败，跳过当前机会"
                 );
-                let message = tx_signature
-                    .map(|sig| format!("交易 {sig} 落地失败"))
-                    .unwrap_or_else(|| "交易落地失败".to_string());
-                Err(EngineError::Landing(message))
+                Ok(())
             }
         }
     }
@@ -768,7 +869,7 @@ where
         let event = StrategyEvent::Tick(tick);
         let resources = StrategyResources {
             pairs: &self.trade_pairs,
-            trade_amounts: &self.trade_amounts,
+            trade_profiles: &mut self.trade_profiles,
         };
         let ctx = StrategyContext::new(resources);
         let action = self.strategy.on_market_event(&event, ctx);

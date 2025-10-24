@@ -19,15 +19,20 @@
 
 2. **交易变体生成（TxVariantPlanner）**
    - 在 `engine` 层完成，确保落地器只负责发送。  
-   - 默认策略：
-     - `AllAtOnce` → 单一 `TxVariant`。
-     - `OneByOne` → 依据 endpoint 数量或 tip 钱包数量生成多个变体，差异体现在 tip 钱包/金额等轻量字段。
-   - `PreparedTransaction` 继续携带 signer、tip 等信息，供派生变体。
+   - 生成原则：
+     - `AllAtOnce` → 为每个 lander 实例只衍生一份带签名的 `TxVariant`，供该实例下的全部 endpoint 共用；Jito 如需追加 tip 会在这份变体基础上局部加工，但不会重新签名。
+     - `OneByOne` → 针对「lander × endpoint」数量派生多份互相独立的 `TxVariant`，每份都拥有独立签名，以便针对不同 endpoint 调整 tip、优先费等参数并并发投递。
+   - `PreparedTransaction` 继续携带 signer、tip 等信息，为变体派生提供上下文。
 
-3. **策略执行**
-   - `AllAtOnce`：并发向所有 endpoint 推送同一交易，成本最低。
-   - `OneByOne`：按 `(variant, endpoint)` 队列快速发送，期待利用限流同步延迟捕捉机会。
-   - 成功即终止；失败则继续下一对，最终全部失败返回最后错误。
+3. **策略执行（核心语义）**
+   - `AllAtOnce`
+     - 对同一个 lander，仅签名并构造**一笔交易**；若该 lander 需额外加工（例如 Jito 加 tip、Staked 直接使用原交易），会在生成后再做轻量转换，但签名保持唯一。
+     - 这一笔交易被同时广播到该 lander 管理的全部 endpoint，实现“同一签名、并发发送、先到先得”，最大化 gas 共享效率。
+     - 多个 lander 并行工作，各自广播自己的那一笔交易版本。
+   - `OneByOne`
+     - `TxVariantPlanner` 为同一个 lander 的每个 endpoint 生成**独立签名/独立交易**（N 个 endpoint 就有 N 笔 tx），可以在 tip、优先费、lookup-table 等细节上做差异化探索。
+     - 这些交易在同一时刻并发发送到各自的 endpoint，利用“多路不同参数”提高命中/收益率，即便单点失败也不会影响其它 endpoint 的尝试。
+     - 同样遵循“任一交易落地成功即整体成功”，若全部失败也会串联错误向上抛出。
 
 4. **Jito 落地器重构**
    - 接收 `TxVariant`，根据变体参数调整 tip 钱包/金额，构造 bundle。
@@ -75,8 +80,8 @@ lander/
   DispatchPlan { strategy, variants }
              ↓
   LanderStack::submit_plan
-             ├── AllAtOnce → 并发同一交易
-             └── OneByOne → variant × endpoint 轮询发送
+             ├── AllAtOnce → 每个 lander 拿到单一签名的交易版本，广播至其全部 endpoint
+             └── OneByOne → 为每个 endpoint 准备独立签名的交易版本，并发发送
 ```
 
 ---
@@ -86,7 +91,7 @@ lander/
 - **性能**
   - 变体生成在 engine 层完成，避免落地器重复计算。
   - 序列化缓存并复用，减少分配和编码开销。
-  - `OneByOne` 默认同步轮询（可引入有限并发），控制调度成本。
+  - `AllAtOnce` 广播路径只复制必要的几份交易，`OneByOne` 则按 endpoint 预先烘焙多份变体，通过并发发送提升首包命中率，同时保留失败后的精细化重试空间。
 
 - **指标建议**
   - `lander.dispatch.attempts{strategy, variant_id, lander}`
@@ -98,24 +103,26 @@ lander/
 ## 测试计划
 
 1. **单元测试**
-   - `TxVariantPlanner`：验证变体数量与配置。
-  - `LanderStack`：AllAtOnce、OneByOne 行为与失败回退。
-   - `JitoLander`：tip 覆盖、uuid query 拼接。
+   - `TxVariantPlanner`：验证在 AllAtOnce/OneByOne 下生成的变体数量、参数差异和 mint 绑定关系。
+   - `LanderStack`：确认 AllAtOnce 会对每个 lander 启动一次并发广播，而 OneByOne 会针对 endpoint 派发专属变体并在失败后继续投递。
+   - `JitoLander`：tip 覆盖、uuid query 拼接，以及在不同策略下的 bundle 组装差异。
 
 2. **集成测试**
-   - 搭建伪 endpoint，验证 OneByOne 在多失败场景下的回退逻辑。
+   - 搭建伪 endpoint，验证 AllAtOnce 同时命中多个 endpoint 的行为，以及 OneByOne 在多失败场景下的回退逻辑。
    - 确认 `process_delay`、`sending_cooldown` 等节奏控制仍有效。
 
 ---
 
 ## 迭代步骤
 
-1. 引入 `DispatchPlan/DispatchStrategy`，保持 AllAtOnce 行为。
-2. 实现 `TxVariantPlanner` 与 `LanderStack::submit_plan`。
-3. 改造各落地器以支持 `submit_variant`。
-4. 实现 OneByOne 队列轮询逻辑以及 uuid query。
-5. 增补指标、日志与对应测试。
-6. 更新文档与配置示例（包含 `lander.yaml`）。
+1. 引入 `DispatchPlan/DispatchStrategy`，初版即对 lander/endpoint 做并发发送。
+2. 实现 `TxVariantPlanner`：支持按 lander/endpoint 生成专属变体，并在 AllAtOnce/OneByOne 下使用不同粒度的复制策略。
+3. 改造 `LanderStack::submit_plan`，AllAtOnce 并发广播变体、OneByOne 并发下发 endpoint 专属交易，同时统一成功/失败回调。
+4. 更新 Jito/Staked 等落地器实现：
+   - Jito 在 AllAtOnce 模式下只构造一份含 tip 的 bundle，并并发灌入全部 endpoint。
+   - 在 OneByOne 模式下，根据 Planner 提供的多份 bundle 逐一并发交付（tip、优先费等参数可因变体而异）。
+5. 扩展指标/日志覆盖，验证不同 endpoint 下的落地情况。
+6. 补充配置示例与运行手册（含 `lander.yaml`）以明确新语义。
 
 ---
 

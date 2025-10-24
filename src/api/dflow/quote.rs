@@ -121,6 +121,7 @@ pub enum RoutePlanStep {
 }
 
 impl RoutePlanStep {
+    #[allow(dead_code)]
     pub fn leg(&self) -> &RoutePlanLeg {
         match self {
             RoutePlanStep::WithData(step) => &step.leg,
@@ -175,6 +176,7 @@ pub struct QuoteResponsePayload {
 }
 
 impl QuoteResponsePayload {
+    #[allow(dead_code)]
     pub fn try_from_value(value: Value) -> Result<Self, serde_json::Error> {
         serde_json::from_value(value)
     }
@@ -183,6 +185,7 @@ impl QuoteResponsePayload {
 /// 保留原始 JSON 的响应封装。
 #[derive(Clone, Debug)]
 pub struct QuoteResponse {
+    #[allow(dead_code)]
     pub raw: Value,
     data: QuoteResponsePayload,
 }

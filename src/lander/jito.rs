@@ -3,6 +3,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
+
 use bincode::config::standard;
 use bincode::serde::encode_to_vec;
 use once_cell::sync::Lazy;
@@ -142,56 +145,77 @@ impl JitoLander {
                 .collect::<Vec<_>>(),
         );
 
-        let target_endpoints: Vec<&str> = match endpoint {
-            Some(target) if !target.trim().is_empty() => vec![target],
-            _ => self
-                .endpoints
-                .iter()
-                .map(|endpoint| endpoint.as_str())
-                .collect(),
+        let targets: Vec<String> = match endpoint {
+            Some(target) => {
+                let trimmed = target.trim();
+                if trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![trimmed.to_string()]
+                }
+            }
+            None => self.endpoint_list(),
         };
 
-        for endpoint in target_endpoints {
+        if targets.is_empty() {
+            return Err(LanderError::fatal("no jito endpoints available"));
+        }
+
+        let tickets = if let Some(pool) = &self.uuid_pool {
+            let mut guard = pool.lock().await;
+            targets.iter().map(|_| guard.next_ticket()).collect()
+        } else {
+            vec![None; targets.len()]
+        };
+
+        let mut requests = Vec::new();
+        for (endpoint, ticket) in targets.into_iter().zip(tickets.into_iter()) {
             if endpoint.trim().is_empty() {
                 continue;
             }
 
-            let ticket = if let Some(pool) = &self.uuid_pool {
-                let mut guard = pool.lock().await;
-                let ticket = guard.next_ticket();
-                drop(guard);
-                if let Some(ticket) = &ticket {
-                    if ticket.forced {
-                        warn!(
-                            target: "lander::jito",
-                            uuid = ticket.uuid.as_str(),
-                            rate_limit = ?ticket.rate_limit,
-                            "uuid rate limit exhausted, forcing bundle submission"
-                        );
-                    }
+            if let Some(ticket) = ticket.as_ref() {
+                if ticket.forced {
+                    warn!(
+                        target: "lander::jito",
+                        uuid = ticket.uuid.as_str(),
+                        rate_limit = ?ticket.rate_limit,
+                        "uuid rate limit exhausted, forcing bundle submission"
+                    );
                 }
-                ticket
-            } else {
-                None
-            };
+            }
 
-            let endpoint_url = match prepare_endpoint_url(endpoint, ticket.as_ref()) {
+            let endpoint_url = match prepare_endpoint_url(&endpoint, ticket.as_ref()) {
                 Some(url) => url,
                 None => {
                     warn!(
                         target: "lander::jito",
-                        endpoint,
+                        endpoint = endpoint.as_str(),
                         "failed to parse endpoint url"
                     );
                     continue;
                 }
             };
 
-            let (request_id, options_value) = match &ticket {
-                Some(ticket) => (ticket.bundle_id.clone(), Some(ticket.options_value())),
-                None => (DEFAULT_REQUEST_ID.to_string(), None),
-            };
+            let request_id = ticket
+                .as_ref()
+                .map(|t| t.bundle_id.clone())
+                .unwrap_or_else(|| DEFAULT_REQUEST_ID.to_string());
+            let options_value = ticket.as_ref().map(|t| t.options_value());
 
+            requests.push((endpoint_url, ticket, request_id, options_value));
+        }
+
+        if requests.is_empty() {
+            return Err(LanderError::fatal("no valid jito endpoints configured"));
+        }
+
+        let slot = variant.slot();
+        let blockhash = variant.blockhash().to_string();
+        let variant_id = variant.id();
+
+        let mut futures = FuturesUnordered::new();
+        for (endpoint_url, ticket, request_id, options_value) in requests {
             let mut params = vec![bundle_value.clone()];
             if let Some(options) = &options_value {
                 params.push(options.clone());
@@ -204,13 +228,32 @@ impl JitoLander {
                 "params": params,
             });
 
-            let response = self
-                .client
-                .post(endpoint_url.clone())
-                .json(&payload)
-                .send()
-                .await
-                .map_err(LanderError::Network)?;
+            let client = self.client.clone();
+            futures.push(async move {
+                let response = client
+                    .post(endpoint_url.clone())
+                    .json(&payload)
+                    .send()
+                    .await
+                    .map_err(LanderError::Network);
+
+                (endpoint_url, ticket, response)
+            });
+        }
+
+        while let Some((endpoint_url, ticket, response_result)) = futures.next().await {
+            let response = match response_result {
+                Ok(resp) => resp,
+                Err(err) => {
+                    warn!(
+                        target: "lander::jito",
+                        endpoint = endpoint_url.as_str(),
+                        error = %err,
+                        "bundle submission network error"
+                    );
+                    continue;
+                }
+            };
 
             if !response.status().is_success() {
                 warn!(
@@ -222,7 +265,19 @@ impl JitoLander {
                 continue;
             }
 
-            let value: serde_json::Value = response.json().await.map_err(LanderError::Network)?;
+            let value: serde_json::Value = match response.json().await.map_err(LanderError::Network)
+            {
+                Ok(val) => val,
+                Err(err) => {
+                    warn!(
+                        target: "lander::jito",
+                        endpoint = endpoint_url.as_str(),
+                        error = %err,
+                        "bundle submission decode error"
+                    );
+                    continue;
+                }
+            };
             if let Some(error) = value.get("error") {
                 warn!(
                     target: "lander::jito",
@@ -239,14 +294,13 @@ impl JitoLander {
                 .map(|s| s.to_string())
                 .or_else(|| ticket.as_ref().map(|t| t.bundle_id.clone()));
 
-            let endpoint_string = endpoint_url.to_string();
             return Ok(LanderReceipt {
                 lander: "jito",
-                endpoint: endpoint_string,
-                slot: variant.slot(),
-                blockhash: variant.blockhash().to_string(),
+                endpoint: endpoint_url.to_string(),
+                slot,
+                blockhash: blockhash.clone(),
                 signature: bundle_id,
-                variant_id: variant.id(),
+                variant_id,
             });
         }
 

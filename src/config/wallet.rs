@@ -17,26 +17,7 @@ const MAGIC: &[u8; 8] = b"GLWALLET";
 const FORMAT_VERSION: u8 = 1;
 const SALT_SIZE: usize = 16;
 const NONCE_SIZE: usize = 12;
-const PASSWORD_ENV: &str = "GALILEO_WALLET_PASSWORD";
-const PASSWORD_NEW_ENV: &str = "GALILEO_WALLET_PASSWORD_NEW";
 const MAX_PASSWORD_ATTEMPTS: usize = 3;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PasswordSource {
-    Env,
-    Interactive,
-}
-
-struct PasswordCandidate {
-    value: Zeroizing<String>,
-    source: PasswordSource,
-}
-
-impl PasswordCandidate {
-    fn as_str(&self) -> &str {
-        self.value.as_str()
-    }
-}
 
 pub struct WalletProcessingResult {
     pub sanitized_config: bool,
@@ -81,24 +62,17 @@ pub fn process_wallet(
         let mut attempts = 0usize;
         loop {
             attempts += 1;
-            let candidate = obtain_existing_password().map_err(|message| ConfigError::Parse {
+            let password = obtain_existing_password().map_err(|message| ConfigError::Parse {
                 path: encrypted_path.to_path_buf(),
                 message,
             })?;
 
-            let is_env = matches!(candidate.source, PasswordSource::Env);
-            match decrypt_wallet_file(encrypted_path, candidate.as_str()) {
+            match decrypt_wallet_file(encrypted_path, password.as_ref()) {
                 Ok(decrypted) => {
                     wallet.private_key = decrypted;
                     break;
                 }
                 Err(message) => {
-                    if is_env {
-                        return Err(ConfigError::Parse {
-                            path: encrypted_path.to_path_buf(),
-                            message,
-                        });
-                    }
                     let remaining = MAX_PASSWORD_ATTEMPTS.saturating_sub(attempts);
                     warn!(
                         target: "config",
@@ -196,35 +170,11 @@ pub(crate) fn encrypted_wallet_path(config_path: Option<&Path>) -> PathBuf {
 }
 
 fn obtain_new_password() -> Result<Zeroizing<String>, String> {
-    if let Some(value) = env_password(PASSWORD_NEW_ENV) {
-        return Ok(value);
-    }
-    if let Some(value) = env_password(PASSWORD_ENV) {
-        return Ok(value);
-    }
-
     prompt_new_password_interactive()
 }
 
-fn obtain_existing_password() -> Result<PasswordCandidate, String> {
-    if let Some(value) = env_password(PASSWORD_ENV) {
-        return Ok(PasswordCandidate {
-            value,
-            source: PasswordSource::Env,
-        });
-    }
-
-    prompt_existing_password_interactive().map(|value| PasswordCandidate {
-        value,
-        source: PasswordSource::Interactive,
-    })
-}
-
-fn env_password(name: &str) -> Option<Zeroizing<String>> {
-    std::env::var(name)
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(Zeroizing::new)
+fn obtain_existing_password() -> Result<Zeroizing<String>, String> {
+    prompt_existing_password_interactive()
 }
 
 fn prompt_new_password_interactive() -> Result<Zeroizing<String>, String> {
@@ -290,10 +240,8 @@ fn read_masked_password(term: &Term, prompt: &str) -> Result<String, String> {
             '\u{7f}' | '\u{8}' => {
                 if !buffer.is_empty() {
                     buffer.pop();
-                    if term.clear_chars(1).is_err() {
-                        // 如果无法回退光标，退而求其次打印退格覆盖
-                        let _ = term.write_str("\u{8} \u{8}");
-                    }
+                    // 退格一位并用空格覆盖，兼容不支持 clear_chars 的终端
+                    let _ = term.write_str("\u{8} \u{8}");
                     let _ = term.flush();
                 }
             }

@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 
 use anyhow::{Result, anyhow};
 use tracing::info;
@@ -149,12 +149,21 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                     .danger_accept_invalid_certs(true);
             }
             let api_http_client = api_http_builder.build()?;
+            let dflow_engine_cfg = &config.galileo.engine.dflow;
+            let max_failures = if dflow_engine_cfg.max_consecutive_failures == 0 {
+                None
+            } else {
+                Some(dflow_engine_cfg.max_consecutive_failures as usize)
+            };
+            let wait_on_429 = Duration::from_millis(dflow_engine_cfg.wait_on_429_ms);
             let api_client = DflowApiClient::new(
                 api_http_client,
                 quote_base,
                 swap_base,
                 &config.galileo.bot,
                 &config.galileo.global.logging,
+                max_failures,
+                wait_on_429,
             );
             AggregatorContext::Dflow { api_client }
         }

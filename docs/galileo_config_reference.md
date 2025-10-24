@@ -16,9 +16,7 @@
 
 ## 钱包安全
 - 首次启动时可在 `global.wallet.private_key` 写入明文密钥，程序会提示设置钱包密码并使用 Argon2id + AES-256-GCM 生成同级目录下的 `wallet.enc`，随后自动清空配置中的明文。
-- 若检测到 `wallet.enc`，预检前会提示输入密码解锁；也可通过环境变量跳过交互：
-  - `GALILEO_WALLET_PASSWORD_NEW`：首次加密或重置密码时使用；未设置时退回到 `GALILEO_WALLET_PASSWORD` 或交互式输入。
-  - `GALILEO_WALLET_PASSWORD`：运行时解锁 `wallet.enc` 所用密码；未设置时进入交互模式。
+- 若检测到 `wallet.enc`，预检前会提示输入密码解锁；当前版本仅支持交互式输入，不再提供环境变量绕过。
 - 忘记密码时只能删除 `wallet.enc` 并重新在配置中填入私钥创建新的加密文件，请妥善保管备份。
 
 ## 市场与代币

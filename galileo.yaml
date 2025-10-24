@@ -1,10 +1,16 @@
 global:
   # rpc url
+
+  # go0p
   # rpc_url: "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
   # rpc_url: "https://mainnet.solana.validationcloud.io/v1/4YlOowpz6fTe6Jl31oWxYGSusOS12UzTxXkpdoC1I5A"
-  rpc_url: "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
+  # rpc_url: "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
+  # sb
+  rpc_url: "https://rpc.shyft.to?api_key=dEA2ZMnWeFHn62ul"
+  # rpc_url: "https://mainnet.solana.validationcloud.io/v1/DaSF8wCgDzURllPvFmWEyxqLSJ_Fs6blvxTNcmf7iHw"
+  # rpc_url: "https://mainnet.helius-rpc.com/?api-key=7b76aea3-b322-4d3c-9b21-eb293c0cc55a"
   # rpc_url: "https://solana-rpc.publicnode.com"
-  # rpc_url: "http://127.0.0.1:8899"
+  rpc_url: "http://127.0.0.1:8899"
   # yellowstone grpc url
   # proxy: "http://192.168.124.4:2080"
   yellowstone_grpc_url: ""
@@ -76,7 +82,11 @@ engine:
     # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
     api_quote_base: "https://quote-api.dflow.net"
     api_swap_base: "https://quote-api.dflow.net"
-    api_proxy: ""
+    api_proxy: "http://192.168.3.3:9999"
+    # 控制 DFlow 报价/指令阶段的连续失败容忍度，达到上限后机器人退出；设为 `0` 表示无限容忍。
+    max_consecutive_failures: 0
+    # 命中 429 限流后等待的毫秒数，避免继续冲击 DFlow 限流
+    wait_on_429_ms: 10000
     quote_config:
       use_auto_slippage: false
       only_direct_routes: false
@@ -115,6 +125,10 @@ intermedium:
   mints:
     - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     - "So11111111111111111111111111111111111111112"
+    # Bonk
+    - "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+    # MET
+    - "METvsvVRapdj9cFLzq4Tr43xK4tAjQfwX76z3n6mWQL"
   disable_mints: []
 
 bot:
@@ -183,15 +197,46 @@ blind_strategy:
     "DFlow JIT Router"
   ]
   enable_landers: [
-        # "jito"
+        "staked"
     ]
   base_mints:
-    - mint: "So11111111111111111111111111111111111111112"
+    # - mint: "So11111111111111111111111111111111111111112"
+    #   trade_size_range:
+    #     - 6_000_000_000 # 10 SOL
+    #     - 10_000_000_000 # 100 SOL
+    #   # 在范围内将生成多少种不同的交易规模
+    #   trade_range_count: 3
+    #   # 目前支持三个值： linear 、 random 、 exponential
+    #   # exponential 将根据指数值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 77, 315, 668, 1000]
+    #   # linear 将根据线性值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 200, 400, 600, 800, 1000]
+    #   # 注意：随机报价比线性报价或固定交易规模报价稍慢。随机报价会依次发送两个报价，
+    #   # 固定规模报价则会同时发送两个报价。
+    #   trade_range_strategy: "linear"
+    #   # 最小利润
+    #   min_quote_profit: 10000
+    #   # 交易延时
+    #   # 单位为毫秒。默认值表示机器人将等待 1000 毫秒，然后针对相同代币交易规模的对再次尝试。减少此值将增加立即捕捉价格变化的机会，但会增加读取 RPC 负载。
+    #   process_delay: 1000
+    #   # 冷却时间
+    #   # 如果找到一个机会并且发送了 tx，则至少等待这个时间（ms）才能发送另一个。
+    #   sending_cooldown: 1000
+    #   # 路由类型
+    #   # 2hop ：这意味着只有像 A -> B -> A 这样的路由才会被考虑。如果您还将 use_direct_route_only 设置为 false，则 A->B 和 B->A 之间可能存在其他铸币厂。
+    #   # 3hop ：这意味着只会考虑像 A -> B -> C -> A 这样的路线。您需要设置除了所有中间铸币厂之外，还希望在中间包含哪些额外的铸币厂。
+    #   # 最常见的用例是使用 SOL 和 USDC 为路线报价，例如 SOL -> USDC -> X -> SOL。3hop 会产生与将 use_direct_route_only 设置为 false 类似的结果，但报价时间要快得多
+    #   # 使用 3hop 时还需要定义 three_hop_mints
+    #   route_types:
+    #     - "2hop"
+    #     - "3hop"
+    #   # 三跳交易中，中间的铸币厂
+    #   three_hop_mints:
+    #     - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    - mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
       trade_size_range:
-        - 6_000_000_000 # 10 SOL
-        - 10_000_000_000 # 100 SOL
+        - 600_000_000 # 600 USDC
+        # - 1000_000_000 # 1000 USDC
       # 在范围内将生成多少种不同的交易规模
-      trade_range_count: 3
+      trade_range_count: 1
       # 目前支持三个值： linear 、 random 、 exponential
       # exponential 将根据指数值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 77, 315, 668, 1000]
       # linear 将根据线性值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 200, 400, 600, 800, 1000]
@@ -216,7 +261,7 @@ blind_strategy:
         - "3hop"
       # 三跳交易中，中间的铸币厂
       three_hop_mints:
-        - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        - "So11111111111111111111111111111111111111112"
   pure_routes:
     - name: "solfi_cycle"
       # https://solscan.io/tx/TBAnSKbNuNdu2kCPMcLhM8BYh8awZZ5Gt8DTw4k7cFV9DP9YUY86fxc7w9mQ3R5T1L1yeXTh2a4vTkf3izizYFa

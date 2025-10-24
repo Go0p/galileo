@@ -129,6 +129,27 @@ pub fn quote_end(strategy: &str, task: &QuoteTask, success: bool, elapsed: Durat
     }
 }
 
+pub fn quote_round_trip(
+    strategy: &str,
+    task: &QuoteTask,
+    aggregator: &str,
+    first_leg_out: u64,
+    round_trip_out: u64,
+) {
+    info!(
+        target: "monitoring::quote",
+        event = "round_trip",
+        strategy,
+        base_mint = %task.pair.input_mint,
+        quote_mint = %task.pair.output_mint,
+        aggregator,
+        amount_in = task.amount,
+        first_leg_out = first_leg_out,
+        round_trip_out = round_trip_out,
+        "round-trip quote summary"
+    );
+}
+
 pub fn profit_detected(strategy: &str, opportunity: &SwapOpportunity) {
     info!(
         target: "monitoring::profit",

@@ -7,6 +7,7 @@ use tracing::warn;
 use crate::config::IntermediumConfig;
 use crate::dexes::framework::PoolMeta;
 
+#[allow(dead_code)]
 fn parse_pubkeys(items: &[String], label: &str) -> HashSet<Pubkey> {
     let mut result = HashSet::with_capacity(items.len());
     for value in items {
@@ -28,6 +29,7 @@ fn parse_pubkeys(items: &[String], label: &str) -> HashSet<Pubkey> {
 }
 
 /// 依据 intermedium 配置筛选池子，仅保留双方资产均在白名单中的条目。
+#[allow(dead_code)]
 pub fn filter_pools(
     cfg: &IntermediumConfig,
     pools: impl IntoIterator<Item = PoolMeta>,

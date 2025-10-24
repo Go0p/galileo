@@ -26,6 +26,7 @@ impl QuoteResponseVariant {
         }
     }
 
+    #[allow(dead_code)]
     pub fn input_mint(&self) -> Pubkey {
         match self {
             QuoteResponseVariant::Jupiter(resp) => resp.input_mint,
@@ -33,6 +34,7 @@ impl QuoteResponseVariant {
         }
     }
 
+    #[allow(dead_code)]
     pub fn output_mint(&self) -> Pubkey {
         match self {
             QuoteResponseVariant::Jupiter(resp) => resp.output_mint,
@@ -40,6 +42,7 @@ impl QuoteResponseVariant {
         }
     }
 
+    #[allow(dead_code)]
     pub fn in_amount(&self) -> u64 {
         match self {
             QuoteResponseVariant::Jupiter(resp) => resp.in_amount,
@@ -69,6 +72,7 @@ pub enum QuotePayloadVariant {
 }
 
 impl QuotePayloadVariant {
+    #[allow(dead_code)]
     pub fn kind(&self) -> AggregatorKind {
         match self {
             QuotePayloadVariant::Jupiter(_) => AggregatorKind::Jupiter,
@@ -76,6 +80,7 @@ impl QuotePayloadVariant {
         }
     }
 
+    #[allow(dead_code)]
     pub fn input_mint(&self) -> Pubkey {
         match self {
             QuotePayloadVariant::Jupiter(payload) => payload.input_mint,
@@ -90,6 +95,7 @@ impl QuotePayloadVariant {
         }
     }
 
+    #[allow(dead_code)]
     pub fn out_amount(&self) -> u64 {
         match self {
             QuotePayloadVariant::Jupiter(payload) => payload.out_amount,
@@ -97,6 +103,7 @@ impl QuotePayloadVariant {
         }
     }
 
+    #[allow(dead_code)]
     pub fn other_amount_threshold(&self) -> u64 {
         match self {
             QuotePayloadVariant::Jupiter(payload) => payload.other_amount_threshold,
@@ -186,6 +193,7 @@ pub enum SwapInstructionsVariant {
 }
 
 impl SwapInstructionsVariant {
+    #[allow(dead_code)]
     pub fn kind(&self) -> AggregatorKind {
         match self {
             SwapInstructionsVariant::Jupiter(_) => AggregatorKind::Jupiter,
@@ -232,7 +240,7 @@ impl SwapInstructionsVariant {
             SwapInstructionsVariant::Jupiter(response) => {
                 response.resolved_lookup_tables.as_slice()
             }
-            SwapInstructionsVariant::Dflow(response) => response.resolved_lookup_tables.as_slice(),
+            SwapInstructionsVariant::Dflow(_) => &[],
         }
     }
 
@@ -244,6 +252,13 @@ impl SwapInstructionsVariant {
             SwapInstructionsVariant::Dflow(response) => {
                 response.address_lookup_table_addresses.as_slice()
             }
+        }
+    }
+
+    pub fn blockhash_with_metadata(&self) -> Option<&dflow::BlockhashWithMetadata> {
+        match self {
+            SwapInstructionsVariant::Jupiter(_) => None,
+            SwapInstructionsVariant::Dflow(response) => Some(response.blockhash_with_metadata()),
         }
     }
 }

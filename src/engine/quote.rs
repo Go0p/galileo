@@ -179,7 +179,21 @@ impl QuoteExecutor {
                         );
                         Ok(None)
                     }
-                    Err(err) => Err(EngineError::from(err)),
+                    Err(err @ DflowError::ConsecutiveFailureLimit { .. }) => {
+                        Err(EngineError::from(err))
+                    }
+                    Err(err) => {
+                        let detail = err.describe();
+                        warn!(
+                            target: "engine::quote",
+                            input_mint = %pair.input_mint,
+                            output_mint = %pair.output_mint,
+                            amount = amount,
+                            error = %detail,
+                            "DFlow 报价失败，跳过当前路线"
+                        );
+                        Ok(None)
+                    }
                 }
             }
         }

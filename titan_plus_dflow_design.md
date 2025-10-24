@@ -48,6 +48,8 @@
   - `reverse_slippage_bps`: Titan 反向腿使用的滑点。
   - `interval_ms` / `num_quotes`: 控制 Titan 服务端推送节奏。
 - `galileo.engine.dflow` 已支持 `api_quote_base` / `api_swap_base` 两个端点，适配 `/quote` 与 `/swap-instructions` 分别走 Proxy 与主域。
+- `galileo.engine.dflow.max_consecutive_failures` 控制 DFlow 报价/指令阶段的连续失败容忍度，达到上限后机器人退出；设为 `0` 表示无限容忍。
+- `galileo.engine.dflow.wait_on_429_ms` 指定命中 429 限流后等待的毫秒数，避免继续冲击 DFlow 限流。
 
 示例（根目录 `galileo.yaml`）：
 
@@ -71,6 +73,8 @@ galileo:
       api_proxy: "http://192.168.124.4:9999"
       api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
       api_swap_base: "https://quote-api.dflow.net"
+      max_consecutive_failures: 0
+      wait_on_429_ms: 0
       quote_config:
         use_auto_slippage: false
       swap_config:

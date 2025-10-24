@@ -81,8 +81,8 @@ async fn send_transaction(
 
     let dispatch_strategy = lander_settings.sending_strategy;
     let planner = TxVariantPlanner::new();
-    let variant_budget = lander_stack.plan_capacity(dispatch_strategy);
-    let plan = planner.plan(dispatch_strategy, &prepared, variant_budget);
+    let variant_layout = lander_stack.variant_layout(dispatch_strategy);
+    let plan = planner.plan(dispatch_strategy, &prepared, &variant_layout);
 
     let deadline =
         Deadline::from_instant(Instant::now() + Duration::from_millis(args.deadline_ms.max(1)));

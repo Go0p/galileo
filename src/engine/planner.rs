@@ -180,24 +180,39 @@ impl TxVariant {
 #[derive(Clone, Debug)]
 pub struct DispatchPlan {
     strategy: DispatchStrategy,
-    variants: Vec<TxVariant>,
+    lander_variants: Vec<Vec<TxVariant>>,
 }
 
 impl DispatchPlan {
-    pub fn new(strategy: DispatchStrategy, variants: Vec<TxVariant>) -> Self {
-        Self { strategy, variants }
+    pub fn new(strategy: DispatchStrategy, lander_variants: Vec<Vec<TxVariant>>) -> Self {
+        Self {
+            strategy,
+            lander_variants,
+        }
     }
 
     pub fn strategy(&self) -> DispatchStrategy {
         self.strategy
     }
 
-    pub fn variants(&self) -> &[TxVariant] {
-        &self.variants
+    pub fn variants_for_lander(&self, index: usize) -> &[TxVariant] {
+        self.lander_variants
+            .get(index)
+            .map(|variants| variants.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lander_variants
+            .iter()
+            .all(|variants| variants.is_empty())
     }
 
     pub fn primary_variant(&self) -> Option<&TxVariant> {
-        self.variants.get(0)
+        self.lander_variants
+            .iter()
+            .flat_map(|variants| variants.iter())
+            .next()
     }
 }
 
@@ -213,27 +228,30 @@ impl TxVariantPlanner {
         &self,
         strategy: DispatchStrategy,
         prepared: &PreparedTransaction,
-        variant_budget: usize,
+        layout: &[usize],
     ) -> DispatchPlan {
-        let count = match strategy {
-            DispatchStrategy::AllAtOnce => 1,
-            DispatchStrategy::OneByOne => variant_budget.max(1),
-        };
+        let mut lander_variants = Vec::with_capacity(layout.len());
+        let mut next_id: VariantId = 0;
 
-        let mut variants = Vec::with_capacity(count);
-        for idx in 0..count {
-            let variant = TxVariant::new(
-                idx as VariantId,
-                prepared.transaction.clone(),
-                prepared.blockhash,
-                prepared.slot,
-                prepared.signer.clone(),
-                prepared.tip_lamports,
-            );
-            variants.push(variant);
+        for &count in layout {
+            let needed = count.max(1);
+            let mut variants = Vec::with_capacity(needed);
+            for _ in 0..needed {
+                let variant = TxVariant::new(
+                    next_id,
+                    prepared.transaction.clone(),
+                    prepared.blockhash,
+                    prepared.slot,
+                    prepared.signer.clone(),
+                    prepared.tip_lamports,
+                );
+                variants.push(variant);
+                next_id = next_id.saturating_add(1);
+            }
+            lander_variants.push(variants);
         }
 
-        DispatchPlan::new(strategy, variants)
+        DispatchPlan::new(strategy, lander_variants)
     }
 }
 
@@ -263,9 +281,9 @@ mod tests {
     fn planner_all_at_once_creates_single_variant() {
         let planner = TxVariantPlanner::new();
         let prepared = build_prepared();
-        let plan = planner.plan(DispatchStrategy::AllAtOnce, &prepared, 8);
+        let plan = planner.plan(DispatchStrategy::AllAtOnce, &prepared, &[1]);
         assert_eq!(plan.strategy(), DispatchStrategy::AllAtOnce);
-        assert_eq!(plan.variants().len(), 1);
+        assert_eq!(plan.variants_for_lander(0).len(), 1);
         assert_eq!(plan.primary_variant().unwrap().id(), 0);
     }
 
@@ -273,11 +291,21 @@ mod tests {
     fn planner_one_by_one_respects_budget() {
         let planner = TxVariantPlanner::new();
         let prepared = build_prepared();
-        let plan = planner.plan(DispatchStrategy::OneByOne, &prepared, 3);
+        let plan = planner.plan(DispatchStrategy::OneByOne, &prepared, &[2, 1]);
         assert_eq!(plan.strategy(), DispatchStrategy::OneByOne);
-        assert_eq!(plan.variants().len(), 3);
-        for (expected, variant) in plan.variants().iter().enumerate() {
-            assert_eq!(variant.id(), expected as VariantId);
+        let first_group = plan.variants_for_lander(0);
+        assert_eq!(first_group.len(), 2);
+        let second_group = plan.variants_for_lander(1);
+        assert_eq!(second_group.len(), 1);
+
+        let groups = [plan.variants_for_lander(0), plan.variants_for_lander(1)];
+
+        let mut expected: VariantId = 0;
+        for variants in groups.iter() {
+            for variant in *variants {
+                assert_eq!(variant.id(), expected);
+                expected = expected.saturating_add(1);
+            }
         }
     }
 }

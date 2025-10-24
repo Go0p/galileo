@@ -6,7 +6,6 @@ use serde_json::Value;
 use solana_sdk::{
     hash::Hash,
     instruction::{AccountMeta, Instruction},
-    message::AddressLookupTableAccount,
     pubkey::Pubkey,
 };
 
@@ -153,6 +152,7 @@ pub struct BlockhashWithMetadata {
 /// `/swap-instructions` 响应体，解析为 Solana 指令集合。
 #[derive(Debug, Clone)]
 pub struct SwapInstructionsResponse {
+    #[allow(dead_code)]
     pub raw: Value,
     pub compute_budget_instructions: Vec<Instruction>,
     pub setup_instructions: Vec<Instruction>,
@@ -160,10 +160,10 @@ pub struct SwapInstructionsResponse {
     pub cleanup_instructions: Vec<Instruction>,
     pub other_instructions: Vec<Instruction>,
     pub address_lookup_table_addresses: Vec<Pubkey>,
-    pub resolved_lookup_tables: Vec<AddressLookupTableAccount>,
     pub blockhash_with_metadata: BlockhashWithMetadata,
     pub prioritization_fee_lamports: Option<u64>,
     pub compute_unit_limit: u32,
+    #[allow(dead_code)]
     pub prioritization_type: Option<PrioritizationType>,
 }
 
@@ -231,6 +231,10 @@ impl From<InstructionInternal> for Instruction {
 }
 
 impl SwapInstructionsResponse {
+    pub fn blockhash_with_metadata(&self) -> &BlockhashWithMetadata {
+        &self.blockhash_with_metadata
+    }
+
     fn from_internal(raw: Value, value: SwapInstructionsResponseInternal) -> Self {
         Self {
             raw,
@@ -260,7 +264,6 @@ impl SwapInstructionsResponse {
                 .into_iter()
                 .map(|p| p.0)
                 .collect(),
-            resolved_lookup_tables: Vec::new(),
             blockhash_with_metadata: value.blockhash_with_metadata,
             prioritization_fee_lamports: value.prioritization_fee_lamports,
             compute_unit_limit: value.compute_unit_limit,
