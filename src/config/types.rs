@@ -296,7 +296,7 @@ pub struct FlashloanConfig {
     pub marginfi: FlashloanMarginfiConfig,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct FlashloanMarginfiConfig {
     #[serde(default)]
     pub enable: bool,
@@ -304,6 +304,19 @@ pub struct FlashloanMarginfiConfig {
     pub prefer_wallet_balance: bool,
     #[serde(default)]
     pub marginfi_account: Option<String>,
+    #[serde(default = "super::default_flashloan_compute_unit_overhead")]
+    pub compute_unit_overhead: u32,
+}
+
+impl Default for FlashloanMarginfiConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            prefer_wallet_balance: false,
+            marginfi_account: None,
+            compute_unit_overhead: super::default_flashloan_compute_unit_overhead(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

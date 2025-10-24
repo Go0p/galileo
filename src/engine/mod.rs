@@ -743,30 +743,45 @@ where
                 return Err(err);
             }
         };
-        let compute_unit_limit = instructions.compute_unit_limit();
+        let mut compute_unit_limit = instructions.compute_unit_limit();
         let prioritization_fee = instructions
             .prioritization_fee_lamports()
             .unwrap_or_default();
+        let (mut final_instructions, flashloan_meta, flashloan_overhead) = match &self.flashloan {
+            Some(manager) => {
+                let outcome = manager
+                    .assemble(&self.identity, &opportunity, &instructions)
+                    .await
+                    .map_err(EngineError::from)?;
+                let overhead = outcome
+                    .metadata
+                    .as_ref()
+                    .map(|_| manager.compute_unit_overhead());
+                (outcome.instructions, outcome.metadata, overhead)
+            }
+            None => (
+                instructions.flatten_instructions(),
+                None,
+                Option::<u32>::None,
+            ),
+        };
+
+        if let Some(overhead) = flashloan_overhead {
+            if overhead > 0 {
+                let new_limit = compute_unit_limit.saturating_add(overhead);
+                if !override_compute_unit_limit(&mut final_instructions, new_limit) {
+                    final_instructions.insert(0, compute_unit_limit_instruction(new_limit));
+                }
+                compute_unit_limit = new_limit;
+            }
+        }
+
         events::swap_fetched(
             strategy_name,
             &opportunity,
             compute_unit_limit,
             prioritization_fee,
         );
-
-        let FlashloanOutcome {
-            instructions: final_instructions,
-            metadata: flashloan_meta,
-        } = match &self.flashloan {
-            Some(manager) => manager
-                .assemble(&self.identity, &opportunity, &instructions)
-                .await
-                .map_err(EngineError::from)?,
-            None => FlashloanOutcome {
-                instructions: instructions.flatten_instructions(),
-                metadata: None,
-            },
-        };
 
         if let Some(meta) = &flashloan_meta {
             events::flashloan_applied(
@@ -936,4 +951,14 @@ fn compute_unit_price_instruction(price_micro_lamports: u64) -> Instruction {
         accounts: Vec::new(),
         data,
     }
+}
+
+fn override_compute_unit_limit(instructions: &mut [Instruction], new_limit: u32) -> bool {
+    for ix in instructions.iter_mut() {
+        if ix.program_id == COMPUTE_BUDGET_PROGRAM_ID && ix.data.first() == Some(&2) {
+            *ix = compute_unit_limit_instruction(new_limit);
+            return true;
+        }
+    }
+    false
 }

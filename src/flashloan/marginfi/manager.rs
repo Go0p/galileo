@@ -58,6 +58,7 @@ pub struct MarginfiFlashloanManager {
     configured_default: Option<Pubkey>,
     fallback_marginfi: Option<MarginfiFlashloan>,
     balance_cache: Mutex<HashMap<Pubkey, BalanceCacheEntry>>,
+    compute_unit_overhead: u32,
 }
 
 impl MarginfiFlashloanManager {
@@ -75,6 +76,7 @@ impl MarginfiFlashloanManager {
             configured_default,
             fallback_marginfi,
             balance_cache: Mutex::new(HashMap::new()),
+            compute_unit_overhead: cfg.compute_unit_overhead,
         }
     }
 
@@ -84,6 +86,10 @@ impl MarginfiFlashloanManager {
 
     pub fn try_into_enabled(self) -> Option<Self> {
         if self.enabled { Some(self) } else { None }
+    }
+
+    pub fn compute_unit_overhead(&self) -> u32 {
+        self.compute_unit_overhead
     }
 
     pub fn adopt_preparation(&mut self, prep: MarginfiFlashloanPreparation) {

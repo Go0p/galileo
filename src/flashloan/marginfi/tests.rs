@@ -74,11 +74,8 @@ fn sample_opportunity() -> SwapOpportunity {
 async fn marginfi_wraps_instructions() {
     let identity = make_identity();
     let marginfi_account = Keypair::new().pubkey();
-    let config = FlashloanMarginfiConfig {
-        enable: true,
-        prefer_wallet_balance: false,
-        marginfi_account: None,
-    };
+    let mut config = FlashloanMarginfiConfig::default();
+    config.enable = true;
     let rpc = Arc::new(RpcClient::new_mock("mock://marginfi".to_string()));
     let registry = MarginfiAccountRegistry::new(None);
     let mut manager = MarginfiFlashloanManager::new(&config, rpc, registry);
@@ -113,11 +110,7 @@ async fn disabled_flashloan_passthrough() {
     let identity = make_identity();
     let response = SwapInstructionsVariant::Jupiter(sample_swap_response());
     let opportunity = sample_opportunity();
-    let config = FlashloanMarginfiConfig {
-        enable: false,
-        prefer_wallet_balance: false,
-        marginfi_account: None,
-    };
+    let config = FlashloanMarginfiConfig::default();
     let rpc = Arc::new(RpcClient::new_mock("mock://marginfi".to_string()));
     let registry = MarginfiAccountRegistry::new(None);
     let manager = MarginfiFlashloanManager::new(&config, rpc, registry);

@@ -5,6 +5,8 @@ use std::sync::Arc;
 use serde::de::{Error as DeError, Visitor};
 use serde::{Deserialize, Deserializer};
 use solana_sdk::hash::Hash;
+use solana_sdk::instruction::Instruction;
+use solana_sdk::message::AddressLookupTableAccount;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::transaction::VersionedTransaction;
@@ -108,6 +110,8 @@ pub struct TxVariant {
     signer: Arc<Keypair>,
     base_tip_lamports: u64,
     tip_override: Option<TipOverride>,
+    instructions: Vec<Instruction>,
+    lookup_accounts: Vec<AddressLookupTableAccount>,
 }
 
 impl TxVariant {
@@ -118,6 +122,8 @@ impl TxVariant {
         slot: u64,
         signer: Arc<Keypair>,
         base_tip_lamports: u64,
+        instructions: Vec<Instruction>,
+        lookup_accounts: Vec<AddressLookupTableAccount>,
     ) -> Self {
         Self {
             id,
@@ -127,6 +133,8 @@ impl TxVariant {
             signer,
             base_tip_lamports,
             tip_override: None,
+            instructions,
+            lookup_accounts,
         }
     }
 
@@ -167,6 +175,14 @@ impl TxVariant {
 
     pub fn tip_override(&self) -> Option<&TipOverride> {
         self.tip_override.as_ref()
+    }
+
+    pub fn instructions(&self) -> &[Instruction] {
+        &self.instructions
+    }
+
+    pub fn lookup_accounts(&self) -> &[AddressLookupTableAccount] {
+        &self.lookup_accounts
     }
 
     pub fn signature(&self) -> Option<String> {
@@ -244,6 +260,8 @@ impl TxVariantPlanner {
                     prepared.slot,
                     prepared.signer.clone(),
                     prepared.tip_lamports,
+                    prepared.instructions.clone(),
+                    prepared.lookup_accounts.clone(),
                 );
                 variants.push(variant);
                 next_id = next_id.saturating_add(1);
@@ -274,6 +292,8 @@ mod tests {
             slot: 0,
             signer,
             tip_lamports: 0,
+            instructions: Vec::new(),
+            lookup_accounts: Vec::new(),
         }
     }
 

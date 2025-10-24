@@ -120,6 +120,10 @@ pub(crate) fn default_max_restart_attempts() -> u32 {
     3
 }
 
+pub(crate) fn default_flashloan_compute_unit_overhead() -> u32 {
+    110_000
+}
+
 pub(crate) fn default_graceful_shutdown_timeout_ms() -> u64 {
     5_000
 }

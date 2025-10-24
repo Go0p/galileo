@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use bincode::config::standard;
 use bincode::serde::encode_to_vec;
 use once_cell::sync::Lazy;
@@ -13,9 +14,12 @@ use rand::seq::IndexedRandom;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use solana_sdk::instruction::Instruction;
+use solana_sdk::message::VersionedMessage;
+use solana_sdk::message::v0::Message as V0Message;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signer;
-use solana_sdk::transaction::Transaction;
+use solana_sdk::transaction::VersionedTransaction;
 use solana_system_interface::instruction as system_instruction;
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
@@ -28,9 +32,10 @@ use super::error::LanderError;
 use super::stack::{Deadline, LanderReceipt};
 
 const JSONRPC_VERSION: &str = "2.0";
-const DEFAULT_REQUEST_ID: &str = "galileo-jito";
 const TIP_FLOOR_URL: &str = "https://bundles.jito.wtf/api/v1/bundles/tip_floor";
 const TIP_FLOOR_CACHE_TTL: Duration = Duration::from_secs(3);
+const COMPUTE_BUDGET_PROGRAM_ID: Pubkey =
+    solana_sdk::pubkey!("ComputeBudget111111111111111111111111111111");
 
 static TIP_WALLETS: Lazy<Vec<Pubkey>> = Lazy::new(|| {
     [
@@ -97,53 +102,82 @@ impl JitoLander {
         }
 
         let configured_tip = self.tip_selector.select_tip(&self.client).await?;
-        let base_tip = if variant.tip_lamports() > 0 {
-            Some(variant.tip_lamports())
-        } else {
-            None
-        };
+        let base_tip = (variant.tip_lamports() > 0).then(|| variant.tip_lamports());
         let tip_lamports = variant
             .tip_override()
             .map(|override_tip| override_tip.lamports())
-            .or(base_tip)
             .or(configured_tip)
+            .or(base_tip)
             .unwrap_or(0);
 
-        let mut bundle = Vec::new();
-        if tip_lamports > 0 {
-            if let Some(recipient) = variant
+        let tip_recipient = if tip_lamports > 0 {
+            variant
                 .tip_override()
                 .and_then(|override_tip| override_tip.recipient())
                 .or_else(|| tip_wallet_for_variant(variant.id()))
                 .or_else(random_tip_wallet)
-            {
-                let tip_tx = build_tip_transaction(&variant, recipient, tip_lamports);
-                let tip_encoded = encode_transaction(&tip_tx)?;
-                bundle.push(tip_encoded);
-                debug!(
-                    target: "lander::jito",
-                    tip_lamports,
-                    recipient = %recipient,
-                    "added tip transaction to bundle"
-                );
-            } else {
+        } else {
+            None
+        };
+
+        let final_tx = match (tip_lamports, tip_recipient) {
+            (lamports, Some(recipient)) if lamports > 0 => {
+                match build_jito_transaction(&variant, Some((recipient, lamports))) {
+                    Ok(tx) => {
+                        debug!(
+                            target: "lander::jito",
+                            tip_lamports = lamports,
+                            recipient = %recipient,
+                            "tip 指令已合并进主交易"
+                        );
+                        tx
+                    }
+                    Err(err) => {
+                        warn!(
+                            target: "lander::jito",
+                            tip_lamports = lamports,
+                            recipient = %recipient,
+                            error = %err,
+                            "构建包含 tip 的交易失败，回退为无 tip 交易"
+                        );
+                        build_jito_transaction(&variant, None).unwrap_or_else(|fallback_err| {
+                            warn!(
+                                target: "lander::jito",
+                                error = %fallback_err,
+                                "重构无 tip 交易失败，使用原始交易"
+                            );
+                            variant.transaction().clone()
+                        })
+                    }
+                }
+            }
+            (lamports, None) if lamports > 0 => {
                 warn!(
                     target: "lander::jito",
-                    tip_lamports,
+                    tip_lamports = lamports,
                     "tip wallet list empty, skipping tip transaction"
                 );
+                build_jito_transaction(&variant, None).unwrap_or_else(|err| {
+                    warn!(
+                        target: "lander::jito",
+                        error = %err,
+                        "重构无 tip 交易失败，使用原始交易"
+                    );
+                    variant.transaction().clone()
+                })
             }
-        }
+            _ => build_jito_transaction(&variant, None).unwrap_or_else(|err| {
+                warn!(
+                    target: "lander::jito",
+                    error = %err,
+                    "重构无 tip 交易失败，使用原始交易"
+                );
+                variant.transaction().clone()
+            }),
+        };
 
-        let main_encoded = encode_transaction(variant.transaction())?;
-        bundle.push(main_encoded);
-
-        let bundle_value = Value::Array(
-            bundle
-                .iter()
-                .map(|tx| Value::String(tx.clone()))
-                .collect::<Vec<_>>(),
-        );
+        let main_encoded = encode_transaction(&final_tx)?;
+        let bundle_value = Value::Array(vec![Value::String(main_encoded)]);
 
         let targets: Vec<String> = match endpoint {
             Some(target) => {
@@ -197,13 +231,9 @@ impl JitoLander {
                 }
             };
 
-            let request_id = ticket
-                .as_ref()
-                .map(|t| t.bundle_id.clone())
-                .unwrap_or_else(|| DEFAULT_REQUEST_ID.to_string());
             let options_value = ticket.as_ref().map(|t| t.options_value());
 
-            requests.push((endpoint_url, ticket, request_id, options_value));
+            requests.push((endpoint_url, ticket, options_value));
         }
 
         if requests.is_empty() {
@@ -215,15 +245,21 @@ impl JitoLander {
         let variant_id = variant.id();
 
         let mut futures = FuturesUnordered::new();
-        for (endpoint_url, ticket, request_id, options_value) in requests {
+        for (endpoint_url, ticket, options_value) in requests {
             let mut params = vec![bundle_value.clone()];
-            if let Some(options) = &options_value {
-                params.push(options.clone());
+
+            let mut options = options_value.unwrap_or_else(|| json!({}));
+            if !options.is_object() {
+                options = json!({});
             }
+            if let Value::Object(ref mut map) = options {
+                map.insert("encoding".to_string(), Value::String("base64".to_string()));
+            }
+            params.push(options);
 
             let payload = json!({
                 "jsonrpc": JSONRPC_VERSION,
-                "id": request_id,
+                "id": 1,
                 "method": "sendBundle",
                 "params": params,
             });
@@ -310,7 +346,7 @@ impl JitoLander {
 
 fn encode_transaction<T: serde::Serialize>(tx: &T) -> Result<String, LanderError> {
     let bytes = encode_to_vec(tx, standard())?;
-    Ok(bs58::encode(bytes).into_string())
+    Ok(BASE64_STANDARD.encode(bytes))
 }
 
 fn random_tip_wallet() -> Option<Pubkey> {
@@ -343,13 +379,33 @@ fn prepare_endpoint_url(endpoint: &str, ticket: Option<&UuidTicket>) -> Option<U
     Some(url)
 }
 
-fn build_tip_transaction(variant: &TxVariant, recipient: Pubkey, lamports: u64) -> Transaction {
+fn build_jito_transaction(
+    variant: &TxVariant,
+    tip: Option<(Pubkey, u64)>,
+) -> Result<VersionedTransaction, LanderError> {
     let signer = variant.signer();
     let payer = signer.pubkey();
-    let instruction = system_instruction::transfer(&payer, &recipient, lamports);
-    let mut transaction = Transaction::new_with_payer(&[instruction], Some(&payer));
-    transaction.sign(&[signer.as_ref()], variant.blockhash());
-    transaction
+    let mut instructions = strip_compute_unit_price(variant.instructions().to_vec());
+    if let Some((recipient, lamports)) = tip {
+        instructions.push(system_instruction::transfer(&payer, &recipient, lamports));
+    }
+
+    let message = V0Message::try_compile(
+        &payer,
+        &instructions,
+        variant.lookup_accounts(),
+        variant.blockhash(),
+    )
+    .map_err(|err| LanderError::fatal(format!("构建 Jito 交易消息失败: {err:#}")))?;
+    let versioned = VersionedMessage::V0(message);
+    VersionedTransaction::try_new(versioned, &[signer.as_ref()])
+        .map_err(|err| LanderError::fatal(format!("签名 Jito 交易失败: {err:#}")))
+}
+
+fn strip_compute_unit_price(mut instructions: Vec<Instruction>) -> Vec<Instruction> {
+    instructions
+        .retain(|ix| !(ix.program_id == COMPUTE_BUDGET_PROGRAM_ID && ix.data.first() == Some(&3)));
+    instructions
 }
 
 #[derive(Clone)]

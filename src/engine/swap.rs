@@ -124,8 +124,10 @@ impl SwapInstructionFetcher {
                 }
                 if let Some(strategy) = &self.compute_unit_price {
                     let price = strategy.sample();
-                    request.compute_unit_price_micro_lamports =
-                        Some(ComputeUnitPriceMicroLamports::MicroLamports(price));
+                    if price > 0 {
+                        request.compute_unit_price_micro_lamports =
+                            Some(ComputeUnitPriceMicroLamports::MicroLamports(price));
+                    }
                 }
 
                 client
@@ -154,8 +156,10 @@ impl SwapInstructionFetcher {
                 }
                 if let Some(strategy) = &self.compute_unit_price {
                     let price = strategy.sample();
-                    request.compute_unit_price_micro_lamports =
-                        Some(DflowComputeUnitPriceMicroLamports(price));
+                    if price > 0 {
+                        request.compute_unit_price_micro_lamports =
+                            Some(DflowComputeUnitPriceMicroLamports(price));
+                    }
                 }
 
                 client
@@ -172,6 +176,9 @@ impl SwapInstructionFetcher {
     }
 
     pub fn sample_compute_unit_price(&self) -> Option<u64> {
-        self.compute_unit_price.as_ref().map(|mode| mode.sample())
+        self.compute_unit_price
+            .as_ref()
+            .map(|mode| mode.sample())
+            .filter(|price| *price > 0)
     }
 }

@@ -86,6 +86,7 @@ jupiter:
 ## 闪电贷
 - `flashloan.enable`：全局开关，置为 `true` 后会自动确保 Marginfi account 并在需要时注入闪电贷指令。
 - `flashloan.prefer_wallet_balance`：启用后先检查钱包余额，如果交易规模在余额范围内就直接走自有资金，超出部分才触发闪电贷。
+- `flashloan.marginfi.compute_unit_overhead`：闪电贷指令额外消耗的 compute unit（默认为 `110000`），交易落地时会在 `/swap-instructions` 返回值基础上累加该开销。
 
 Marginfi 的账户创建、Bank 映射、借款规模等均内置处理：首次启动会根据钱包自动创建 Marginfi account，后续复用；借款金额默认等于策略的交易规模。
 

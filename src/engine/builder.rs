@@ -36,6 +36,8 @@ pub struct PreparedTransaction {
     pub slot: u64,
     pub signer: Arc<Keypair>,
     pub tip_lamports: u64,
+    pub instructions: Vec<Instruction>,
+    pub lookup_accounts: Vec<AddressLookupTableAccount>,
 }
 
 #[derive(Clone)]
@@ -97,13 +99,13 @@ impl TransactionBuilder {
 
         let slot = self.rpc.get_slot().await.map_err(EngineError::Rpc)?;
 
-        let mut ix = match override_sequence {
+        let mut instructions = match override_sequence {
             Some(sequence) => sequence,
             None => instructions.flatten_instructions(),
         };
 
         if let Some(memo) = &self.config.memo {
-            ix.push(build_memo_instruction(memo));
+            instructions.push(build_memo_instruction(memo));
         }
 
         if tip_lamports > 0 {
@@ -114,7 +116,8 @@ impl TransactionBuilder {
             );
         }
 
-        let message = compile_message(&identity.pubkey, &ix, &lookup_accounts, blockhash)?;
+        let message =
+            compile_message(&identity.pubkey, &instructions, &lookup_accounts, blockhash)?;
         let versioned = VersionedMessage::V0(message);
         let signer = identity.signer.clone();
         let tx = VersionedTransaction::try_new(versioned, &[signer.as_ref()])
@@ -126,6 +129,8 @@ impl TransactionBuilder {
             slot,
             signer,
             tip_lamports,
+            instructions,
+            lookup_accounts,
         })
     }
 

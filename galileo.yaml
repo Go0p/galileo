@@ -10,9 +10,9 @@ global:
   # rpc_url: "https://mainnet.solana.validationcloud.io/v1/DaSF8wCgDzURllPvFmWEyxqLSJ_Fs6blvxTNcmf7iHw"
   # rpc_url: "https://mainnet.helius-rpc.com/?api-key=7b76aea3-b322-4d3c-9b21-eb293c0cc55a"
   # rpc_url: "https://solana-rpc.publicnode.com"
-  rpc_url: "http://127.0.0.1:8899"
+  # rpc_url: "http://127.0.0.1:8899"
   # yellowstone grpc url
-  # proxy: "http://192.168.124.4:2080"
+  proxy: "http://192.168.124.4:9999"
   yellowstone_grpc_url: ""
   # yellowstone grpc token
   yellowstone_grpc_token: ""
@@ -46,20 +46,20 @@ global:
 
 engine:
   # 可选值：jupiter / dflow
-  backend: "dflow" 
+  backend: "dflow"
   jupiter:
     enable: false
     api_proxy: "http://192.168.124.4:9999"
     args_included_dexes: [
-      # TesseraV
-      "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH",
-      # SolFiV2
-      "SV2EYYJyRz2YhfXwXnhNAevDEui5Q6yrfyo13WtupPF",
-      # HumidiFi
-      "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
-      # Aquifer
-      "AQU1FRd7papthgdrwPTTq5JacJh8YtwEXaBfKU3bTz45"
-    ]
+        # TesseraV
+        "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH",
+        # SolFiV2
+        "SV2EYYJyRz2YhfXwXnhNAevDEui5Q6yrfyo13WtupPF",
+        # HumidiFi
+        "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+        # Aquifer
+        "AQU1FRd7papthgdrwPTTq5JacJh8YtwEXaBfKU3bTz45",
+      ]
     quote_config:
       # 设置为 true 时，机器人将仅寻找两跳（A -> B -> A）交易。设置为 true 将缩短跳转报价时间，加快落地速度。设置为 false 将获得更多机会，但需要更多报价时间。
       only_direct_routes: false
@@ -82,7 +82,7 @@ engine:
     # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
     api_quote_base: "https://quote-api.dflow.net"
     api_swap_base: "https://quote-api.dflow.net"
-    api_proxy: "http://192.168.3.3:9999"
+    api_proxy: "http://192.168.124.4:9999"
     # 控制 DFlow 报价/指令阶段的连续失败容忍度，达到上限后机器人退出；设为 `0` 表示无限容忍。
     max_consecutive_failures: 0
     # 命中 429 限流后等待的毫秒数，避免继续冲击 DFlow 限流
@@ -111,7 +111,6 @@ engine:
     # 每次更新最多返回的报价数量。
     num_quotes: 2
 
-
 # 机器人会尝试找到盈利路线，具体方法是：获取给定交易规模的 base_mint 到 intermediate_mints 的报价，
 # 然后再获取 intermediate_mints 到 base_mint 的另一个报价，
 # 并将它们组合起来，形成一条潜在的盈利路线。基本上就是一条从 A -> B -> A 的路线。
@@ -129,6 +128,15 @@ intermedium:
     - "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
     # MET
     - "METvsvVRapdj9cFLzq4Tr43xK4tAjQfwX76z3n6mWQL"
+    # JLP
+    - "27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4"
+    # cbBTC
+    # PUMP
+    - "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn"
+    # JitoSOL
+    - "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn"
+    # Saros
+    - "SarosY6Vscao718M4A778z4CGtvcwcGef5M9MEH1LGL"
   disable_mints: []
 
 bot:
@@ -170,6 +178,8 @@ flashloan:
     enable: true
     # 优先使用钱包余额；若交易规模在余额内，则跳过闪电贷
     prefer_wallet_balance: true
+    # 闪电贷指令额外的 compute unit 开销
+    compute_unit_overhead: 110000
     marginfi_account: "3TmqCbKgsBEgnPMmi1YvdHvUq76v8qbx6JFH2YYyettJ"
 
 # lander 相关配置已移至独立的 lander.yaml
@@ -191,13 +201,14 @@ blind_strategy:
       "Aquifer",
       "Lifinity V2",
       # "DFlow JIT Router"
-  ]
+    ]
   exclude_dexes: [
-    # 通过 exclude_dexes 会在 DFlow /quote 请求中拼接为 excludeDexes 参数
-    "DFlow JIT Router"
-  ]
+      # 通过 exclude_dexes 会在 DFlow /quote 请求中拼接为 excludeDexes 参数
+      "DFlow JIT Router",
+    ]
   enable_landers: [
-        "staked"
+      # "staked"
+      "jito",
     ]
   base_mints:
     # - mint: "So11111111111111111111111111111111111111112"
@@ -275,14 +286,13 @@ blind_strategy:
         # SolFi V2
         # - market: "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc"
         - market: "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW" # Humidifi WSOL-USDC
-        - market: "HktfL7iwGKT5QHjywQkcDnZXScoh811k7akrMZJkCcEF"  # whirlpool SOL-WETH
-        - market: "BqkNuLTbUZLifWuUtfF5CkyRegTQhYYgUnNeUaxoWC8S"  # ZeroFi WETH-USDC
+        - market: "HktfL7iwGKT5QHjywQkcDnZXScoh811k7akrMZJkCcEF" # whirlpool SOL-WETH
+        - market: "BqkNuLTbUZLifWuUtfF5CkyRegTQhYYgUnNeUaxoWC8S" # ZeroFi WETH-USDC
       lookup_tables:
         - 3RRynG7FN6FkVaAyZPHwZSAGYUWzxb1EmtM5CfrShhsw
         - "AW3raiF9cvqu8d5JgCXmCi8kh16Aba86gWVi9pbNYNNc"
         - "5CMHLs9MphE5Nhox4hrqF72e8utWmu8ZH8UtVegT6WL2"
         - "FqeeFKhvn4d19iJA7G4qU9tcfjHNUkEo2rKsht5Btztm"
-
 
 # 后跑策略
 # Backrun 策略的工作原理如下：
@@ -295,10 +305,7 @@ blind_strategy:
 back_run_strategy:
   enable: false
   # 只允许交易这些 dex
-  enable_dexs: [
-      "Perps",
-      "SolFi"
-  ]
+  enable_dexs: ["Perps", "SolFi"]
   # 允许使用的 lander 类型
   enable_landers: []
   # 交易备注

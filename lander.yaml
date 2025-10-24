@@ -21,16 +21,17 @@ lander:
 
   jito:
     uuid_config:
-      - uuid: "7dc49e80-30ef-11f0-adc7-7b9dbe800966"
-        rate_limit: 5
+      # - uuid: "7dc49e80-30ef-11f0-adc7-7b9dbe800966"
+      #   rate_limit: 5
     endpoints:
-      - https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles
-      # - https://app.meteora.ag/api/jito
-      - https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/bundles
-      - https://london.mainnet.block-engine.jito.wtf/api/v1/bundles
-      - https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles
-      - https://tokyo.mainnet.block-engine.jito.wtf/api/v1/bundles
-      - https://slc.mainnet.block-engine.jito.wtf/api/v1/bundles
+      - https://jito-worker.meteora.ag/bundles
+      # - https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles
+      # # - https://app.meteora.ag/api/jito
+      # - https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/bundles
+      # - https://london.mainnet.block-engine.jito.wtf/api/v1/bundles
+      # - https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles
+      # - https://tokyo.mainnet.block-engine.jito.wtf/api/v1/bundles
+      # - https://slc.mainnet.block-engine.jito.wtf/api/v1/bundles
 
     # 小费策略，
     # 支持的值 fixed, range, floor
@@ -63,11 +64,11 @@ lander:
   # 本质上是一个质押的 rpc 节点
   staked:
     endpoints:
-      - "https://acc.solayer.org"
-      - "https://solana-rpc.publicnode.com"
+      # - "https://acc.solayer.org"
+      # - "https://solana-rpc.publicnode.com"
       # go0p
       - "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
-      - "https://mainnet.solana.validationcloud.io/v1/4YlOowpz6fTe6Jl31oWxYGSusOS12UzTxXkpdoC1I5A"
+      # - "https://mainnet.solana.validationcloud.io/v1/4YlOowpz6fTe6Jl31oWxYGSusOS12UzTxXkpdoC1I5A"
       - "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
       #sb
       # - "https://rpc.shyft.to?api_key=dEA2ZMnWeFHn62ul"
