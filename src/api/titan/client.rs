@@ -19,7 +19,7 @@ use tokio_tungstenite::{
 use tracing::{debug, error, trace, warn};
 use url::Url;
 
-use crate::titan::error::TitanError;
+use crate::api::titan::error::TitanError;
 
 use super::types::{
     ClientRequest, ListProvidersRequest, ProviderInfo, QuoteSwapStreamResponse, RequestData,

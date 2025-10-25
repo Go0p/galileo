@@ -1,7 +1,7 @@
 use std::{str::FromStr, time::Duration};
 
 use anyhow::{Result, anyhow};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::api::dflow::DflowApiClient;
 use crate::api::jupiter::{
@@ -28,6 +28,7 @@ enum AggregatorContext {
     Dflow {
         api_client: DflowApiClient,
     },
+    None,
 }
 
 pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
@@ -167,6 +168,25 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             );
             AggregatorContext::Dflow { api_client }
         }
+        crate::config::EngineBackend::Ultra => {
+            return Err(anyhow!(
+                "Ultra backend 暂未支持 CLI 运行，请使用 jupiter/dflow/none"
+            ));
+        }
+        crate::config::EngineBackend::None => {
+            if config.galileo.blind_strategy.enable {
+                return Err(anyhow!(
+                    "engine.backend=none 仅支持纯盲发策略，请关闭 blind_strategy.enable"
+                ));
+            }
+            if !config.galileo.pure_blind_strategy.enable {
+                warn!(
+                    target: "runner",
+                    "engine.backend=none 生效，但 pure_blind_strategy 未启用"
+                );
+            }
+            AggregatorContext::None
+        }
     };
 
     dispatch(cli.command, config, aggregator).await
@@ -185,6 +205,9 @@ async fn dispatch(
             }
             AggregatorContext::Dflow { .. } => {
                 return Err(anyhow!("DFlow 后端不支持 Jupiter 子命令"));
+            }
+            AggregatorContext::None => {
+                return Err(anyhow!("engine.backend=none 下无法使用 Jupiter 子命令"));
             }
         },
         Command::Lander(cmd) => {
@@ -217,6 +240,9 @@ async fn dispatch(
             }
             AggregatorContext::Dflow { .. } => {
                 return Err(anyhow!("暂未支持 DFlow quote 子命令"));
+            }
+            AggregatorContext::None => {
+                return Err(anyhow!("engine.backend=none 下无法执行 quote 子命令"));
             }
         },
         Command::SwapInstructions(args) => match &aggregator {
@@ -254,6 +280,11 @@ async fn dispatch(
             AggregatorContext::Dflow { .. } => {
                 return Err(anyhow!("暂未支持 DFlow swap-instructions 子命令"));
             }
+            AggregatorContext::None => {
+                return Err(anyhow!(
+                    "engine.backend=none 下无法执行 swap-instructions 子命令"
+                ));
+            }
         },
         Command::Run => match &aggregator {
             AggregatorContext::Jupiter {
@@ -270,6 +301,10 @@ async fn dispatch(
                 let backend = crate::cli::strategy::StrategyBackend::Dflow { api_client };
                 run_strategy(&config, &backend, StrategyMode::Live).await?;
             }
+            AggregatorContext::None => {
+                let backend = crate::cli::strategy::StrategyBackend::None;
+                run_strategy(&config, &backend, StrategyMode::Live).await?;
+            }
         },
         Command::StrategyDryRun => match &aggregator {
             AggregatorContext::Jupiter {
@@ -284,6 +319,10 @@ async fn dispatch(
             }
             AggregatorContext::Dflow { api_client } => {
                 let backend = crate::cli::strategy::StrategyBackend::Dflow { api_client };
+                run_strategy(&config, &backend, StrategyMode::DryRun).await?;
+            }
+            AggregatorContext::None => {
+                let backend = crate::cli::strategy::StrategyBackend::None;
                 run_strategy(&config, &backend, StrategyMode::DryRun).await?;
             }
         },
@@ -331,10 +370,7 @@ impl SwapArgsExt for crate::cli::args::SwapInstructionsCmd {
 
 fn command_needs_jupiter(command: &Command, config: &AppConfig) -> bool {
     match command {
-        Command::Run | Command::StrategyDryRun => {
-            let blind = &config.galileo.blind_strategy;
-            !(blind.enable && blind.pure_mode)
-        }
+        Command::Run | Command::StrategyDryRun => !config.galileo.pure_blind_strategy.enable,
         Command::Jupiter(_) | Command::Quote(_) | Command::SwapInstructions(_) => true,
         _ => false,
     }

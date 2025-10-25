@@ -491,7 +491,7 @@ mod tests {
         let transaction =
             VersionedTransaction::try_new(versioned, &[signer.as_ref()]).expect("build tx");
 
-        TxVariant::new(id, transaction, Hash::default(), 0, signer, 0)
+        TxVariant::new(id, transaction, Hash::default(), 0, None, signer, 0)
     }
 
     #[tokio::test]

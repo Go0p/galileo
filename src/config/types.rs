@@ -34,6 +34,8 @@ pub struct GalileoConfig {
     #[serde(default)]
     pub blind_strategy: BlindStrategyConfig,
     #[serde(default)]
+    pub pure_blind_strategy: PureBlindStrategyConfig,
+    #[serde(default)]
     pub back_run_strategy: BackRunStrategyConfig,
 }
 
@@ -91,6 +93,8 @@ pub struct EngineConfig {
     #[serde(default)]
     pub dflow: DflowEngineConfig,
     #[serde(default)]
+    pub ultra: UltraEngineConfig,
+    #[serde(default)]
     pub titan: TitanEngineConfig,
 }
 
@@ -99,6 +103,8 @@ pub struct EngineConfig {
 pub enum EngineBackend {
     Jupiter,
     Dflow,
+    Ultra,
+    None,
 }
 
 impl Default for EngineBackend {
@@ -144,6 +150,8 @@ pub struct DflowEngineConfig {
     #[serde(default)]
     pub enable: bool,
     #[serde(default)]
+    pub leg: Option<LegRole>,
+    #[serde(default)]
     pub api_quote_base: Option<String>,
     #[serde(default)]
     pub api_swap_base: Option<String>,
@@ -163,6 +171,8 @@ pub struct DflowEngineConfig {
 pub struct TitanEngineConfig {
     #[serde(default)]
     pub enable: bool,
+    #[serde(default)]
+    pub leg: Option<LegRole>,
     #[serde(default)]
     pub ws_url: Option<String>,
     #[serde(default)]
@@ -195,6 +205,76 @@ pub struct DflowSwapConfig {
     pub dynamic_compute_unit_limit: bool,
     #[serde(default)]
     pub wrap_and_unwrap_sol: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UltraEngineConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub leg: Option<LegRole>,
+    #[serde(default)]
+    pub api_quote_base: Option<String>,
+    #[serde(default)]
+    pub api_swap_base: Option<String>,
+    #[serde(default)]
+    pub api_proxy: Option<String>,
+    #[serde(default)]
+    pub quote_config: UltraQuoteConfig,
+    #[serde(default)]
+    pub swap_config: UltraSwapConfig,
+    #[serde(default)]
+    pub max_consecutive_failures: u32,
+    #[serde(default)]
+    pub wait_on_429_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct UltraQuoteConfig {
+    #[serde(default)]
+    pub include_routers: Vec<String>,
+    #[serde(default)]
+    pub exclude_routers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UltraSwapConfig {
+    #[serde(default = "super::default_true")]
+    pub dynamic_compute_unit_limit: bool,
+    #[serde(default)]
+    pub wrap_and_unwrap_sol: bool,
+}
+
+impl Default for UltraEngineConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            leg: None,
+            api_quote_base: None,
+            api_swap_base: None,
+            api_proxy: None,
+            quote_config: UltraQuoteConfig::default(),
+            swap_config: UltraSwapConfig::default(),
+            max_consecutive_failures: 0,
+            wait_on_429_ms: 0,
+        }
+    }
+}
+
+impl Default for UltraSwapConfig {
+    fn default() -> Self {
+        Self {
+            dynamic_compute_unit_limit: true,
+            wrap_and_unwrap_sol: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LegRole {
+    Buy,
+    Sell,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -324,8 +404,6 @@ pub struct BlindStrategyConfig {
     #[serde(default)]
     pub enable: bool,
     #[serde(default)]
-    pub pure_mode: bool,
-    #[serde(default)]
     pub memo: String,
     #[serde(default)]
     pub enable_dexs: Vec<String>,
@@ -335,8 +413,6 @@ pub struct BlindStrategyConfig {
     pub enable_landers: Vec<String>,
     #[serde(default)]
     pub base_mints: Vec<BlindBaseMintConfig>,
-    #[serde(default)]
-    pub pure_routes: Vec<PureBlindRouteConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -362,19 +438,89 @@ pub struct BlindBaseMintConfig {
     pub three_hop_mints: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct PureBlindRouteConfig {
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PureBlindStrategyConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub enable_landers: Vec<String>,
+    #[serde(default = "super::default_one")]
+    pub cu_multiplier: f64,
+    #[serde(default)]
+    pub market_cache: PureBlindMarketCacheConfig,
+    #[serde(default)]
+    pub assets: PureBlindAssetsConfig,
+    #[serde(default)]
+    pub overrides: Vec<PureBlindOverrideConfig>,
+    #[serde(default)]
+    pub monitoring: PureBlindMonitoringConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PureBlindMarketCacheConfig {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub download_url: String,
+    #[serde(default)]
+    pub proxy: Option<String>,
+    #[serde(default)]
+    pub auto_refresh_minutes: u64,
+    #[serde(default)]
+    pub exclude_other_dex_program_ids: bool,
+    #[serde(default)]
+    pub exclude_dex_program_ids: Vec<String>,
+    #[serde(default)]
+    pub min_liquidity_usd: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PureBlindAssetsConfig {
+    #[serde(default)]
+    pub base_mints: Vec<PureBlindBaseMintConfig>,
+    #[serde(default)]
+    pub intermediates: Vec<String>,
+    #[serde(default)]
+    pub blacklist_mints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PureBlindBaseMintConfig {
+    #[serde(default)]
+    pub mint: String,
+    #[serde(default, deserialize_with = "deserialize_trade_sizes")]
+    pub trade_sizes: Vec<u64>,
+    #[serde(default)]
+    pub min_profit: Option<u64>,
+    #[serde(default)]
+    pub process_delay: Option<u64>,
+    #[serde(default)]
+    pub route_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PureBlindOverrideConfig {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
-    pub legs: Vec<PureBlindLegConfig>,
+    pub legs: Vec<PureBlindOverrideLegConfig>,
     #[serde(default)]
     pub lookup_tables: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_trade_sizes")]
+    pub trade_sizes: Vec<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct PureBlindLegConfig {
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PureBlindOverrideLegConfig {
     pub market: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PureBlindMonitoringConfig {
+    #[serde(default)]
+    pub enable_metrics: bool,
+    #[serde(default)]
+    pub route_labels: bool,
 }
 
 fn deserialize_trade_size_range<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
@@ -408,6 +554,13 @@ where
         }
     }
     Ok(values)
+}
+
+fn deserialize_trade_sizes<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_trade_size_range(deserializer)
 }
 
 #[derive(Debug, Clone, Deserialize)]

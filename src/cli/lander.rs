@@ -44,7 +44,11 @@ async fn send_transaction(
             .skip_user_accounts_rpc_calls,
     );
 
-    let builder_config = BuilderConfig::new(memo);
+    let builder_config = BuilderConfig::new(memo).with_yellowstone(
+        config.galileo.global.yellowstone_grpc_url.clone(),
+        config.galileo.global.yellowstone_grpc_token.clone(),
+        config.galileo.bot.get_block_hash_by_grpc,
+    );
     let builder = TransactionBuilder::new(rpc_client.clone(), builder_config);
 
     let mut submission_builder = reqwest::Client::builder();

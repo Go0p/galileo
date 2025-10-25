@@ -13,8 +13,8 @@ use crate::cli::context::{
 use crate::config;
 use crate::config::{AppConfig, IntermediumConfig};
 use crate::engine::{
-    AccountPrechecker, BLIND_COMPUTE_UNIT_LIMIT, BuilderConfig, ComputeUnitPriceMode, EngineError,
-    EngineIdentity, EngineResult, EngineSettings, ProfitConfig, ProfitEvaluator, QuoteConfig,
+    AccountPrechecker, BuilderConfig, ComputeUnitPriceMode, EngineError, EngineIdentity,
+    EngineResult, EngineSettings, FALLBACK_CU_LIMIT, ProfitConfig, ProfitEvaluator, QuoteConfig,
     QuoteExecutor, Scheduler, StrategyEngine, SwapInstructionFetcher, TipConfig, TradeProfile,
     TransactionBuilder,
 };
@@ -22,6 +22,7 @@ use crate::flashloan::marginfi::{MarginfiAccountRegistry, MarginfiFlashloanManag
 use crate::jupiter::{JupiterBinaryManager, JupiterError};
 use crate::lander::LanderFactory;
 use crate::monitoring::events;
+use crate::pure_blind::market_cache::init_market_cache;
 use crate::strategy::{
     BlindStrategy, PureBlindRouteBuilder, PureBlindStrategy, Strategy, StrategyEvent,
 };
@@ -42,6 +43,7 @@ pub enum StrategyBackend<'a> {
     Dflow {
         api_client: &'a DflowApiClient,
     },
+    None,
 }
 
 const DEFAULT_PROCESS_DELAY_MS: u64 = 200;
@@ -53,11 +55,30 @@ pub async fn run_strategy(
     mode: StrategyMode,
 ) -> Result<()> {
     let dry_run = matches!(mode, StrategyMode::DryRun) || config.galileo.bot.dry_run;
-    if !config.galileo.blind_strategy.enable {
-        warn!(target: "strategy", "盲发策略未启用，直接退出");
-        return Ok(());
+    let blind_config = &config.galileo.blind_strategy;
+    let pure_config = &config.galileo.pure_blind_strategy;
+
+    if matches!(
+        config.galileo.engine.backend,
+        crate::config::EngineBackend::None
+    ) && blind_config.enable
+    {
+        return Err(anyhow!(
+            "engine.backend=none 仅支持纯盲发策略，请关闭 blind_strategy.enable"
+        ));
     }
-    run_blind_engine(config, backend, dry_run).await
+
+    match (blind_config.enable, pure_config.enable) {
+        (false, false) => {
+            warn!(target: "strategy", "盲发策略未启用，直接退出");
+            Ok(())
+        }
+        (true, true) => Err(anyhow!(
+            "blind_strategy.enable 与 pure_blind_strategy.enable 不能同时为 true"
+        )),
+        (true, false) => run_blind_engine(config, backend, dry_run).await,
+        (false, true) => run_pure_blind_engine(config, backend, dry_run).await,
+    }
 }
 
 async fn run_blind_engine(
@@ -72,93 +93,21 @@ async fn run_blind_engine(
         return Ok(());
     }
 
-    let pure_mode = blind_config.pure_mode;
     let compute_unit_price_mode = derive_compute_unit_price_mode(&config.lander.lander);
-    let mut jupiter_started = false;
 
     let rpc_client = resolve_rpc_client(&config.galileo.global)?;
     let mut identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
 
-    let (quote_executor, swap_fetcher, quote_defaults_tuple) = match backend {
-        StrategyBackend::Jupiter {
-            manager,
-            api_client,
-        } => {
-            if pure_mode {
-                info!(
-                    target: "strategy",
-                    "纯盲发模式已开启，不启动本地 Jupiter 二进制"
-                );
-            } else if !manager.disable_local_binary {
-                match manager.start(false).await {
-                    Ok(()) => {
-                        info!(target: "strategy", "已启动本地 Jupiter 二进制");
-                        jupiter_started = true;
-                    }
-                    Err(JupiterError::AlreadyRunning) => {
-                        info!(target: "strategy", "本地 Jupiter 二进制已在运行");
-                        jupiter_started = true;
-                    }
-                    Err(err) => return Err(err.into()),
-                }
-            } else {
-                info!(
-                    target: "strategy",
-                    "已禁用本地 Jupiter 二进制，将使用远端 API"
-                );
-            }
-
-            identity.set_skip_user_accounts_rpc_calls(
-                config
-                    .galileo
-                    .engine
-                    .jupiter
-                    .swap_config
-                    .skip_user_accounts_rpc_calls,
-            );
-
-            let quote_defaults_cfg = config.galileo.engine.jupiter.quote_config.clone();
-            let swap_defaults_cfg = config.galileo.engine.jupiter.swap_config.clone();
-            let quote_executor =
-                QuoteExecutor::for_jupiter((*api_client).clone(), quote_defaults_cfg.clone());
-            let swap_fetcher = SwapInstructionFetcher::for_jupiter(
-                (*api_client).clone(),
-                swap_defaults_cfg.clone(),
-                compute_unit_price_mode.clone(),
-            );
-            (
-                quote_executor,
-                swap_fetcher,
-                (
-                    quote_defaults_cfg.only_direct_routes,
-                    quote_defaults_cfg.restrict_intermediate_tokens,
-                ),
-            )
-        }
-        StrategyBackend::Dflow { api_client } => {
-            if pure_mode {
-                info!(target: "strategy", "纯盲发模式已开启，使用 DFlow 聚合器");
-            } else {
-                info!(target: "strategy", "使用 DFlow 聚合器，不启动本地 Jupiter 二进制");
-            }
-            identity.set_skip_user_accounts_rpc_calls(false);
-
-            let dflow_quote_cfg = config.galileo.engine.dflow.quote_config.clone();
-            let quote_executor =
-                QuoteExecutor::for_dflow((*api_client).clone(), dflow_quote_cfg.clone());
-            let swap_fetcher = SwapInstructionFetcher::for_dflow(
-                (*api_client).clone(),
-                config.galileo.engine.dflow.swap_config.clone(),
-                compute_unit_price_mode.clone(),
-            );
-            (
-                quote_executor,
-                swap_fetcher,
-                (dflow_quote_cfg.only_direct_routes, true),
-            )
-        }
-    };
+    let (quote_executor, swap_fetcher, quote_defaults_tuple, jupiter_started) =
+        prepare_swap_components(
+            config,
+            backend,
+            &mut identity,
+            &compute_unit_price_mode,
+            true,
+        )
+        .await?;
 
     let (only_direct_default, restrict_default) = quote_defaults_tuple;
     let trade_pairs = build_blind_trade_pairs(blind_config, &config.galileo.intermedium)?;
@@ -179,7 +128,12 @@ async fn run_blind_engine(
     let landing_timeout = resolve_landing_timeout(&config.galileo.bot);
 
     let builder_config =
-        BuilderConfig::new(resolve_instruction_memo(&config.galileo.global.instruction));
+        BuilderConfig::new(resolve_instruction_memo(&config.galileo.global.instruction))
+            .with_yellowstone(
+                config.galileo.global.yellowstone_grpc_url.clone(),
+                config.galileo.global.yellowstone_grpc_token.clone(),
+                config.galileo.bot.get_block_hash_by_grpc,
+            );
     let mut submission_builder = reqwest::Client::builder();
     if let Some(proxy_url) = resolve_global_http_proxy(&config.galileo.global) {
         let proxy = reqwest::Proxy::all(&proxy_url)
@@ -274,51 +228,29 @@ async fn run_blind_engine(
         .with_dispatch_strategy(config.lander.lander.sending_strategy)
         .with_landing_timeout(landing_timeout)
         .with_dry_run(dry_run)
-        .with_failure_tolerance(failure_limit);
+        .with_failure_tolerance(failure_limit)
+        .with_cu_multiplier(1.0)
+        .with_compute_unit_price_mode(compute_unit_price_mode.clone());
 
-    if pure_mode {
-        let routes = PureBlindRouteBuilder::new(blind_config, rpc_client.as_ref())
-            .build()
-            .await
-            .map_err(|err| anyhow!(err))?;
-        let strategy_engine = StrategyEngine::new(
-            PureBlindStrategy::new(routes).map_err(|err| anyhow!(err))?,
-            lander_stack,
-            identity,
-            quote_executor.clone(),
-            ProfitEvaluator::new(profit_config.clone()),
-            swap_fetcher.clone(),
-            TransactionBuilder::new(rpc_client.clone(), builder_config),
-            Scheduler::new(scheduler_delay),
-            flashloan,
-            engine_settings,
-            trade_pairs.clone(),
-            trade_profiles.clone(),
-        );
-        drive_engine(strategy_engine)
-            .await
-            .map_err(|err| anyhow!(err))?;
-    } else {
-        let strategy_engine = StrategyEngine::new(
-            BlindStrategy::new(),
-            lander_stack,
-            identity,
-            quote_executor,
-            ProfitEvaluator::new(profit_config),
-            swap_fetcher,
-            TransactionBuilder::new(rpc_client.clone(), builder_config),
-            Scheduler::new(scheduler_delay),
-            flashloan,
-            engine_settings,
-            trade_pairs,
-            trade_profiles,
-        );
-        drive_engine(strategy_engine)
-            .await
-            .map_err(|err| anyhow!(err))?;
-    }
+    let strategy_engine = StrategyEngine::new(
+        BlindStrategy::new(),
+        lander_stack,
+        identity,
+        quote_executor,
+        ProfitEvaluator::new(profit_config),
+        swap_fetcher,
+        TransactionBuilder::new(rpc_client.clone(), builder_config),
+        Scheduler::new(scheduler_delay),
+        flashloan,
+        engine_settings,
+        trade_pairs,
+        trade_profiles,
+    );
+    drive_engine(strategy_engine)
+        .await
+        .map_err(|err| anyhow!(err))?;
 
-    if !pure_mode && jupiter_started {
+    if jupiter_started {
         if let StrategyBackend::Jupiter { manager, .. } = backend {
             if let Err(err) = manager.stop().await {
                 warn!(
@@ -331,6 +263,295 @@ async fn run_blind_engine(
     }
 
     Ok(())
+}
+
+async fn run_pure_blind_engine(
+    config: &AppConfig,
+    backend: &StrategyBackend<'_>,
+    dry_run: bool,
+) -> Result<()> {
+    let pure_config = &config.galileo.pure_blind_strategy;
+    if !pure_config.enable {
+        warn!(target: "strategy", "纯盲发策略未启用，直接退出");
+        return Ok(());
+    }
+
+    let compute_unit_price_mode = derive_compute_unit_price_mode(&config.lander.lander);
+
+    let rpc_client = resolve_rpc_client(&config.galileo.global)?;
+    let mut identity =
+        EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
+
+    let (quote_executor, swap_fetcher, _unused_defaults, jupiter_started) =
+        prepare_swap_components(
+            config,
+            backend,
+            &mut identity,
+            &compute_unit_price_mode,
+            false,
+        )
+        .await?;
+
+    let trade_pairs = build_pure_trade_pairs(pure_config)?;
+    let trade_profiles = build_pure_trade_profiles(pure_config)?;
+    let profit_config = build_pure_profit_config(&config.lander.lander, &compute_unit_price_mode);
+    let scheduler_delay = resolve_blind_scheduler_delay(&trade_profiles);
+    let quote_config = build_pure_quote_config();
+    let landing_timeout = resolve_landing_timeout(&config.galileo.bot);
+
+    let builder_config =
+        BuilderConfig::new(resolve_instruction_memo(&config.galileo.global.instruction))
+            .with_yellowstone(
+                config.galileo.global.yellowstone_grpc_url.clone(),
+                config.galileo.global.yellowstone_grpc_token.clone(),
+                config.galileo.bot.get_block_hash_by_grpc,
+            );
+    let mut submission_builder = reqwest::Client::builder();
+    if let Some(proxy_url) = resolve_global_http_proxy(&config.galileo.global) {
+        let proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
+        submission_builder = submission_builder
+            .proxy(proxy)
+            .danger_accept_invalid_certs(true);
+    }
+    let submission_client = submission_builder.build()?;
+
+    let market_cache_handle = init_market_cache(
+        &pure_config.market_cache,
+        &pure_config.assets,
+        submission_client.clone(),
+    )
+    .await
+    .map_err(|err| anyhow!("初始化纯盲发市场缓存失败: {err}"))?;
+    let market_count = market_cache_handle
+        .try_snapshot()
+        .map_or(0, |records| records.len());
+    info!(
+        target: "strategy",
+        markets = market_count,
+        path = %pure_config.market_cache.path,
+        "纯盲发市场缓存已就绪"
+    );
+
+    let marginfi_cfg = &config.galileo.flashloan.marginfi;
+    let marginfi_accounts = parse_marginfi_accounts(marginfi_cfg)?;
+
+    let prechecker = AccountPrechecker::new(rpc_client.clone(), marginfi_accounts.clone());
+    let (summary, flashloan_precheck) = prechecker
+        .ensure_accounts(
+            &identity,
+            &trade_pairs,
+            config.galileo.flashloan.marginfi.enable,
+        )
+        .await
+        .map_err(|err| anyhow!(err))?;
+    let skipped = summary.total_mints.saturating_sub(summary.processed_mints);
+    events::accounts_precheck(
+        "pure_blind",
+        summary.total_mints,
+        summary.created_accounts,
+        skipped,
+    );
+
+    if identity.skip_user_accounts_rpc_calls() {
+        info!(
+            target: "strategy",
+            "skip_user_accounts_rpc_calls 仅作用于 swap-instructions 请求，账户预检查仍已执行"
+        );
+    }
+
+    if let Some(prep) = &flashloan_precheck {
+        events::flashloan_account_precheck("pure_blind", &prep.account, prep.created);
+    }
+    let mut recorded_accounts: BTreeSet<Pubkey> = BTreeSet::new();
+    if let Some(prep) = &flashloan_precheck {
+        recorded_accounts.insert(prep.account);
+    }
+    if flashloan_precheck.is_none() {
+        if let Some(account) = marginfi_accounts.default() {
+            if recorded_accounts.insert(account) {
+                events::flashloan_account_precheck("pure_blind", &account, false);
+            }
+        }
+    }
+
+    let mut flashloan_manager =
+        MarginfiFlashloanManager::new(marginfi_cfg, rpc_client.clone(), marginfi_accounts.clone());
+    let mut flashloan_precheck = flashloan_precheck;
+    if let Some(prep) = flashloan_precheck.clone() {
+        flashloan_manager.adopt_preparation(prep);
+    } else if flashloan_manager.is_enabled() {
+        flashloan_precheck = flashloan_manager
+            .prepare(&identity)
+            .await
+            .map_err(|err| anyhow!(err))?;
+        if let Some(prep) = &flashloan_precheck {
+            events::flashloan_account_precheck("pure_blind", &prep.account, prep.created);
+        }
+    }
+    let flashloan = flashloan_manager.try_into_enabled();
+
+    let lander_factory = LanderFactory::new(rpc_client.clone(), submission_client.clone());
+    let default_landers = ["rpc"];
+
+    let lander_stack = lander_factory
+        .build_stack(
+            &config.lander.lander,
+            &pure_config.enable_landers,
+            &default_landers,
+            0,
+        )
+        .map_err(|err| anyhow!(err))?;
+
+    let failure_limit = if matches!(
+        config.galileo.engine.backend,
+        crate::config::EngineBackend::Dflow
+    ) {
+        let raw = config.galileo.engine.dflow.max_consecutive_failures as usize;
+        if raw == 0 { None } else { Some(raw) }
+    } else {
+        None
+    };
+
+    let engine_settings = EngineSettings::new(quote_config)
+        .with_dispatch_strategy(config.lander.lander.sending_strategy)
+        .with_landing_timeout(landing_timeout)
+        .with_dry_run(dry_run)
+        .with_failure_tolerance(failure_limit)
+        .with_cu_multiplier(pure_config.cu_multiplier)
+        .with_compute_unit_price_mode(compute_unit_price_mode.clone());
+
+    let routes = PureBlindRouteBuilder::new(pure_config, rpc_client.as_ref(), &market_cache_handle)
+        .build()
+        .await
+        .map_err(|err| anyhow!(err))?;
+
+    let strategy_engine = StrategyEngine::new(
+        PureBlindStrategy::new(routes).map_err(|err| anyhow!(err))?,
+        lander_stack,
+        identity,
+        quote_executor,
+        ProfitEvaluator::new(profit_config),
+        swap_fetcher,
+        TransactionBuilder::new(rpc_client.clone(), builder_config),
+        Scheduler::new(scheduler_delay),
+        flashloan,
+        engine_settings,
+        trade_pairs,
+        trade_profiles,
+    );
+    drive_engine(strategy_engine)
+        .await
+        .map_err(|err| anyhow!(err))?;
+
+    if jupiter_started {
+        if let StrategyBackend::Jupiter { manager, .. } = backend {
+            if let Err(err) = manager.stop().await {
+                warn!(
+                    target: "strategy",
+                    error = %err,
+                    "停止 Jupiter 二进制失败"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn prepare_swap_components(
+    config: &AppConfig,
+    backend: &StrategyBackend<'_>,
+    identity: &mut EngineIdentity,
+    compute_unit_price_mode: &Option<ComputeUnitPriceMode>,
+    start_local_jupiter: bool,
+) -> Result<(QuoteExecutor, SwapInstructionFetcher, (bool, bool), bool)> {
+    match backend {
+        StrategyBackend::Jupiter {
+            manager,
+            api_client,
+        } => {
+            let mut jupiter_started = false;
+            if start_local_jupiter {
+                if !manager.disable_local_binary {
+                    match manager.start(false).await {
+                        Ok(()) => {
+                            info!(target: "strategy", "已启动本地 Jupiter 二进制");
+                            jupiter_started = true;
+                        }
+                        Err(JupiterError::AlreadyRunning) => {
+                            info!(target: "strategy", "本地 Jupiter 二进制已在运行");
+                            jupiter_started = true;
+                        }
+                        Err(err) => return Err(err.into()),
+                    }
+                } else {
+                    info!(
+                        target: "strategy",
+                        "已禁用本地 Jupiter 二进制，将使用远端 API"
+                    );
+                }
+            } else {
+                info!(
+                    target: "strategy",
+                    "跳过本地 Jupiter 二进制启动（纯盲发模式）"
+                );
+            }
+
+            identity.set_skip_user_accounts_rpc_calls(
+                config
+                    .galileo
+                    .engine
+                    .jupiter
+                    .swap_config
+                    .skip_user_accounts_rpc_calls,
+            );
+
+            let quote_defaults_cfg = config.galileo.engine.jupiter.quote_config.clone();
+            let swap_defaults_cfg = config.galileo.engine.jupiter.swap_config.clone();
+            let quote_executor =
+                QuoteExecutor::for_jupiter((*api_client).clone(), quote_defaults_cfg.clone());
+            let swap_fetcher = SwapInstructionFetcher::for_jupiter(
+                (*api_client).clone(),
+                swap_defaults_cfg.clone(),
+                compute_unit_price_mode.clone(),
+            );
+            Ok((
+                quote_executor,
+                swap_fetcher,
+                (
+                    quote_defaults_cfg.only_direct_routes,
+                    quote_defaults_cfg.restrict_intermediate_tokens,
+                ),
+                jupiter_started,
+            ))
+        }
+        StrategyBackend::Dflow { api_client } => {
+            info!(target: "strategy", "使用 DFlow 聚合器，不启动本地 Jupiter 二进制");
+            identity.set_skip_user_accounts_rpc_calls(false);
+
+            let dflow_quote_cfg = config.galileo.engine.dflow.quote_config.clone();
+            let quote_executor =
+                QuoteExecutor::for_dflow((*api_client).clone(), dflow_quote_cfg.clone());
+            let swap_fetcher = SwapInstructionFetcher::for_dflow(
+                (*api_client).clone(),
+                config.galileo.engine.dflow.swap_config.clone(),
+                compute_unit_price_mode.clone(),
+            );
+            Ok((
+                quote_executor,
+                swap_fetcher,
+                (dflow_quote_cfg.only_direct_routes, true),
+                false,
+            ))
+        }
+        StrategyBackend::None => {
+            identity.set_skip_user_accounts_rpc_calls(false);
+            let quote_executor = QuoteExecutor::disabled();
+            let swap_fetcher = SwapInstructionFetcher::disabled();
+            Ok((quote_executor, swap_fetcher, (true, true), false))
+        }
+    }
 }
 
 async fn drive_engine<S>(engine: StrategyEngine<S>) -> EngineResult<()>
@@ -411,6 +632,77 @@ fn build_blind_trade_pairs(
         .collect()
 }
 
+fn build_pure_trade_pairs(
+    config: &config::PureBlindStrategyConfig,
+) -> EngineResult<Vec<crate::strategy::types::TradePair>> {
+    if config.assets.base_mints.is_empty() {
+        return Err(EngineError::InvalidConfig(
+            "pure_blind_strategy.assets.base_mints 不能为空".into(),
+        ));
+    }
+
+    let blacklist: BTreeSet<String> = config
+        .assets
+        .blacklist_mints
+        .iter()
+        .map(|mint| mint.trim().to_string())
+        .filter(|mint| !mint.is_empty())
+        .collect();
+
+    let intermediates: Vec<String> = config
+        .assets
+        .intermediates
+        .iter()
+        .map(|mint| mint.trim())
+        .filter(|mint| !mint.is_empty())
+        .filter(|mint| !blacklist.contains(&mint.to_string()))
+        .map(|mint| mint.to_string())
+        .collect();
+
+    if intermediates.is_empty() {
+        return Err(EngineError::InvalidConfig(
+            "pure_blind_strategy.assets.intermediates 不能为空".into(),
+        ));
+    }
+
+    let mut pairs_set: BTreeSet<(String, String)> = BTreeSet::new();
+    for base in &config.assets.base_mints {
+        let base_mint = base.mint.trim();
+        if base_mint.is_empty() {
+            continue;
+        }
+        if blacklist.contains(base_mint) {
+            continue;
+        }
+        for intermediate in &intermediates {
+            if intermediate == base_mint {
+                continue;
+            }
+            if blacklist.contains(intermediate) {
+                continue;
+            }
+            pairs_set.insert((base_mint.to_string(), intermediate.clone()));
+        }
+    }
+
+    if pairs_set.is_empty() {
+        return Err(EngineError::InvalidConfig(
+            "纯盲发策略未生成任何交易对".into(),
+        ));
+    }
+
+    pairs_set
+        .into_iter()
+        .map(|(input_mint, output_mint)| {
+            crate::strategy::types::TradePair::try_new(&input_mint, &output_mint).map_err(|err| {
+                EngineError::InvalidConfig(format!(
+                    "纯盲发交易对配置无效 ({input_mint} -> {output_mint}): {err}"
+                ))
+            })
+        })
+        .collect()
+}
+
 fn build_blind_trade_profiles(
     config: &config::BlindStrategyConfig,
 ) -> EngineResult<BTreeMap<Pubkey, TradeProfile>> {
@@ -454,6 +746,58 @@ fn build_blind_trade_profiles(
     Ok(per_mint)
 }
 
+fn build_pure_trade_profiles(
+    config: &config::PureBlindStrategyConfig,
+) -> EngineResult<BTreeMap<Pubkey, TradeProfile>> {
+    let blacklist: BTreeSet<String> = config
+        .assets
+        .blacklist_mints
+        .iter()
+        .map(|mint| mint.trim().to_string())
+        .filter(|mint| !mint.is_empty())
+        .collect();
+
+    let mut per_mint: BTreeMap<Pubkey, TradeProfile> = BTreeMap::new();
+
+    for base in &config.assets.base_mints {
+        let mint_str = base.mint.trim();
+        if mint_str.is_empty() || blacklist.contains(mint_str) {
+            continue;
+        }
+        let mint = Pubkey::from_str(mint_str).map_err(|err| {
+            EngineError::InvalidConfig(format!(
+                "pure_blind_strategy.assets.base_mints 中的 mint `{mint_str}` 解析失败: {err}"
+            ))
+        })?;
+
+        let amounts = normalize_pure_trade_sizes(&base.trade_sizes);
+        if amounts.is_empty() {
+            continue;
+        }
+
+        let delay_ms = base
+            .process_delay
+            .unwrap_or(DEFAULT_PROCESS_DELAY_MS)
+            .max(1);
+        let process_delay = Duration::from_millis(delay_ms);
+        per_mint.insert(
+            mint,
+            TradeProfile {
+                amounts,
+                process_delay,
+            },
+        );
+    }
+
+    if per_mint.is_empty() {
+        return Err(EngineError::InvalidConfig(
+            "纯盲发策略未配置有效的交易规模".into(),
+        ));
+    }
+
+    Ok(per_mint)
+}
+
 fn generate_amounts_for_base(base: &config::BlindBaseMintConfig) -> Vec<u64> {
     if base.trade_size_range.is_empty() {
         return Vec::new();
@@ -482,6 +826,28 @@ fn generate_amounts_for_base(base: &config::BlindBaseMintConfig) -> Vec<u64> {
     let mut rng = rand::rng();
     let mut tweaked: BTreeSet<u64> = BTreeSet::new();
     for amount in values {
+        let basis_points: u16 = rng.random_range(930..=999);
+        let adjusted = (((amount as u128) * basis_points as u128) + 999) / 1_000;
+        let normalized = adjusted.max(1).min(u128::from(u64::MAX)) as u64;
+        tweaked.insert(normalized);
+    }
+
+    tweaked.into_iter().collect()
+}
+
+fn normalize_pure_trade_sizes(values: &[u64]) -> Vec<u64> {
+    if values.is_empty() {
+        return Vec::new();
+    }
+
+    let unique: BTreeSet<u64> = values.iter().copied().filter(|value| *value > 0).collect();
+    if unique.is_empty() {
+        return Vec::new();
+    }
+
+    let mut rng = rand::rng();
+    let mut tweaked: BTreeSet<u64> = BTreeSet::new();
+    for amount in unique {
         let basis_points: u16 = rng.random_range(930..=999);
         let adjusted = (((amount as u128) * basis_points as u128) + 999) / 1_000;
         let normalized = adjusted.max(1).min(u128::from(u64::MAX)) as u64;
@@ -539,8 +905,44 @@ fn build_blind_profit_config(
     }
 }
 
+fn build_pure_profit_config(
+    lander_settings: &config::LanderSettings,
+    compute_unit_price_mode: &Option<ComputeUnitPriceMode>,
+) -> ProfitConfig {
+    let compute_unit_fee = compute_unit_price_mode
+        .as_ref()
+        .map(|mode| match mode {
+            ComputeUnitPriceMode::Fixed(value) => compute_unit_fee_lamports(*value),
+            ComputeUnitPriceMode::Random { min, max } => {
+                let upper = (*min).max(*max);
+                compute_unit_fee_lamports(upper)
+            }
+        })
+        .unwrap_or(0);
+
+    let tip_fee = lander_settings
+        .jito
+        .as_ref()
+        .and_then(|cfg| {
+            if let Some(fixed) = cfg.fixed_tip {
+                Some(fixed)
+            } else if !cfg.range_tips.is_empty() {
+                cfg.range_tips.iter().copied().max()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+
+    ProfitConfig {
+        min_profit_threshold_lamports: compute_unit_fee.saturating_add(tip_fee),
+        max_tip_lamports: 0,
+        tip: TipConfig::default(),
+    }
+}
+
 fn compute_unit_fee_lamports(price_micro_lamports: u64) -> u64 {
-    let limit = BLIND_COMPUTE_UNIT_LIMIT as u128;
+    let limit = FALLBACK_CU_LIMIT as u128;
     let numerator = (price_micro_lamports as u128).saturating_mul(limit);
     ((numerator + 999_999) / 1_000_000).min(u128::from(u64::MAX)) as u64
 }
@@ -576,6 +978,17 @@ fn build_blind_quote_config(
         quote_max_accounts: None,
         dex_whitelist: config.enable_dexs.clone(),
         dex_blacklist: config.exclude_dexes.clone(),
+    }
+}
+
+fn build_pure_quote_config() -> QuoteConfig {
+    QuoteConfig {
+        slippage_bps: 0,
+        only_direct_routes: true,
+        restrict_intermediate_tokens: true,
+        quote_max_accounts: None,
+        dex_whitelist: Vec::new(),
+        dex_blacklist: Vec::new(),
     }
 }
 

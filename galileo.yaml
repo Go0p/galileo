@@ -6,13 +6,13 @@ global:
   # rpc_url: "https://mainnet.solana.validationcloud.io/v1/4YlOowpz6fTe6Jl31oWxYGSusOS12UzTxXkpdoC1I5A"
   # rpc_url: "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
   # sb
-  rpc_url: "https://rpc.shyft.to?api_key=dEA2ZMnWeFHn62ul"
+  # rpc_url: "https://rpc.shyft.to?api_key=dEA2ZMnWeFHn62ul"
   # rpc_url: "https://mainnet.solana.validationcloud.io/v1/DaSF8wCgDzURllPvFmWEyxqLSJ_Fs6blvxTNcmf7iHw"
   # rpc_url: "https://mainnet.helius-rpc.com/?api-key=7b76aea3-b322-4d3c-9b21-eb293c0cc55a"
   # rpc_url: "https://solana-rpc.publicnode.com"
-  # rpc_url: "http://127.0.0.1:8899"
+  rpc_url: "http://127.0.0.1:8899"
   # yellowstone grpc url
-  proxy: "http://192.168.124.4:9999"
+  # proxy: "http://192.168.124.4:9999"
   yellowstone_grpc_url: ""
   # yellowstone grpc token
   yellowstone_grpc_token: ""
@@ -45,8 +45,8 @@ global:
     timezone_offset_hours: 8
 
 engine:
-  # 可选值：jupiter / dflow
-  backend: "dflow"
+  # 可选值：jupiter / dflow / ultra / none
+  backend: "none"
   jupiter:
     enable: false
     api_proxy: "http://192.168.124.4:9999"
@@ -77,8 +77,27 @@ engine:
       # 我们建议启用此功能以正确估计计算单元并减少所需的优先费用或有更高的机会被纳入区块
       dynamic_compute_unit_limit: true
       wrap_and_unwrap_sol: false
-  dflow:
+  ultra:
     enable: true
+    # 腿方向：可选 buy / sell，用于套利腿角色匹配
+    leg: "buy"
+    api_quote_base: "https://ultra-api.jup.ag"
+    api_swap_base: "https://ultra-api.jup.ag"
+    api_proxy: "http://192.168.124.4:9999"
+    # 控制 Ultra 报价/指令阶段的连续失败容忍度，达到上限后机器人退出；设为 `0` 表示无限容忍。
+    max_consecutive_failures: 0
+    # 命中 429 限流后等待的毫秒数，避免继续冲击 Ultra 限流
+    wait_on_429_ms: 10000
+    quote_config:
+      exclude_routers: ["jupiterz", "metis"]
+    swap_config:
+      dynamic_compute_unit_limit: true
+      wrap_and_unwrap_sol: false
+  dflow:
+    enable: false
+    # 腿方向：可选 buy / sell，用于套利腿角色匹配
+    leg: "sell"
+
     # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
     api_quote_base: "https://quote-api.dflow.net"
     api_swap_base: "https://quote-api.dflow.net"
@@ -96,6 +115,8 @@ engine:
       wrap_and_unwrap_sol: false
   titan:
     enable: true
+    # 腿方向：Titan 仅支持 buy 腿
+    leg: "buy"
     # 开启 loopback 后仅订阅 base→base 的单条 Titan 流，根据 out>in 判断套利
     ws_url: "wss://api.titan.exchange/api/v1/ws"
     # Titan 目前要求使用内置账户发起报价，如需自定义可在拿到白名单后修改
@@ -186,8 +207,7 @@ flashloan:
 
 # 盲发策略
 blind_strategy:
-  enable: true
-  pure_mode: false
+  enable: false
   memo: ""
   # 只允许交易这些 dex
   enable_dexs: [
@@ -211,37 +231,37 @@ blind_strategy:
       "jito",
     ]
   base_mints:
-    # - mint: "So11111111111111111111111111111111111111112"
-    #   trade_size_range:
-    #     - 6_000_000_000 # 10 SOL
-    #     - 10_000_000_000 # 100 SOL
-    #   # 在范围内将生成多少种不同的交易规模
-    #   trade_range_count: 3
-    #   # 目前支持三个值： linear 、 random 、 exponential
-    #   # exponential 将根据指数值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 77, 315, 668, 1000]
-    #   # linear 将根据线性值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 200, 400, 600, 800, 1000]
-    #   # 注意：随机报价比线性报价或固定交易规模报价稍慢。随机报价会依次发送两个报价，
-    #   # 固定规模报价则会同时发送两个报价。
-    #   trade_range_strategy: "linear"
-    #   # 最小利润
-    #   min_quote_profit: 10000
-    #   # 交易延时
-    #   # 单位为毫秒。默认值表示机器人将等待 1000 毫秒，然后针对相同代币交易规模的对再次尝试。减少此值将增加立即捕捉价格变化的机会，但会增加读取 RPC 负载。
-    #   process_delay: 1000
-    #   # 冷却时间
-    #   # 如果找到一个机会并且发送了 tx，则至少等待这个时间（ms）才能发送另一个。
-    #   sending_cooldown: 1000
-    #   # 路由类型
-    #   # 2hop ：这意味着只有像 A -> B -> A 这样的路由才会被考虑。如果您还将 use_direct_route_only 设置为 false，则 A->B 和 B->A 之间可能存在其他铸币厂。
-    #   # 3hop ：这意味着只会考虑像 A -> B -> C -> A 这样的路线。您需要设置除了所有中间铸币厂之外，还希望在中间包含哪些额外的铸币厂。
-    #   # 最常见的用例是使用 SOL 和 USDC 为路线报价，例如 SOL -> USDC -> X -> SOL。3hop 会产生与将 use_direct_route_only 设置为 false 类似的结果，但报价时间要快得多
-    #   # 使用 3hop 时还需要定义 three_hop_mints
-    #   route_types:
-    #     - "2hop"
-    #     - "3hop"
-    #   # 三跳交易中，中间的铸币厂
-    #   three_hop_mints:
-    #     - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    - mint: "So11111111111111111111111111111111111111112"
+      trade_size_range:
+        - 6_000_000_000 # 10 SOL
+        - 10_000_000_000 # 100 SOL
+      # 在范围内将生成多少种不同的交易规模
+      trade_range_count: 3
+      # 目前支持三个值： linear 、 random 、 exponential
+      # exponential 将根据指数值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 77, 315, 668, 1000]
+      # linear 将根据线性值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 200, 400, 600, 800, 1000]
+      # 注意：随机报价比线性报价或固定交易规模报价稍慢。随机报价会依次发送两个报价，
+      # 固定规模报价则会同时发送两个报价。
+      trade_range_strategy: "linear"
+      # 最小利润
+      min_quote_profit: 10000
+      # 交易延时
+      # 单位为毫秒。默认值表示机器人将等待 1000 毫秒，然后针对相同代币交易规模的对再次尝试。减少此值将增加立即捕捉价格变化的机会，但会增加读取 RPC 负载。
+      process_delay: 1000
+      # 冷却时间
+      # 如果找到一个机会并且发送了 tx，则至少等待这个时间（ms）才能发送另一个。
+      sending_cooldown: 1000
+      # 路由类型
+      # 2hop ：这意味着只有像 A -> B -> A 这样的路由才会被考虑。如果您还将 use_direct_route_only 设置为 false，则 A->B 和 B->A 之间可能存在其他铸币厂。
+      # 3hop ：这意味着只会考虑像 A -> B -> C -> A 这样的路线。您需要设置除了所有中间铸币厂之外，还希望在中间包含哪些额外的铸币厂。
+      # 最常见的用例是使用 SOL 和 USDC 为路线报价，例如 SOL -> USDC -> X -> SOL。3hop 会产生与将 use_direct_route_only 设置为 false 类似的结果，但报价时间要快得多
+      # 使用 3hop 时还需要定义 three_hop_mints
+      route_types:
+        - "2hop"
+        - "3hop"
+      # 三跳交易中，中间的铸币厂
+      three_hop_mints:
+        - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     - mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
       trade_size_range:
         - 600_000_000 # 600 USDC
@@ -273,26 +293,67 @@ blind_strategy:
       # 三跳交易中，中间的铸币厂
       three_hop_mints:
         - "So11111111111111111111111111111111111111112"
-  pure_routes:
-    - name: "solfi_cycle"
-      # https://solscan.io/tx/TBAnSKbNuNdu2kCPMcLhM8BYh8awZZ5Gt8DTw4k7cFV9DP9YUY86fxc7w9mQ3R5T1L1yeXTh2a4vTkf3izizYFa
-      legs:
-        # HumidiFi
-        # - market: "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW"
-        # TesseraV
-        # - market: "FLckHLGMJy5gEoXWwcE68Nprde1D4araK4TGLw4pQq2n"
-        # ZeroFi
-        # - market: "DRciepTenS2bwfA9YJkZraZrFzcUpmVebR4aZgo2zj1k"
-        # SolFi V2
-        # - market: "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc"
-        - market: "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW" # Humidifi WSOL-USDC
-        - market: "HktfL7iwGKT5QHjywQkcDnZXScoh811k7akrMZJkCcEF" # whirlpool SOL-WETH
-        - market: "BqkNuLTbUZLifWuUtfF5CkyRegTQhYYgUnNeUaxoWC8S" # ZeroFi WETH-USDC
-      lookup_tables:
-        - 3RRynG7FN6FkVaAyZPHwZSAGYUWzxb1EmtM5CfrShhsw
-        - "AW3raiF9cvqu8d5JgCXmCi8kh16Aba86gWVi9pbNYNNc"
-        - "5CMHLs9MphE5Nhox4hrqF72e8utWmu8ZH8UtVegT6WL2"
-        - "FqeeFKhvn4d19iJA7G4qU9tcfjHNUkEo2rKsht5Btztm"
+
+
+# 纯盲发策略（与 blind_strategy 并行配置，互不影响）
+pure_blind_strategy:
+  # 纯盲发主开关；true 时忽略 blind_strategy 的报价链路
+  enable: true            
+  # 纯盲发策略允许使用的落地器（顺序影响优先级）
+  enable_landers: []
+
+  market_cache:
+    # Jupiter markets.json 快照
+    path: "./cache/pure_markets.json"              
+    # 自动拉取更新时用
+    download_url: "https://cache.jup.ag/markets?v=4" 
+    proxy: "http://192.168.124.4:2080"
+    # 可选：定时刷新缓存（0=禁用）
+    auto_refresh_minutes: 120
+    # 当设置为 true 时，dexes 下有实现的，盲发支持的，才会保留，否则会过滤掉
+    exclude_other_dex_program_ids: true
+    exclude_dex_program_ids: [
+      "CAMMCz6GM1DNKyvHRAAmcX6vLLANBYdmsKtfgfcJQ68X",
+      "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+      "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"
+    ]
+    # 可选：按 TVL/深度阈值过滤
+    min_liquidity_usd: 50000                       
+
+  # 描述闭环入口资产以及想要探索的中间资产集合
+  assets:
+    base_mints:
+      - mint: "So11111111111111111111111111111111111111112"
+        trade_sizes: [5_000_000_000, 10_000_000_000]   # lamports
+        # 限制发送的频率，单位为毫秒
+        process_delay: 1000
+        # 路由类型，是 3 跳还是 2 跳
+        route_type: "2hop"
+      - mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        trade_sizes: [1_000_000_000, 2_000_000_000]
+        # 限制发送的频率，单位为毫秒
+        process_delay: 1000
+        # 路由类型，是 3 跳还是 2 跳
+        route_type: "3hop"
+    intermediates:
+      - "So11111111111111111111111111111111111111112"
+      - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    blacklist_mints: []        # 明确禁用的中间资产
+  overrides:                   # 手工指定的闭环（自动生成失败时可兜底）
+    # - name: "humidifi_whirlpool_zerofi_cycle"
+    #   legs:
+    #     - market: "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW" # HumidiFi
+    #     - market: "HktfL7iwGKT5QHjywQkcDnZXScoh811k7akrMZJkCcEF" # Whirlpools
+    #     - market: "BqkNuLTbUZLifWuUtfF5CkyRegTQhYYgUnNeUaxoWC8S" # ZeroFi
+    #   lookup_tables:
+    #     - "3RRynG7FN6FkVaAyZPHwZSAGYUWzxb1EmtM5CfrShhsw"
+    #     - "AW3raiF9cvqu8d5JgCXmCi8kh16Aba86gWVi9pbNYNNc"
+    #   trade_sizes: [7_500_000_000]
+
+  monitoring:
+    enable_metrics: true
+    route_labels: true         # 指标上打 route 名称标签
+
 
 # 后跑策略
 # Backrun 策略的工作原理如下：

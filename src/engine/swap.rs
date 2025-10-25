@@ -23,7 +23,7 @@ pub enum ComputeUnitPriceMode {
 }
 
 impl ComputeUnitPriceMode {
-    fn sample(&self) -> u64 {
+    pub fn sample(&self) -> u64 {
         match self {
             ComputeUnitPriceMode::Fixed(value) => *value,
             ComputeUnitPriceMode::Random { min, max } => {
@@ -53,6 +53,7 @@ pub enum SwapBackend {
         client: DflowApiClient,
         defaults: DflowSwapConfig,
     },
+    Disabled,
 }
 
 #[derive(Clone)]
@@ -87,6 +88,13 @@ impl SwapInstructionFetcher {
                 defaults: request_defaults,
             },
             compute_unit_price,
+        }
+    }
+
+    pub fn disabled() -> Self {
+        Self {
+            backend: SwapBackend::Disabled,
+            compute_unit_price: None,
         }
     }
 
@@ -172,6 +180,9 @@ impl SwapInstructionFetcher {
             | (SwapBackend::Dflow { .. }, QuotePayloadVariant::Jupiter(_)) => Err(
                 EngineError::InvalidConfig("套利机会聚合器类型与落地器不匹配".into()),
             ),
+            (SwapBackend::Disabled, _) => Err(EngineError::InvalidConfig(
+                "swap backend 已禁用，无法构造指令".into(),
+            )),
         }
     }
 

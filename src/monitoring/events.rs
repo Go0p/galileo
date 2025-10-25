@@ -50,6 +50,60 @@ pub fn accounts_precheck(
     }
 }
 
+pub fn pure_blind_route_registered(route: &str, legs: usize, source: &str) {
+    info!(
+        target: "monitoring::pure_blind",
+        event = "route_registered",
+        route,
+        legs,
+        source,
+        "pure blind route registered"
+    );
+
+    if prometheus_enabled() {
+        let route_label = route.to_string();
+        let source_label = source.to_string();
+        counter!(
+            "galileo_pure_blind_routes_total",
+            "route" => route_label.clone(),
+            "source" => source_label.clone()
+        )
+        .increment(1);
+        histogram!(
+            "galileo_pure_blind_route_legs",
+            "route" => route_label,
+            "source" => source_label
+        )
+        .record(legs as f64);
+    }
+}
+
+pub fn pure_blind_orders_prepared(route: &str, direction: &str, source: &str, count: usize) {
+    if count == 0 {
+        return;
+    }
+
+    info!(
+        target: "monitoring::pure_blind",
+        event = "orders_prepared",
+        route,
+        direction,
+        source,
+        count,
+        "pure blind orders prepared"
+    );
+
+    if prometheus_enabled() {
+        counter!(
+            "galileo_pure_blind_orders_total",
+            "route" => route.to_string(),
+            "direction" => direction.to_string(),
+            "source" => source.to_string()
+        )
+        .increment(count as u64);
+    }
+}
+
 pub fn flashloan_account_precheck(strategy: &str, account: &Pubkey, created: bool) {
     info!(
         target: "monitoring::accounts",
@@ -258,6 +312,7 @@ pub fn transaction_built(
     opportunity: &SwapOpportunity,
     slot: u64,
     blockhash: &str,
+    last_valid_block_height: Option<u64>,
 ) {
     info!(
         target: "monitoring::transaction",
@@ -268,6 +323,7 @@ pub fn transaction_built(
         amount_in = opportunity.amount_in,
         slot,
         blockhash,
+        last_valid_block_height,
         "transaction prepared"
     );
 

@@ -28,13 +28,14 @@
 
 - 统一结构：
   ```yaml
-  pure_routes:
-    - name: "humid_whirlpool_zero"
-      legs:
-        - market: "<HumidiFi 市场>"
-        - market: "<Whirlpool 市场>"
-        - market: "<ZeroFi 市场>"
-      # 可选：direction / program override / mid token override 等
+  pure_blind_strategy:
+    overrides:
+      - name: "humid_whirlpool_zero"
+        legs:
+          - market: "<HumidiFi 市场>"
+          - market: "<Whirlpool 市场>"
+          - market: "<ZeroFi 市场>"
+        # 可选：direction / program override / mid token override 等
   ```
 - 校验要求：
   - 至少 2 腿。

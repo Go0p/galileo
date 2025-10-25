@@ -14,7 +14,7 @@ use super::types::{
     SwapQuotes, TransactionParams,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TitanLeg {
     Forward,
     Reverse,
@@ -58,27 +58,26 @@ pub async fn subscribe_quote_stream(
     amount: u64,
 ) -> Result<TitanQuoteStream, TitanError> {
     if amount == 0 {
-        return Err(TitanError::Protocol("Titan subscription amount cannot be zero".into()));
+        return Err(TitanError::Protocol(
+            "Titan subscription amount cannot be zero".into(),
+        ));
     }
 
     let endpoint = build_authenticated_endpoint(&config)?;
     let client = Arc::new(TitanWsClient::connect(endpoint).await?);
 
     let request = build_subscription_request(&config, pair, leg, amount);
-    let session = client
-        .subscribe_swap_quotes(request)
-        .await
-        .map_err(|err| {
-            error!(
-                target: "titan::manager",
-                input_mint = %pair.input_mint,
-                output_mint = %pair.output_mint,
-                amount,
-                leg = ?leg,
-                "failed to subscribe Titan stream: {err}"
-            );
-            err
-        })?;
+    let session = client.subscribe_swap_quotes(request).await.map_err(|err| {
+        error!(
+            target: "titan::manager",
+            input_mint = %pair.input_mint,
+            output_mint = %pair.output_mint,
+            amount,
+            leg = ?leg,
+            "failed to subscribe Titan stream: {err}"
+        );
+        err
+    })?;
 
     info!(
         target: "titan::manager",

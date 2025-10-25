@@ -1,0 +1,431 @@
+[
+  {
+    "market": "EciLGydSE5RvGLQ3YutztkAzgcA48kNMrbASVigVKCZg",
+    "owner": "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY",
+    "lookup_table": "AFfzVh7qC5MdvYj1fmfeyL6tvRDqLrxdwhooATZaST47",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 11,
+      "account_metas_count": 11,
+      "account_compressed_count": 8
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "3imHRmnaXCfakVbmf4GyT1cDrHNpJFH5VPPusGv6451H",
+    "owner": "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY",
+    "lookup_table": "Ar8u8WWcbTPPTApxHcmHwsKSCSAWtReNTaTk9qaGtqcL",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 11,
+      "account_metas_count": 11,
+      "account_compressed_count": 8
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "Du4WfVEeXmYtgwvX5FYzJaW5J8LokjFRNFbPFMXYfe4",
+    "owner": "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY",
+    "lookup_table": "6wTa4XXUz5K7wez9cHQei59rnxajdNQu51wiXc9qLgsB",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 11,
+      "account_metas_count": 11,
+      "account_compressed_count": 8
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "C2qGZdoyByUNqqtdPdTXfVU9NawC8HGTCPtpXAn4Zo3D",
+    "owner": "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY",
+    "lookup_table": "E7Bqew1R8MNzRVQKqWZacqJcARnrLXe2J4cT8uDSyWeg",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 11,
+      "account_metas_count": 11,
+      "account_compressed_count": 8
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "C3moYDB7TBPAPQn5Cz6WYFGWpUYpBCEHTjh6i9hZjCaC",
+    "owner": "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY",
+    "lookup_table": "A8WNsd6y9XEw8uKZSvzXAXZ5Z7n8xPB349YHf1PS2SN8",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 11,
+      "account_metas_count": 11,
+      "account_compressed_count": 8
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "BqkNuLTbUZLifWuUtfF5CkyRegTQhYYgUnNeUaxoWC8S",
+    "owner": "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY",
+    "lookup_table": "AW3raiF9cvqu8d5JgCXmCi8kh16Aba86gWVi9pbNYNNc",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 11,
+      "account_metas_count": 11,
+      "account_compressed_count": 8
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "DRciepTenS2bwfA9YJkZraZrFzcUpmVebR4aZgo2zj1k",
+    "owner": "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY",
+    "lookup_table": "6ZZsyN4gaZrU8UgFiBNaUJcSm1tmW6TpbvNcozfxpmbR",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 11,
+      "account_metas_count": 11,
+      "account_compressed_count": 8
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "AWVGmTvNCGiqHFzjmBe4pLkkWm3he7aB8FeNqqfUSVXx",
+    "owner": "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY",
+    "lookup_table": "AW3raiF9cvqu8d5JgCXmCi8kh16Aba86gWVi9pbNYNNc",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 11,
+      "account_metas_count": 11,
+      "account_compressed_count": 8
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "1amiJLvkVHjPz7t8dwBsWHknHitcpqwPPuuUCfHyzjB",
+    "owner": "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY",
+    "lookup_table": "37vuMG2KFv3FjzeX2dH8HB3hjvAdxBPknMMMCQoCGoKC",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 11,
+      "account_metas_count": 11,
+      "account_compressed_count": 8
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "BuMSijp24Vg28YVi3Y8WRjpRuBdMUTYuYn1BxgoRe3yR",
+    "owner": "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY",
+    "lookup_table": "ChdVqB2unCTC9f6pGpELhd1KhQVUCoevR2yQfWbkoQAT",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 11,
+      "account_metas_count": 11,
+      "account_compressed_count": 8
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "2866MvCKPGz9LdnPcmPueoV3mA2Ac1ceEQ8Xqb9VNefu",
+    "owner": "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "lookup_table": "5zH1HkoSkwv3Z9NGf9eKBbggjgymsxSPqyVub8iPmHD2",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 9,
+      "account_metas_count": 9,
+      "account_compressed_count": 7
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "AvGeFw71N5sNfV97mZ1uNrHg4yfufRicCJUrS9j2ehTX",
+    "owner": "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "lookup_table": "6JjsmWMgQtjUrBmA1obh4NZpc2CPqLcQ9cRPd2C5WBoM",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 9,
+      "account_metas_count": 9,
+      "account_compressed_count": 7
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "6n9VhCwQ7EwK6NqFDjnHPzEk6wZdRBTfh43RFgHQWHuQ",
+    "owner": "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "lookup_table": "HVck7rwUxqFPNxbzdrsFGcCHDpMVEkCAoUh6ZiZXsSow",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 9,
+      "account_metas_count": 9,
+      "account_compressed_count": 7
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "FksffEqnBRixYGR791Qw2MgdU7zNCpHVFYBL4Fa4qVuH",
+    "owner": "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "lookup_table": "7U2UmEFVRVoenZ4bviXLZ3eTC9wTBe3vTEHAFvKhmiQ5",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 9,
+      "account_metas_count": 9,
+      "account_compressed_count": 7
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "AjotvEmqbVWu9UPt3DKCiTgVxRxZYcVu99XshPdws9go",
+    "owner": "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "lookup_table": "FAUx2SWyxq6STEJKaXAhziPrpFk7xFHTDdBQ5WJmfEor",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 9,
+      "account_metas_count": 9,
+      "account_compressed_count": 7
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "HjKAdGgBZDW3kMyFLYzkykkirVtbJnMhi4n2oBVp8rLU",
+    "owner": "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "lookup_table": "9wdGTxScAhHeAtZqobR9iWvdQtofXCnHBvrC11GAPMDa",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 9,
+      "account_metas_count": 9,
+      "account_compressed_count": 7
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "ELp3rjbAncW8FLAPvmWS6vjG4FXFLDo1HiKh4PhQBgvx",
+    "owner": "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "lookup_table": "7WpK7DhsLJ4TDigbhxThK5W9JQTc8PezyK2XT14hv3bD",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 9,
+      "account_metas_count": 9,
+      "account_compressed_count": 7
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "hKgG7iEDRFNsJSwLYqz8ETHuZwzh6qMMLow8VXa8pLm",
+    "owner": "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "lookup_table": "CB46eGuTRNneWCWGfb46VS151CgpTmdPcz4k84HaUEvM",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 9,
+      "account_metas_count": 9,
+      "account_compressed_count": 7
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "iAMtZieUtpLwB3dzWw8Fo3H3FPkMFy3ej52URusseR1",
+    "owner": "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "lookup_table": "9wdGTxScAhHeAtZqobR9iWvdQtofXCnHBvrC11GAPMDa",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 9,
+      "account_metas_count": 9,
+      "account_compressed_count": 7
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "FAYL7CoNENA6jGCWVJb5MZ7mjKuiiyYRkDTopdVticpp",
+    "owner": "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "lookup_table": "H9GMeeDPzUBwbbpRw8bdcXYVzXLsv7EvHPLpEWkmgXMd",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 9,
+      "account_metas_count": 9,
+      "account_compressed_count": 7
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "3QYYvFWgSuGK8bbxMSAYkCqE8QfSuFtByagnZAuekia2",
+    "owner": "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "lookup_table": "9wdGTxScAhHeAtZqobR9iWvdQtofXCnHBvrC11GAPMDa",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 9,
+      "account_metas_count": 9,
+      "account_compressed_count": 7
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "9c5xYTnURgpQLDk4XqkJdaUab6p8EMBgE5n7n29pQzCy",
+    "owner": "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "lookup_table": "A8WNsd6y9XEw8uKZSvzXAXZ5Z7n8xPB349YHf1PS2SN8",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 9,
+      "account_metas_count": 9,
+      "account_compressed_count": 7
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW",
+    "owner": "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "lookup_table": "FqeeFKhvn4d19iJA7G4qU9tcfjHNUkEo2rKsht5Btztm",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 9,
+      "account_metas_count": 9,
+      "account_compressed_count": 7
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "8WFduUYU7iX94E3ZMejpTXi5TadKh9j5qp5ez5uSBJwa",
+    "owner": "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
+    "lookup_table": "GuMQjDkMkSvpXxKmJroUyCQ9GvxwWL4evsUgCC2xC1NC",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 9,
+      "account_metas_count": 9,
+      "account_compressed_count": 7
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "F45HLDGN3mYBaJAKB1UGkx8Y7o2ruS5hgBox1Us6AZF9",
+    "owner": "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH",
+    "lookup_table": "3x4ak6LgxSF1rZ4SQ7S7DsFoeryixajDhUQY3XzUTvcC",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 12,
+      "account_metas_count": 12,
+      "account_compressed_count": 10
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "FLckHLGMJy5gEoXWwcE68Nprde1D4araK4TGLw4pQq2n",
+    "owner": "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH",
+    "lookup_table": "9AKCoNoAGYLW71TwTHY9e7KrZUWWL3c7VtHKb66NT3EV",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 12,
+      "account_metas_count": 12,
+      "account_compressed_count": 10
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "BDqQBspbipXxnTX2kw4FPM9pzfcf9kwieGCy4yUZ9tCC",
+    "owner": "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH",
+    "lookup_table": "96zrfjAnXjoWDhpU7RNHmLExHJTEHq5cZXat7hnreLY6",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 12,
+      "account_metas_count": 12,
+      "account_compressed_count": 10
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "9WSspMLnTfaec7whu4kG3peCCn4gWGBvKayamxDEndqR",
+    "owner": "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH",
+    "lookup_table": "5awgUL3aSoE5ULDCRUiDHqG13fWx7To41WcUmyF2EaSj",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 12,
+      "account_metas_count": 12,
+      "account_compressed_count": 10
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "DNhfyh75AApg1L1Yig3fErvERKutYRqfWLGb496iViSZ",
+    "owner": "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH",
+    "lookup_table": "CuitBoxghLBvbxjnSw6LDW5CVYNR8zxsaoC2XuzeCVyb",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 12,
+      "account_metas_count": 12,
+      "account_compressed_count": 10
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "2kfQuYG2FVZL2RqqKEttcdadbPWP4c7b6AFQztNcBWyV",
+    "owner": "SV2EYYJyRz2YhfXwXnhNAevDEui5Q6yrfyo13WtupPF",
+    "lookup_table": "E2N38ReQaHUCt8CY893P4EZr2sspYDP7M4uL8vJCkaW4",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 13,
+      "account_metas_count": 13,
+      "account_compressed_count": 11
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "65ZHSArs5XxPseKQbB1B4r16vDxMWnCxHMzogDAqiDUc",
+    "owner": "SV2EYYJyRz2YhfXwXnhNAevDEui5Q6yrfyo13WtupPF",
+    "lookup_table": "3bDh8FpfSZezpiwfKZZJXFKHyoCBqu4LfQaf8Xo3kvJX",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 13,
+      "account_metas_count": 13,
+      "account_compressed_count": 11
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "FkEB6uvyzuoaGpgs4yRtFtxC4WJxhejNFbUkj5R6wR32",
+    "owner": "SV2EYYJyRz2YhfXwXnhNAevDEui5Q6yrfyo13WtupPF",
+    "lookup_table": "Cebe9n1UmhceqQMWpZpkLHTGUZSks33XTzM62n984s8Z",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 13,
+      "account_metas_count": 13,
+      "account_compressed_count": 10
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  },
+  {
+    "market": "2e25gRiddjn968aXrLt1oZw3BZ4fYD5D8mCv7uKxu1yL",
+    "owner": "SV2EYYJyRz2YhfXwXnhNAevDEui5Q6yrfyo13WtupPF",
+    "lookup_table": "3St6s13RdMfbtvVudf1v4yPsEmcvqP8KEdBm1FBaABUE",
+    "routing_group": 3,
+    "swap_account_size": {
+      "account_len": 13,
+      "account_metas_count": 13,
+      "account_compressed_count": 11
+    },
+    "token_mints": [],
+    "liquidity_usd": null
+  }
+]

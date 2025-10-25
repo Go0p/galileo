@@ -126,3 +126,13 @@ tasks:
       CMD: '{{default "strategy" .CMD}}'
     cmds:
       - cargo run --features="hotpath hotpath-alloc-bytes-total" -- {{.CMD}}
+
+  pure_blind:cache:refresh:
+    desc: "下载并校验纯盲市场缓存"
+    cmds:
+      - |
+        {{- if .URL }}
+        PURE_BLIND_MARKET_URL={{.URL}} ./scripts/pure_blind_cache.sh {{.OUTPUT | default "./cache/pure_markets.json"}}
+        {{- else }}
+        ./scripts/pure_blind_cache.sh {{.OUTPUT | default "./cache/pure_markets.json"}}
+        {{- end }}

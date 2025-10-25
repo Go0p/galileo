@@ -60,7 +60,7 @@ use crate::txs::jupiter::types::{JUPITER_V6_PROGRAM_ID, RoutePlanStepV2};
 
 const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
     solana_sdk::pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
-pub const BLIND_COMPUTE_UNIT_LIMIT: u32 = 230_000;
+pub const FALLBACK_CU_LIMIT: u32 = 230_000;
 const COMPUTE_BUDGET_PROGRAM_ID: Pubkey =
     solana_sdk::pubkey!("ComputeBudget111111111111111111111111111111");
 
@@ -106,6 +106,8 @@ pub struct EngineSettings {
     pub dry_run: bool,
     pub dispatch_strategy: DispatchStrategy,
     pub max_consecutive_failures: Option<usize>,
+    pub cu_multiplier: f64,
+    compute_unit_price_mode: Option<ComputeUnitPriceMode>,
 }
 
 impl EngineSettings {
@@ -116,6 +118,8 @@ impl EngineSettings {
             dry_run: false,
             dispatch_strategy: DispatchStrategy::default(),
             max_consecutive_failures: None,
+            cu_multiplier: 1.0,
+            compute_unit_price_mode: None,
         }
     }
 
@@ -137,6 +141,23 @@ impl EngineSettings {
     pub fn with_failure_tolerance(mut self, limit: Option<usize>) -> Self {
         self.max_consecutive_failures = limit;
         self
+    }
+
+    pub fn with_cu_multiplier(mut self, multiplier: f64) -> Self {
+        self.cu_multiplier = multiplier;
+        self
+    }
+
+    pub fn with_compute_unit_price_mode(mut self, mode: Option<ComputeUnitPriceMode>) -> Self {
+        self.compute_unit_price_mode = mode;
+        self
+    }
+
+    pub fn sample_compute_unit_price(&self) -> Option<u64> {
+        self.compute_unit_price_mode
+            .as_ref()
+            .map(|mode| mode.sample())
+            .filter(|price| *price > 0)
     }
 }
 
@@ -303,7 +324,7 @@ where
         accounts.destination_token_account = Some(JUPITER_V6_PROGRAM_ID);
         accounts.remaining_accounts = remaining_accounts;
 
-        let quoted_out_amount = order.amount_in.saturating_add(1);
+        let quoted_out_amount = order.amount_in.saturating_add(order.min_profit.max(1));
 
         let instruction = RouteV2InstructionBuilder {
             accounts,
@@ -317,9 +338,14 @@ where
         .build()
         .map_err(|err| EngineError::Transaction(err.into()))?;
 
+        let compute_unit_limit = self.estimate_cu_limit(order);
         let mut compute_budget_instructions =
-            vec![compute_unit_limit_instruction(BLIND_COMPUTE_UNIT_LIMIT)];
-        if let Some(price) = self.swap_fetcher.sample_compute_unit_price() {
+            vec![compute_unit_limit_instruction(compute_unit_limit)];
+        let sampled_price = self
+            .settings
+            .sample_compute_unit_price()
+            .or_else(|| self.swap_fetcher.sample_compute_unit_price());
+        if let Some(price) = sampled_price {
             compute_budget_instructions.push(compute_unit_price_instruction(price));
         }
 
@@ -340,12 +366,12 @@ where
             address_lookup_table_addresses: lookup_table_addresses,
             resolved_lookup_tables: lookup_table_accounts,
             prioritization_fee_lamports: 0,
-            compute_unit_limit: BLIND_COMPUTE_UNIT_LIMIT,
+            compute_unit_limit,
             prioritization_type: None,
             dynamic_slippage_report: None,
             simulation_error: None,
         };
-        let response_variant = SwapInstructionsVariant::Jupiter(response);
+        let mut response_variant = SwapInstructionsVariant::Jupiter(response);
 
         let pair = TradePair::from_pubkeys(source_mint, destination_mint);
         let flashloan_opportunity = SwapOpportunity {
@@ -357,7 +383,7 @@ where
         };
 
         let FlashloanOutcome {
-            instructions: final_instructions,
+            instructions: mut final_instructions,
             metadata: flashloan_meta,
         } = match &self.flashloan {
             Some(manager) => manager
@@ -369,6 +395,30 @@ where
                 metadata: None,
             },
         };
+
+        if flashloan_meta.is_some() {
+            if let Some(manager) = &self.flashloan {
+                let overhead = manager.compute_unit_overhead();
+                if overhead > 0 {
+                    let new_limit = compute_unit_limit.saturating_add(overhead);
+                    if !override_compute_unit_limit(&mut final_instructions, new_limit) {
+                        final_instructions.insert(0, compute_unit_limit_instruction(new_limit));
+                    }
+                    if let SwapInstructionsVariant::Jupiter(resp) = &mut response_variant {
+                        if let Some(ix) = resp.compute_budget_instructions.iter_mut().find(|ix| {
+                            ix.program_id == COMPUTE_BUDGET_PROGRAM_ID
+                                && ix.data.first() == Some(&2)
+                        }) {
+                            *ix = compute_unit_limit_instruction(new_limit);
+                        } else {
+                            resp.compute_budget_instructions
+                                .insert(0, compute_unit_limit_instruction(new_limit));
+                        }
+                        resp.compute_unit_limit = new_limit;
+                    }
+                }
+            }
+        }
 
         let strategy_name = self.strategy.name();
 
@@ -414,6 +464,25 @@ where
                 Err(EngineError::Landing(err.to_string()))
             }
         }
+    }
+
+    fn estimate_cu_limit(&self, order: &BlindOrder) -> u32 {
+        let subtotal: f64 = order
+            .steps
+            .iter()
+            .map(|step| step.dex.default_cu_budget() as f64)
+            .sum();
+        let base = if subtotal > 0.0 {
+            subtotal
+        } else {
+            FALLBACK_CU_LIMIT as f64
+        };
+        let multiplier = if self.settings.cu_multiplier <= 0.0 {
+            1.0
+        } else {
+            self.settings.cu_multiplier
+        };
+        (base * multiplier).round() as u32
     }
 
     fn build_route_plan(
@@ -807,6 +876,7 @@ where
             &opportunity,
             prepared.slot,
             &prepared.blockhash.to_string(),
+            prepared.last_valid_block_height,
         );
 
         if self.settings.dry_run {

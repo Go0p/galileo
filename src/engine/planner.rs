@@ -107,6 +107,8 @@ pub struct TxVariant {
     transaction: VersionedTransaction,
     blockhash: Hash,
     slot: u64,
+    #[allow(dead_code)]
+    last_valid_block_height: Option<u64>,
     signer: Arc<Keypair>,
     base_tip_lamports: u64,
     tip_override: Option<TipOverride>,
@@ -120,6 +122,7 @@ impl TxVariant {
         transaction: VersionedTransaction,
         blockhash: Hash,
         slot: u64,
+        last_valid_block_height: Option<u64>,
         signer: Arc<Keypair>,
         base_tip_lamports: u64,
         instructions: Vec<Instruction>,
@@ -130,6 +133,7 @@ impl TxVariant {
             transaction,
             blockhash,
             slot,
+            last_valid_block_height,
             signer,
             base_tip_lamports,
             tip_override: None,
@@ -163,6 +167,11 @@ impl TxVariant {
 
     pub fn slot(&self) -> u64 {
         self.slot
+    }
+
+    #[allow(dead_code)]
+    pub fn last_valid_block_height(&self) -> Option<u64> {
+        self.last_valid_block_height
     }
 
     pub fn signer(&self) -> Arc<Keypair> {
@@ -258,6 +267,7 @@ impl TxVariantPlanner {
                     prepared.transaction.clone(),
                     prepared.blockhash,
                     prepared.slot,
+                    prepared.last_valid_block_height,
                     prepared.signer.clone(),
                     prepared.tip_lamports,
                     prepared.instructions.clone(),
@@ -290,6 +300,7 @@ mod tests {
             transaction,
             blockhash: Hash::default(),
             slot: 0,
+            last_valid_block_height: None,
             signer,
             tip_lamports: 0,
             instructions: Vec::new(),

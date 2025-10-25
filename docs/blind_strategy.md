@@ -6,16 +6,17 @@
 - 当前 `BlindStrategy` 仍依赖 quote → profit → swap 的传统链路，流程中调用 Jupiter API 获取报价与指令。这与“盲发”理念相悖。
 - 新需求强调**不再调用 Jupiter 二进制或 API**，而是使用本地逻辑生成交易。唯一需要复用的是 Jupiter `route_v2` 指令格式（程序 id、前置账户固定），我们负责拼装 `data` 与 `remaining_accounts`。
 - 配置来源仍为 `blind_strategy` 节点。`trade_range_count` 为 `N` 时，需要在一个循环周期内发送 `2N` 笔交易（正向 + 反向各 `N` 笔），并允许随机化顺序。
-- 新增配置开关 `blind_strategy.pure_mode`：`false` 保持原有 quote → swap 流程，`true` 则启用纯盲发（不启动 Jupiter、本地组装指令）。
-- 纯盲发需要通过 `blind_strategy.pure_routes` 声明闭环路线。每条路线以 `legs` 列表按顺序写出市场（当前支持 SolFiV2、TesseraV、HumidiFi、ZeroFi、ObricV2，可混搭），系统会自动解析资产流向并生成正/反向闭环。若路由需要引用 Address Lookup Table，可在同级声明 `lookup_tables`：
+- 纯盲发配置迁移至独立的 `pure_blind_strategy` 节点：常规盲发仍由 `blind_strategy` 控制，纯盲发的启用、市场缓存与调度策略完全独立。
+- 纯盲发闭环可通过 `pure_blind_strategy.overrides` 声明。每条路线以 `legs` 列表按顺序写出市场（当前支持 SolFiV2、TesseraV、HumidiFi、ZeroFi、ObricV2，可混搭），系统会自动解析资产流向并生成正/反向闭环。若路由需要引用 Address Lookup Table，可在同级声明 `lookup_tables`：
   ```yaml
-  pure_routes:
-    - legs:
-        - market: "<HumidiFi 市场>"
-        - market: "<Whirlpool 市场>"
-        - market: "<ZeroFi 市场>"
-      lookup_tables:
-        - "<Address Lookup Table Pubkey>"
+  pure_blind_strategy:
+    overrides:
+      - legs:
+          - market: "<HumidiFi 市场>"
+          - market: "<Whirlpool 市场>"
+          - market: "<ZeroFi 市场>"
+        lookup_tables:
+          - "<Address Lookup Table Pubkey>"
   ```
   配置中的 lookup table 会在预检查阶段批量解析、校验激活状态，并在后续交易执行时直接随 `swap_instruction` 一起下发。
 - 守则强调性能与可观测性：热路径需加 `hotpath::measure`；所有新流程要补 metrics / tracing。
@@ -111,3 +112,19 @@
 
 > 文档维护者：`TODO(填写)`  
 > 更新记录：初稿（2025-10-21）
+
+## 9. 纯盲自动路由（2025-02 更新）
+
+- `PureBlindRouteBuilder` 已接入 `MarketCacheHandle`，启动时会解析本地 `markets.json` 快照，通过 `exclude_other_dex_program_ids`、`min_liquidity_usd` 等参数快速筛选候选池子。
+- `routing_group`：表征 Jupiter 官方的路由信赖分层（0/1 一级市场，2 次一级，3 长尾或实验池）。当前仅跳过 >3 的值，确保稳健池子优先，同时保留可选长尾。
+- `pure_blind_strategy.enable_landers` 允许为纯盲发指定独立的落地器序列，不再复用 `blind_strategy` 设置。
+- `pure_blind_strategy.market_cache.exclude_dex_program_ids` 可显式排除指定 Program ID 所属的池子，避免与竞品或不稳定池子打架。
+- `pure_blind_strategy.market_cache.proxy` 允许为市场缓存下载设置专用 HTTP 代理，不影响其他 HTTP 请求。
+- `pure_blind_strategy.cu_multiplier` 用于在各腿默认 CU 预算之和基础上统一放大/缩放，便于快速调节整体参数。
+- 当 `assets.base_mints` 中的入口资产声明 `route_type="2hop"` / `"3hop"` 时，路由构建器会结合 `assets.intermediates` 与缓存元数据自动挑选两腿或三腿闭环，并生成 `route_source=auto` 的路线；手工 `overrides` 仍然保留且优先生效。
+- 新增 Prometheus 指标：
+  - `galileo_pure_blind_routes_total{route,source}` / `galileo_pure_blind_route_legs{route,source}` —— 记录闭环构建情况。
+  - `galileo_pure_blind_orders_total{route,source,direction}` —— 记录每次 tick 下发的盲发指令数量。
+- 建议开启 `galileo.yaml` → `bot.prometheus.enable=true` 并将监听地址指向监控节点，结合 `route_source` 标签可以分别监控手工与自动路线的表现。
+- 如需刷新缓存，可使用新增 Task：`task pure_blind:cache:refresh`（详见仓库 `Taskfile.yml`），支持离线下载 `markets.json` 并校验过滤结果。
+- 纯盲模式推荐将 `engine.backend` 设置为 `none`，以跳过外部聚合器组件的初始化。

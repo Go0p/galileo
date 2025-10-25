@@ -35,6 +35,7 @@ pub enum QuoteBackend {
         client: DflowApiClient,
         defaults: DflowQuoteConfig,
     },
+    Disabled,
 }
 
 #[derive(Clone)]
@@ -52,6 +53,12 @@ impl QuoteExecutor {
     pub fn for_dflow(client: DflowApiClient, defaults: DflowQuoteConfig) -> Self {
         Self {
             backend: QuoteBackend::Dflow { client, defaults },
+        }
+    }
+
+    pub fn disabled() -> Self {
+        Self {
+            backend: QuoteBackend::Disabled,
         }
     }
 
@@ -195,6 +202,16 @@ impl QuoteExecutor {
                         Ok(None)
                     }
                 }
+            }
+            QuoteBackend::Disabled => {
+                warn!(
+                    target: "engine::quote",
+                    input_mint = %pair.input_mint,
+                    output_mint = %pair.output_mint,
+                    amount,
+                    "quote backend 已禁用，忽略该报价任务"
+                );
+                Ok(None)
             }
         }
     }

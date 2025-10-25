@@ -76,14 +76,20 @@ pub async fn fetch_market_meta(
 
     let token_a_program = vault_a_account.owner;
     let token_b_program = vault_b_account.owner;
-
-    if token_a_program != token_b_program {
-        bail!(
-            "Whirlpool 池 {market} 出现跨不同 Token Program 的资产: {} vs {}",
-            token_a_program,
-            token_b_program
-        );
-    }
+    let token_program = if token_a_program == token_b_program {
+        token_a_program
+    } else {
+        let token_2022 = token_program_pubkey_2022();
+        if token_a_program == token_2022 || token_b_program == token_2022 {
+            token_2022
+        } else {
+            bail!(
+                "Whirlpool 池 {market} 出现跨不同 Token Program 的资产: {} vs {}",
+                token_a_program,
+                token_b_program
+            );
+        }
+    };
 
     let oracle = derive_oracle_address(&market);
     let tick_arrays = derive_tick_array_metas(
@@ -102,7 +108,7 @@ pub async fn fetch_market_meta(
         token_b_mint,
         token_a_program,
         token_b_program,
-        token_program: AccountMeta::new_readonly(token_a_program, false),
+        token_program: AccountMeta::new_readonly(token_program, false),
         tick_arrays,
     })
 }

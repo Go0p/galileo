@@ -64,12 +64,12 @@ lander:
   # 本质上是一个质押的 rpc 节点
   staked:
     endpoints:
-      # - "https://acc.solayer.org"
+      - "https://acc.solayer.org"
       # - "https://solana-rpc.publicnode.com"
       # go0p
-      - "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
+      # - "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
       # - "https://mainnet.solana.validationcloud.io/v1/4YlOowpz6fTe6Jl31oWxYGSusOS12UzTxXkpdoC1I5A"
-      - "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
+      # - "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
       #sb
       # - "https://rpc.shyft.to?api_key=dEA2ZMnWeFHn62ul"
       # - "https://mainnet.solana.validationcloud.io/v1/DaSF8wCgDzURllPvFmWEyxqLSJ_Fs6blvxTNcmf7iHw"

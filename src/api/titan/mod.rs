@@ -1,4 +1,4 @@
-#![allow(unused_imports)]
+#![allow(unused_imports, dead_code, unused_assignments)]
 
 pub mod client;
 pub mod error;

@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow, ensure};
 use solana_sdk::{instruction::AccountMeta, pubkey::Pubkey, sysvar};
-use tracing::warn;
+use tracing::debug;
 
 pub const ZEROFI_PROGRAM_ID: Pubkey =
     solana_sdk::pubkey!("ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY");
@@ -86,7 +86,7 @@ pub fn decode_market_meta(market: Pubkey, data: &[u8]) -> Result<ZeroFiMarketMet
     let swap_authority_hint = read_pubkey(data, OFFSET_SWAP_AUTHORITY)?;
 
     if !AUTHORITY_WHITELIST.contains(&swap_authority_hint) {
-        warn!(
+        debug!(
             target: "dex::zerofi",
             market = %market,
             swap_authority = %swap_authority_hint,

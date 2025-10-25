@@ -87,6 +87,19 @@ impl BlindDex {
             Self::Whirlpool => "Whirlpool",
         }
     }
+
+    pub fn default_cu_budget(&self) -> u32 {
+        match self {
+            Self::SolFiV2 => 90_000,
+            Self::HumidiFi => 40_000,
+            Self::TesseraV => 83_000,
+            Self::ZeroFi => 46_000,
+            Self::ObricV2 => 58_000,
+            Self::RaydiumClmm => 180_000,
+            Self::MeteoraDlmm => 180_000,
+            Self::Whirlpool => 180_000,
+        }
+    }
 }
 
 impl fmt::Display for BlindDex {
@@ -153,6 +166,22 @@ pub struct BlindOrder {
     pub amount_in: u64,
     pub steps: Vec<BlindStep>,
     pub lookup_tables: Vec<AddressLookupTableAccount>,
+    pub min_profit: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteSource {
+    Manual,
+    Auto,
+}
+
+impl RouteSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Auto => "auto",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +189,23 @@ pub struct BlindRoutePlan {
     pub forward: Vec<BlindStep>,
     pub reverse: Vec<BlindStep>,
     pub lookup_tables: Vec<AddressLookupTableAccount>,
+    pub label: String,
+    pub source: RouteSource,
+    pub min_profit: u64,
+}
+
+impl BlindRoutePlan {
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub fn source(&self) -> RouteSource {
+        self.source
+    }
+
+    pub fn min_profit(&self) -> u64 {
+        self.min_profit
+    }
 }
 
 #[derive(Debug, Clone)]

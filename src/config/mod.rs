@@ -16,6 +16,9 @@ pub(crate) fn default_true() -> bool {
     true
 }
 
+pub(crate) fn default_one() -> f64 {
+    1.0
+}
 pub(crate) fn default_logging_level() -> String {
     "info".to_string()
 }
@@ -165,6 +168,7 @@ impl Default for cfg::GalileoConfig {
             bot: cfg::BotConfig::default(),
             flashloan: cfg::FlashloanConfig::default(),
             blind_strategy: cfg::BlindStrategyConfig::default(),
+            pure_blind_strategy: cfg::PureBlindStrategyConfig::default(),
             back_run_strategy: cfg::BackRunStrategyConfig::default(),
         }
     }
@@ -190,6 +194,7 @@ impl Default for cfg::EngineConfig {
             backend: cfg::EngineBackend::default(),
             jupiter: cfg::JupiterEngineConfig::default(),
             dflow: cfg::DflowEngineConfig::default(),
+            ultra: cfg::UltraEngineConfig::default(),
             titan: cfg::TitanEngineConfig::default(),
         }
     }
@@ -230,6 +235,7 @@ impl Default for cfg::DflowEngineConfig {
     fn default() -> Self {
         Self {
             enable: true,
+            leg: None,
             api_quote_base: None,
             api_swap_base: None,
             api_proxy: None,
@@ -245,6 +251,7 @@ impl Default for cfg::TitanEngineConfig {
     fn default() -> Self {
         Self {
             enable: false,
+            leg: None,
             ws_url: None,
             default_pubkey: None,
             jwt: None,
@@ -359,13 +366,11 @@ impl Default for cfg::BlindStrategyConfig {
     fn default() -> Self {
         Self {
             enable: false,
-            pure_mode: false,
             memo: String::new(),
             enable_dexs: Vec::new(),
             exclude_dexes: Vec::new(),
             enable_landers: Vec::new(),
             base_mints: Vec::new(),
-            pure_routes: Vec::new(),
         }
     }
 }

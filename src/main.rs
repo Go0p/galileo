@@ -16,6 +16,9 @@ mod intermedium;
 mod jupiter;
 mod lander;
 mod monitoring;
+mod multi_leg;
+mod pure_blind;
+mod rpc;
 mod strategy;
 mod txs;
 
