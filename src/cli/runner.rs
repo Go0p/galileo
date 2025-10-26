@@ -1,4 +1,4 @@
-use std::{str::FromStr, time::Duration};
+use std::{str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::{Result, anyhow};
 use tracing::{info, warn};
@@ -7,15 +7,16 @@ use crate::api::dflow::DflowApiClient;
 use crate::api::jupiter::{
     ComputeUnitPriceMicroLamports, JupiterApiClient, QuoteRequest, SwapInstructionsRequest,
 };
+use crate::api::ultra::UltraApiClient;
 use crate::cli::args::{Cli, Command};
 use crate::cli::context::{
     build_launch_overrides, ensure_running, init_configs, resolve_global_http_proxy,
     resolve_instruction_memo, resolve_jupiter_api_proxy, resolve_jupiter_base_url,
-    resolve_jupiter_defaults, should_bypass_proxy,
+    resolve_jupiter_defaults, resolve_rpc_client, should_bypass_proxy,
 };
 use crate::cli::jupiter::handle_jupiter_cmd;
 use crate::cli::lander::handle_lander_cmd;
-use crate::cli::strategy::{StrategyMode, run_strategy};
+use crate::cli::strategy::{StrategyMode, build_http_client, run_strategy};
 use crate::cli::utils::apply_quote_defaults;
 use crate::config::AppConfig;
 use crate::jupiter::JupiterBinaryManager;
@@ -27,6 +28,10 @@ enum AggregatorContext {
     },
     Dflow {
         api_client: DflowApiClient,
+    },
+    Ultra {
+        api_client: UltraApiClient,
+        rpc_client: Arc<solana_client::nonblocking::rpc_client::RpcClient>,
     },
     None,
 }
@@ -169,10 +174,38 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             AggregatorContext::Dflow { api_client }
         }
         crate::config::EngineBackend::Ultra => {
-            return Err(anyhow!(
-                "Ultra backend 暂未支持 CLI 运行，请使用 jupiter/dflow/none"
-            ));
+            let ultra_cfg = &config.galileo.engine.ultra;
+            if !ultra_cfg.enable {
+                return Err(anyhow!(
+                    "Ultra backend 已选择，但 engine.ultra.enable = false"
+                ));
+            }
+            let api_base = ultra_cfg
+                .api_quote_base
+                .as_ref()
+                .ok_or_else(|| anyhow!("ultra.api_quote_base 未配置"))?
+                .trim()
+                .to_string();
+            if api_base.is_empty() {
+                return Err(anyhow!("ultra.api_quote_base 不能为空"));
+            }
+            let rpc_client = resolve_rpc_client(&config.galileo.global)?;
+            let http_client = build_http_client(
+                ultra_cfg.api_proxy.as_deref(),
+                resolve_global_http_proxy(&config.galileo.global),
+            )?;
+            let api_client = UltraApiClient::new(
+                http_client,
+                api_base,
+                &config.galileo.bot,
+                &config.galileo.global.logging,
+            );
+            AggregatorContext::Ultra {
+                api_client,
+                rpc_client,
+            }
         }
+        crate::config::EngineBackend::MultiLegs => AggregatorContext::None,
         crate::config::EngineBackend::None => {
             if config.galileo.blind_strategy.enable {
                 return Err(anyhow!(
@@ -205,6 +238,9 @@ async fn dispatch(
             }
             AggregatorContext::Dflow { .. } => {
                 return Err(anyhow!("DFlow 后端不支持 Jupiter 子命令"));
+            }
+            AggregatorContext::Ultra { .. } => {
+                return Err(anyhow!("Ultra 后端不支持 Jupiter 子命令"));
             }
             AggregatorContext::None => {
                 return Err(anyhow!("engine.backend=none 下无法使用 Jupiter 子命令"));
@@ -240,6 +276,9 @@ async fn dispatch(
             }
             AggregatorContext::Dflow { .. } => {
                 return Err(anyhow!("暂未支持 DFlow quote 子命令"));
+            }
+            AggregatorContext::Ultra { .. } => {
+                return Err(anyhow!("暂未支持 Ultra quote 子命令"));
             }
             AggregatorContext::None => {
                 return Err(anyhow!("engine.backend=none 下无法执行 quote 子命令"));
@@ -280,6 +319,9 @@ async fn dispatch(
             AggregatorContext::Dflow { .. } => {
                 return Err(anyhow!("暂未支持 DFlow swap-instructions 子命令"));
             }
+            AggregatorContext::Ultra { .. } => {
+                return Err(anyhow!("暂未支持 Ultra swap-instructions 子命令"));
+            }
             AggregatorContext::None => {
                 return Err(anyhow!(
                     "engine.backend=none 下无法执行 swap-instructions 子命令"
@@ -301,6 +343,16 @@ async fn dispatch(
                 let backend = crate::cli::strategy::StrategyBackend::Dflow { api_client };
                 run_strategy(&config, &backend, StrategyMode::Live).await?;
             }
+            AggregatorContext::Ultra {
+                api_client,
+                rpc_client,
+            } => {
+                let backend = crate::cli::strategy::StrategyBackend::Ultra {
+                    api_client,
+                    rpc_client: rpc_client.clone(),
+                };
+                run_strategy(&config, &backend, StrategyMode::Live).await?;
+            }
             AggregatorContext::None => {
                 let backend = crate::cli::strategy::StrategyBackend::None;
                 run_strategy(&config, &backend, StrategyMode::Live).await?;
@@ -319,6 +371,16 @@ async fn dispatch(
             }
             AggregatorContext::Dflow { api_client } => {
                 let backend = crate::cli::strategy::StrategyBackend::Dflow { api_client };
+                run_strategy(&config, &backend, StrategyMode::DryRun).await?;
+            }
+            AggregatorContext::Ultra {
+                api_client,
+                rpc_client,
+            } => {
+                let backend = crate::cli::strategy::StrategyBackend::Ultra {
+                    api_client,
+                    rpc_client: rpc_client.clone(),
+                };
                 run_strategy(&config, &backend, StrategyMode::DryRun).await?;
             }
             AggregatorContext::None => {

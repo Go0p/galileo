@@ -7,7 +7,7 @@ lander:
   sending_strategy: "AllAtOnce"
 
   # 固定优先费 单位是 lamports
-  fixed_compute_unit_price: 10
+  fixed_compute_unit_price: 100
   # 随机优先费范围 单位是 lamports
   random_compute_unit_price_range:
     - 3000

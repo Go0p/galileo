@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -7,27 +8,41 @@ use tracing::{info, warn};
 
 use crate::api::dflow::DflowApiClient;
 use crate::api::jupiter::JupiterApiClient;
+use crate::api::titan::TitanSubscriptionConfig;
+use crate::api::ultra::UltraApiClient;
 use crate::cli::context::{
     resolve_global_http_proxy, resolve_instruction_memo, resolve_rpc_client,
 };
 use crate::config;
-use crate::config::{AppConfig, IntermediumConfig};
+use crate::config::{AppConfig, IntermediumConfig, LegRole};
 use crate::engine::{
     AccountPrechecker, BuilderConfig, ComputeUnitPriceMode, EngineError, EngineIdentity,
-    EngineResult, EngineSettings, FALLBACK_CU_LIMIT, ProfitConfig, ProfitEvaluator, QuoteConfig,
-    QuoteExecutor, Scheduler, StrategyEngine, SwapInstructionFetcher, TipConfig, TradeProfile,
-    TransactionBuilder,
+    EngineResult, EngineSettings, FALLBACK_CU_LIMIT, MultiLegEngineContext, ProfitConfig,
+    ProfitEvaluator, QuoteConfig, QuoteExecutor, Scheduler, StrategyEngine, SwapPreparer,
+    TipConfig, TradeProfile, TransactionBuilder,
 };
 use crate::flashloan::marginfi::{MarginfiAccountRegistry, MarginfiFlashloanManager};
 use crate::jupiter::{JupiterBinaryManager, JupiterError};
 use crate::lander::LanderFactory;
 use crate::monitoring::events;
+use crate::multi_leg::{
+    alt_cache::AltCache,
+    orchestrator::MultiLegOrchestrator,
+    providers::{
+        dflow::DflowLegProvider,
+        titan::{TitanLegProvider, TitanWsQuoteSource},
+        ultra::UltraLegProvider,
+    },
+    runtime::{MultiLegRuntime, MultiLegRuntimeConfig},
+    types::{AggregatorKind as MultiLegAggregatorKind, LegSide},
+};
 use crate::pure_blind::market_cache::init_market_cache;
 use crate::strategy::{
     BlindStrategy, PureBlindRouteBuilder, PureBlindStrategy, Strategy, StrategyEvent,
 };
 use rand::Rng as _;
 use solana_sdk::pubkey::Pubkey;
+use url::Url;
 
 /// 控制策略以正式模式还是 dry-run 模式运行。
 pub enum StrategyMode {
@@ -43,6 +58,10 @@ pub enum StrategyBackend<'a> {
     Dflow {
         api_client: &'a DflowApiClient,
     },
+    Ultra {
+        api_client: &'a UltraApiClient,
+        rpc_client: Arc<solana_client::nonblocking::rpc_client::RpcClient>,
+    },
     None,
 }
 
@@ -55,29 +74,45 @@ pub async fn run_strategy(
     mode: StrategyMode,
 ) -> Result<()> {
     let dry_run = matches!(mode, StrategyMode::DryRun) || config.galileo.bot.dry_run;
-    let blind_config = &config.galileo.blind_strategy;
-    let pure_config = &config.galileo.pure_blind_strategy;
 
-    if matches!(
-        config.galileo.engine.backend,
-        crate::config::EngineBackend::None
-    ) && blind_config.enable
-    {
-        return Err(anyhow!(
-            "engine.backend=none 仅支持纯盲发策略，请关闭 blind_strategy.enable"
-        ));
-    }
-
-    match (blind_config.enable, pure_config.enable) {
-        (false, false) => {
-            warn!(target: "strategy", "盲发策略未启用，直接退出");
-            Ok(())
+    match config.galileo.engine.backend {
+        crate::config::EngineBackend::MultiLegs => {
+            if !config.galileo.blind_strategy.enable {
+                return Err(anyhow!(
+                    "multi-legs 模式暂需 blind_strategy.enable = true 以提供 trade pair 配置"
+                ));
+            }
+            run_blind_engine(config, backend, dry_run, true).await
         }
-        (true, true) => Err(anyhow!(
-            "blind_strategy.enable 与 pure_blind_strategy.enable 不能同时为 true"
-        )),
-        (true, false) => run_blind_engine(config, backend, dry_run).await,
-        (false, true) => run_pure_blind_engine(config, backend, dry_run).await,
+        crate::config::EngineBackend::None => {
+            if config.galileo.blind_strategy.enable {
+                return Err(anyhow!(
+                    "engine.backend=none 仅支持纯盲发策略，请关闭 blind_strategy.enable"
+                ));
+            }
+            let pure_config = &config.galileo.pure_blind_strategy;
+            if !pure_config.enable {
+                warn!(target: "strategy", "纯盲发策略未启用，直接退出");
+                return Ok(());
+            }
+            run_pure_blind_engine(config, backend, dry_run).await
+        }
+        _ => {
+            let blind_config = &config.galileo.blind_strategy;
+            let pure_config = &config.galileo.pure_blind_strategy;
+
+            match (blind_config.enable, pure_config.enable) {
+                (false, false) => {
+                    warn!(target: "strategy", "盲发策略未启用，直接退出");
+                    Ok(())
+                }
+                (true, true) => Err(anyhow!(
+                    "blind_strategy.enable 与 pure_blind_strategy.enable 不能同时为 true"
+                )),
+                (true, false) => run_blind_engine(config, backend, dry_run, false).await,
+                (false, true) => run_pure_blind_engine(config, backend, dry_run).await,
+            }
+        }
     }
 }
 
@@ -85,6 +120,7 @@ async fn run_blind_engine(
     config: &AppConfig,
     backend: &StrategyBackend<'_>,
     dry_run: bool,
+    multi_leg_mode: bool,
 ) -> Result<()> {
     let blind_config = &config.galileo.blind_strategy;
 
@@ -99,7 +135,19 @@ async fn run_blind_engine(
     let mut identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
 
-    let (quote_executor, swap_fetcher, quote_defaults_tuple, jupiter_started) =
+    let multi_leg_runtime = if multi_leg_mode {
+        let runtime = Arc::new(build_multi_leg_runtime(
+            config,
+            &identity,
+            rpc_client.clone(),
+        )?);
+        log_multi_leg_init(runtime.as_ref(), dry_run);
+        Some(runtime)
+    } else {
+        None
+    };
+
+    let (quote_executor, swap_preparer, quote_defaults_tuple, jupiter_started) =
         prepare_swap_components(
             config,
             backend,
@@ -112,6 +160,19 @@ async fn run_blind_engine(
     let (only_direct_default, restrict_default) = quote_defaults_tuple;
     let trade_pairs = build_blind_trade_pairs(blind_config, &config.galileo.intermedium)?;
     let trade_profiles = build_blind_trade_profiles(blind_config)?;
+    let multi_leg_context = multi_leg_runtime.as_ref().map(|runtime| {
+        let mut ctx = MultiLegEngineContext::from_runtime(Arc::clone(runtime));
+        let dflow_defaults = &config.galileo.engine.dflow.swap_config;
+        ctx.set_wrap_and_unwrap_sol(
+            MultiLegAggregatorKind::Dflow,
+            dflow_defaults.wrap_and_unwrap_sol,
+        );
+        ctx.set_dynamic_compute_unit_limit(
+            MultiLegAggregatorKind::Dflow,
+            dflow_defaults.dynamic_compute_unit_limit,
+        );
+        ctx
+    });
     let profit_config = build_blind_profit_config(
         blind_config,
         &config.lander.lander,
@@ -238,13 +299,14 @@ async fn run_blind_engine(
         identity,
         quote_executor,
         ProfitEvaluator::new(profit_config),
-        swap_fetcher,
+        swap_preparer,
         TransactionBuilder::new(rpc_client.clone(), builder_config),
         Scheduler::new(scheduler_delay),
         flashloan,
         engine_settings,
         trade_pairs,
         trade_profiles,
+        multi_leg_context,
     );
     drive_engine(strategy_engine)
         .await
@@ -265,6 +327,271 @@ async fn run_blind_engine(
     Ok(())
 }
 
+fn build_multi_leg_runtime(
+    config: &AppConfig,
+    identity: &EngineIdentity,
+    rpc_client: Arc<solana_client::nonblocking::rpc_client::RpcClient>,
+) -> Result<MultiLegRuntime> {
+    let mut orchestrator = MultiLegOrchestrator::new();
+
+    register_ultra_leg(&mut orchestrator, config, identity)?;
+    register_dflow_leg(&mut orchestrator, config)?;
+    register_titan_leg(&mut orchestrator, config)?;
+
+    if orchestrator.buy_legs().is_empty() {
+        return Err(anyhow!("multi-legs 模式至少需要一个 buy 腿"));
+    }
+    if orchestrator.sell_legs().is_empty() {
+        return Err(anyhow!("multi-legs 模式至少需要一个 sell 腿"));
+    }
+
+    let alt_cache = AltCache::new();
+    let runtime_cfg = MultiLegRuntimeConfig::default();
+    Ok(MultiLegRuntime::with_config(
+        orchestrator,
+        alt_cache,
+        rpc_client,
+        runtime_cfg,
+    ))
+}
+
+fn log_multi_leg_init(runtime: &MultiLegRuntime, dry_run: bool) {
+    let buy = runtime.orchestrator().buy_legs();
+    let sell = runtime.orchestrator().sell_legs();
+    info!(
+        target: "multi_leg::init",
+        buy_legs = buy.len(),
+        sell_legs = sell.len(),
+        dry_run,
+        "Multi-leg runtime 已初始化"
+    );
+
+    for descriptor in buy.iter() {
+        info!(
+            target: "multi_leg::init",
+            side = %descriptor.side,
+            aggregator = %descriptor.kind,
+            "可用买腿"
+        );
+    }
+    for descriptor in sell.iter() {
+        info!(
+            target: "multi_leg::init",
+            side = %descriptor.side,
+            aggregator = %descriptor.kind,
+            "可用卖腿"
+        );
+    }
+}
+
+fn register_ultra_leg(
+    orchestrator: &mut MultiLegOrchestrator,
+    config: &AppConfig,
+    identity: &EngineIdentity,
+) -> Result<()> {
+    let ultra_cfg = &config.galileo.engine.ultra;
+    if !ultra_cfg.enable {
+        return Ok(());
+    }
+
+    let leg = ultra_cfg
+        .leg
+        .ok_or_else(|| anyhow!("ultra.leg 必须在 multi-legs 模式下配置"))?;
+    let api_base = ultra_cfg
+        .api_quote_base
+        .as_ref()
+        .ok_or_else(|| anyhow!("ultra.api_quote_base 未配置"))?
+        .trim()
+        .to_string();
+    if api_base.is_empty() {
+        return Err(anyhow!("ultra.api_quote_base 不能为空"));
+    }
+
+    let http_client = build_http_client(
+        ultra_cfg.api_proxy.as_deref(),
+        resolve_global_http_proxy(&config.galileo.global),
+    )?;
+
+    let ultra_client = UltraApiClient::new(
+        http_client,
+        api_base,
+        &config.galileo.bot,
+        &config.galileo.global.logging,
+    );
+    let request_taker_override = ultra_cfg
+        .quote_config
+        .taker
+        .as_ref()
+        .map(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Pubkey::from_str(trimmed)
+                    .map(Some)
+                    .map_err(|err| anyhow!("ultra.quote_config.payer 解析失败: {err}"))
+            }
+        })
+        .transpose()?
+        .flatten();
+
+    let provider = UltraLegProvider::new(
+        ultra_client,
+        LegSide::from(leg),
+        ultra_cfg.quote_config.clone(),
+        ultra_cfg.swap_config.clone(),
+        identity.pubkey,
+        request_taker_override,
+    );
+    orchestrator.register_owned_provider(provider);
+    Ok(())
+}
+
+fn register_dflow_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfig) -> Result<()> {
+    let dflow_cfg = &config.galileo.engine.dflow;
+    if !dflow_cfg.enable {
+        return Ok(());
+    }
+
+    let leg = dflow_cfg
+        .leg
+        .ok_or_else(|| anyhow!("dflow.leg 必须在 multi-legs 模式下配置"))?;
+    let quote_base = dflow_cfg
+        .api_quote_base
+        .as_ref()
+        .ok_or_else(|| anyhow!("dflow.api_quote_base 未配置"))?
+        .trim()
+        .to_string();
+    if quote_base.is_empty() {
+        return Err(anyhow!("dflow.api_quote_base 不能为空"));
+    }
+    let swap_base = dflow_cfg
+        .api_swap_base
+        .as_ref()
+        .unwrap_or(&quote_base)
+        .trim()
+        .to_string();
+
+    let http_client = build_http_client(
+        dflow_cfg.api_proxy.as_deref(),
+        resolve_global_http_proxy(&config.galileo.global),
+    )?;
+
+    let max_failures = if dflow_cfg.max_consecutive_failures == 0 {
+        None
+    } else {
+        Some(dflow_cfg.max_consecutive_failures as usize)
+    };
+    let wait_on_429 = Duration::from_millis(dflow_cfg.wait_on_429_ms);
+
+    let dflow_client = DflowApiClient::new(
+        http_client,
+        quote_base,
+        swap_base,
+        &config.galileo.bot,
+        &config.galileo.global.logging,
+        max_failures,
+        wait_on_429,
+    );
+
+    let provider = DflowLegProvider::new(
+        dflow_client,
+        dflow_cfg.quote_config.clone(),
+        dflow_cfg.swap_config.clone(),
+        LegSide::from(leg),
+        Vec::new(),
+        Vec::new(),
+    );
+    orchestrator.register_owned_provider(provider);
+    Ok(())
+}
+
+fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfig) -> Result<()> {
+    let titan_cfg = &config.galileo.engine.titan;
+    if !titan_cfg.enable {
+        return Ok(());
+    }
+
+    if titan_cfg.leg != Some(LegRole::Buy) {
+        return Err(anyhow!(
+            "Titan 仅支持 buy 腿，请设置 engine.titan.leg = \"buy\""
+        ));
+    }
+
+    let ws_url = titan_cfg
+        .ws_url
+        .as_ref()
+        .ok_or_else(|| anyhow!("titan.ws_url 未配置"))?
+        .trim();
+    if ws_url.is_empty() {
+        return Err(anyhow!("titan.ws_url 不能为空"));
+    }
+    let ws_url = Url::parse(ws_url).map_err(|err| anyhow!("titan.ws_url 无效: {err}"))?;
+
+    let jwt = titan_cfg
+        .jwt
+        .as_ref()
+        .ok_or_else(|| anyhow!("titan.jwt 未配置"))?
+        .trim()
+        .to_string();
+    if jwt.is_empty() {
+        return Err(anyhow!("titan.jwt 不能为空"));
+    }
+
+    let default_pubkey = titan_cfg
+        .default_pubkey
+        .as_ref()
+        .ok_or_else(|| anyhow!("titan.default_pubkey 未配置"))?
+        .trim();
+    let default_pubkey = solana_sdk::pubkey::Pubkey::from_str(default_pubkey)
+        .map_err(|err| anyhow!("titan.default_pubkey 无效: {err}"))?;
+
+    let subscription_cfg = TitanSubscriptionConfig {
+        ws_url,
+        jwt,
+        default_pubkey,
+        providers: titan_cfg.providers.clone(),
+        reverse_slippage_bps: titan_cfg.reverse_slippage_bps,
+        update_interval_ms: titan_cfg.interval_ms,
+        update_num_quotes: titan_cfg.num_quotes,
+    };
+
+    let quote_source = TitanWsQuoteSource::new(subscription_cfg);
+    let provider = TitanLegProvider::new(quote_source, LegSide::Buy);
+    orchestrator.register_owned_provider(provider);
+    Ok(())
+}
+
+pub(crate) fn build_http_client(
+    proxy: Option<&str>,
+    global_proxy: Option<String>,
+) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder();
+    if let Some(proxy_url) = proxy.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }) {
+        let proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|err| anyhow!("HTTP 代理地址无效 {proxy_url}: {err}"))?;
+        builder = builder.proxy(proxy).danger_accept_invalid_certs(true);
+    } else if let Some(proxy_url) = global_proxy {
+        let trimmed = proxy_url.trim().to_string();
+        if !trimmed.is_empty() {
+            let proxy = reqwest::Proxy::all(&trimmed)
+                .map_err(|err| anyhow!("global.proxy 地址无效 {trimmed}: {err}"))?;
+            builder = builder.proxy(proxy).danger_accept_invalid_certs(true);
+        }
+    }
+
+    builder
+        .build()
+        .map_err(|err| anyhow!("构建 HTTP 客户端失败: {err}"))
+}
+
 async fn run_pure_blind_engine(
     config: &AppConfig,
     backend: &StrategyBackend<'_>,
@@ -282,7 +609,7 @@ async fn run_pure_blind_engine(
     let mut identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
 
-    let (quote_executor, swap_fetcher, _unused_defaults, jupiter_started) =
+    let (quote_executor, swap_preparer, _unused_defaults, jupiter_started) =
         prepare_swap_components(
             config,
             backend,
@@ -432,13 +759,14 @@ async fn run_pure_blind_engine(
         identity,
         quote_executor,
         ProfitEvaluator::new(profit_config),
-        swap_fetcher,
+        swap_preparer,
         TransactionBuilder::new(rpc_client.clone(), builder_config),
         Scheduler::new(scheduler_delay),
         flashloan,
         engine_settings,
         trade_pairs,
         trade_profiles,
+        None,
     );
     drive_engine(strategy_engine)
         .await
@@ -465,7 +793,7 @@ async fn prepare_swap_components(
     identity: &mut EngineIdentity,
     compute_unit_price_mode: &Option<ComputeUnitPriceMode>,
     start_local_jupiter: bool,
-) -> Result<(QuoteExecutor, SwapInstructionFetcher, (bool, bool), bool)> {
+) -> Result<(QuoteExecutor, SwapPreparer, (bool, bool), bool)> {
     match backend {
         StrategyBackend::Jupiter {
             manager,
@@ -511,14 +839,14 @@ async fn prepare_swap_components(
             let swap_defaults_cfg = config.galileo.engine.jupiter.swap_config.clone();
             let quote_executor =
                 QuoteExecutor::for_jupiter((*api_client).clone(), quote_defaults_cfg.clone());
-            let swap_fetcher = SwapInstructionFetcher::for_jupiter(
+            let swap_preparer = SwapPreparer::for_jupiter(
                 (*api_client).clone(),
                 swap_defaults_cfg.clone(),
                 compute_unit_price_mode.clone(),
             );
             Ok((
                 quote_executor,
-                swap_fetcher,
+                swap_preparer,
                 (
                     quote_defaults_cfg.only_direct_routes,
                     quote_defaults_cfg.restrict_intermediate_tokens,
@@ -533,23 +861,34 @@ async fn prepare_swap_components(
             let dflow_quote_cfg = config.galileo.engine.dflow.quote_config.clone();
             let quote_executor =
                 QuoteExecutor::for_dflow((*api_client).clone(), dflow_quote_cfg.clone());
-            let swap_fetcher = SwapInstructionFetcher::for_dflow(
+            let swap_preparer = SwapPreparer::for_dflow(
                 (*api_client).clone(),
                 config.galileo.engine.dflow.swap_config.clone(),
                 compute_unit_price_mode.clone(),
             );
             Ok((
                 quote_executor,
-                swap_fetcher,
+                swap_preparer,
                 (dflow_quote_cfg.only_direct_routes, true),
                 false,
             ))
         }
+        StrategyBackend::Ultra {
+            api_client,
+            rpc_client,
+        } => {
+            identity.set_skip_user_accounts_rpc_calls(false);
+            let ultra_quote_cfg = config.galileo.engine.ultra.quote_config.clone();
+            let quote_executor = QuoteExecutor::for_ultra((*api_client).clone(), ultra_quote_cfg);
+            let swap_preparer =
+                SwapPreparer::for_ultra(rpc_client.clone(), compute_unit_price_mode.clone());
+            Ok((quote_executor, swap_preparer, (true, true), false))
+        }
         StrategyBackend::None => {
             identity.set_skip_user_accounts_rpc_calls(false);
             let quote_executor = QuoteExecutor::disabled();
-            let swap_fetcher = SwapInstructionFetcher::disabled();
-            Ok((quote_executor, swap_fetcher, (true, true), false))
+            let swap_preparer = SwapPreparer::disabled();
+            Ok((quote_executor, swap_preparer, (true, true), false))
         }
     }
 }

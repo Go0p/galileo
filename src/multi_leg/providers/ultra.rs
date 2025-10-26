@@ -1,20 +1,21 @@
 use async_trait::async_trait;
-use solana_compute_budget_interface as compute_budget;
-use solana_message::{MessageHeader, VersionedMessage, compiled_instruction::CompiledInstruction};
-use solana_sdk::{
-    instruction::{AccountMeta, Instruction},
-    pubkey::Pubkey,
-};
+use serde_json::Value;
+use solana_sdk::pubkey::Pubkey;
 use thiserror::Error;
 use tracing::debug;
 
+use crate::api::jupiter::quote::RoutePlanStep;
 use crate::api::ultra::{
     UltraApiClient, UltraError,
     order::{OrderRequest, OrderResponse, Router},
 };
 use crate::config::{UltraQuoteConfig, UltraSwapConfig};
+use crate::engine::ultra::{
+    UltraAdapter, UltraAdapterError, UltraContext, UltraLookupResolver, UltraLookupState,
+    UltraPreparationParams,
+};
 use crate::multi_leg::leg::LegProvider;
-use crate::multi_leg::transaction::decoder::{DecodeTxError, decode_base64_transaction};
+use crate::multi_leg::transaction::decoder::DecodeTxError;
 use crate::multi_leg::types::{
     AggregatorKind, LegBuildContext, LegDescriptor, LegPlan, LegQuote, LegSide, QuoteIntent,
 };
@@ -28,6 +29,8 @@ pub struct UltraLegProvider {
     quote_config: UltraQuoteConfig,
     #[allow(dead_code)]
     swap_config: UltraSwapConfig,
+    actual_signer: Pubkey,
+    request_taker_override: Option<Pubkey>,
 }
 
 impl UltraLegProvider {
@@ -36,17 +39,35 @@ impl UltraLegProvider {
         side: LegSide,
         quote_config: UltraQuoteConfig,
         swap_config: UltraSwapConfig,
+        actual_signer: Pubkey,
+        request_taker_override: Option<Pubkey>,
     ) -> Self {
         Self {
             descriptor: LegDescriptor::new(AggregatorKind::Ultra, side),
             client,
             quote_config,
             swap_config,
+            actual_signer,
+            request_taker_override,
         }
     }
 
     fn build_order_request(&self, intent: &QuoteIntent) -> Result<OrderRequest, UltraLegError> {
         let mut request = OrderRequest::new(intent.input_mint, intent.output_mint, intent.amount);
+        let request_taker = self.request_taker_override.unwrap_or(self.actual_signer);
+        request.taker = Some(request_taker);
+        request.use_wsol = self.quote_config.use_wsol;
+        if let Some(kind) = self.quote_config.broadcast_fee_type.as_ref() {
+            let trimmed = kind.trim();
+            if !trimmed.is_empty() {
+                request.broadcast_fee_type = Some(trimmed.to_string());
+            }
+        } else {
+            request.broadcast_fee_type = Some("exactFee".to_string());
+        }
+        if let Some(priority) = self.quote_config.priority_fee_lamports {
+            request.priority_fee_lamports = Some(priority);
+        }
 
         // Ultra 的 includeRouters 需要通过额外参数传递。
         if !self.quote_config.include_routers.is_empty() {
@@ -80,22 +101,51 @@ impl UltraLegProvider {
         Ok(request)
     }
 
-    fn decode_leg_plan(&self, quote: &OrderResponse) -> Result<LegPlan, UltraLegError> {
-        let encoded = quote.transaction.as_str();
-        let tx = decode_base64_transaction(encoded)?;
-        let instructions = convert_instructions(&tx.message)?;
-        let (compute_budget_instructions, mut other_instructions): (Vec<_>, Vec<_>) = instructions
-            .into_iter()
-            .partition(|ix| ix.program_id == compute_budget::id());
+    async fn decode_leg_plan(
+        &self,
+        quote: &OrderResponse,
+        context: &LegBuildContext,
+    ) -> Result<LegPlan, UltraLegError> {
+        let in_amount = quote
+            .in_amount
+            .or_else(|| extract_u64(&quote.raw, "inAmount"))
+            .or_else(|| sum_route_plan_amount(&quote.route_plan, |step| step.swap_info.in_amount))
+            .ok_or(UltraLegError::MissingField { field: "inAmount" })?;
+        let out_amount = quote
+            .out_amount
+            .or_else(|| extract_u64(&quote.raw, "outAmount"))
+            .or_else(|| sum_route_plan_amount(&quote.route_plan, |step| step.swap_info.out_amount))
+            .ok_or(UltraLegError::MissingField { field: "outAmount" })?;
+        let other_amount_threshold = quote
+            .other_amount_threshold
+            .or_else(|| extract_u64(&quote.raw, "otherAmountThreshold"))
+            .or_else(|| sum_route_plan_amount(&quote.route_plan, |step| step.swap_info.out_amount))
+            .ok_or(UltraLegError::MissingField {
+                field: "otherAmountThreshold",
+            })?;
+        let payload = &**quote;
+        let params = UltraPreparationParams::new(payload)
+            .with_compute_unit_price_hint(context.compute_unit_price_micro_lamports)
+            .with_taker_hint(self.request_taker_override);
+        let prepared = UltraAdapter::prepare(
+            params,
+            UltraContext::new(self.actual_signer, UltraLookupResolver::Deferred),
+        )
+        .await
+        .map_err(map_adapter_error)?;
 
-        // Ultra 返回的指令顺序已经完成 setup/swap/cleanup 排列，暂不额外处理。
-        let address_lookup_table_addresses = collect_lookup_addresses(&tx.message);
-        let blockhash = Some(*tx.message.recent_blockhash());
-        let mut quote_meta = LegQuote::new(quote.in_amount, quote.out_amount, quote.slippage_bps);
-        quote_meta.min_out_amount = Some(quote.other_amount_threshold);
-        quote_meta.request_id = Some(quote.request_id.clone());
+        let transaction = prepared.transaction().clone();
+        let blockhash = Some(*transaction.message.recent_blockhash());
+        let lookup_state = prepared.lookup_state();
+        let mut quote_meta = LegQuote::new(
+            in_amount,
+            out_amount,
+            quote.slippage_bps.unwrap_or_default(),
+        );
+        quote_meta.min_out_amount = Some(other_amount_threshold);
+        quote_meta.request_id = quote.request_id.clone();
         quote_meta.quote_id = quote.quote_id.clone();
-        quote_meta.provider = Some(quote.router.clone());
+        quote_meta.provider = quote.router.clone();
         quote_meta.expires_at_ms = quote
             .expire_at
             .as_ref()
@@ -104,13 +154,22 @@ impl UltraLegProvider {
         Ok(LegPlan {
             descriptor: self.descriptor.clone(),
             quote: quote_meta,
-            instructions: other_instructions.drain(..).collect(),
-            compute_budget_instructions,
-            address_lookup_table_addresses,
-            resolved_lookup_tables: Vec::new(),
-            prioritization_fee_lamports: Some(quote.prioritization_fee_lamports),
+            instructions: prepared.main_instructions().to_vec(),
+            compute_budget_instructions: prepared.compute_budget_instructions().to_vec(),
+            address_lookup_table_addresses: prepared.address_lookup_table_addresses().to_vec(),
+            resolved_lookup_tables: prepared.resolved_lookup_tables().to_vec(),
+            prioritization_fee_lamports: prepared.prioritization_fee_lamports(),
             blockhash,
-            raw_transaction: Some(tx),
+            raw_transaction: Some(transaction),
+            signer_rewrite: None,
+            account_rewrites: prepared.account_rewrites().to_vec(),
+            requested_compute_unit_limit: prepared.requested_compute_unit_limit(),
+            requested_compute_unit_price_micro_lamports: prepared
+                .requested_compute_unit_price_micro_lamports(),
+            requested_tip_lamports: match lookup_state {
+                UltraLookupState::Pending => quote.prioritization_fee_lamports,
+                UltraLookupState::Resolved => None,
+            },
         })
     }
 }
@@ -125,8 +184,18 @@ pub enum UltraLegError {
     Instruction(String),
     #[error("Ultra 响应包含未支持的 router: {0}")]
     UnsupportedRouter(String),
-    #[error("暂不支持解析含有地址查找表的 Ultra 交易 (lookups = {count})")]
-    AddressLookupUnsupported { count: usize },
+    #[error("Ultra 响应缺少字段 `{field}`")]
+    MissingField { field: &'static str },
+    #[error("Ultra 交易需要 {count} 个地址查找表，但尚未解析")]
+    AddressLookupPending { count: usize },
+    #[error("Ultra 交易缺少地址查找表 {table}")]
+    AddressLookupMissing { table: Pubkey },
+    #[error("Ultra 地址查找表 {table} 索引 {index} 超出范围 (len = {len})")]
+    AddressLookupIndexOutOfBounds {
+        table: Pubkey,
+        index: u8,
+        len: usize,
+    },
 }
 
 #[async_trait]
@@ -154,107 +223,44 @@ impl LegProvider for UltraLegProvider {
     async fn build_plan(
         &self,
         quote: &Self::QuoteResponse,
-        _context: &LegBuildContext,
+        context: &LegBuildContext,
     ) -> Result<Self::Plan, Self::BuildError> {
-        self.decode_leg_plan(quote)
+        self.decode_leg_plan(quote, context).await
     }
 }
-
-fn convert_instructions(message: &VersionedMessage) -> Result<Vec<Instruction>, UltraLegError> {
-    match message {
-        VersionedMessage::Legacy(legacy) => convert_compiled_instructions(
-            &legacy.instructions,
-            &legacy.account_keys,
-            &legacy.header,
-        ),
-        VersionedMessage::V0(v0) => {
-            if !v0.address_table_lookups.is_empty() {
-                return Err(UltraLegError::AddressLookupUnsupported {
-                    count: v0.address_table_lookups.len(),
-                });
-            }
-            convert_compiled_instructions(&v0.instructions, &v0.account_keys, &v0.header)
-        }
-    }
-}
-
-fn convert_compiled_instructions(
-    compiled: &[CompiledInstruction],
-    account_keys: &[Pubkey],
-    header: &MessageHeader,
-) -> Result<Vec<Instruction>, UltraLegError> {
-    compiled
-        .iter()
-        .map(|ix| convert_single_instruction(ix, account_keys, header))
-        .collect()
-}
-
-fn convert_single_instruction(
-    ix: &CompiledInstruction,
-    account_keys: &[Pubkey],
-    header: &MessageHeader,
-) -> Result<Instruction, UltraLegError> {
-    let program_index = ix.program_id_index as usize;
-    let program_id = account_keys.get(program_index).ok_or_else(|| {
-        UltraLegError::Instruction(format!(
-            "program index {program_index} 超出 account_keys 长度 {}",
-            account_keys.len()
-        ))
-    })?;
-
-    let mut accounts = Vec::with_capacity(ix.accounts.len());
-    for account_index in &ix.accounts {
-        let idx = *account_index as usize;
-        let key = account_keys.get(idx).ok_or_else(|| {
-            UltraLegError::Instruction(format!(
-                "account index {idx} 超出 account_keys 长度 {}",
-                account_keys.len()
-            ))
-        })?;
-        accounts.push(AccountMeta {
-            pubkey: *key,
-            is_signer: is_signer(idx, header),
-            is_writable: is_writable(idx, header, account_keys.len()),
-        });
-    }
-
-    Ok(Instruction {
-        program_id: *program_id,
-        accounts,
-        data: ix.data.clone(),
+fn extract_u64(value: &Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(|entry| match entry {
+        Value::String(s) => s.parse().ok(),
+        Value::Number(n) => n.as_u64(),
+        _ => None,
     })
 }
 
-fn is_signer(index: usize, header: &MessageHeader) -> bool {
-    index < header.num_required_signatures as usize
-}
-
-fn is_writable(index: usize, header: &MessageHeader, total_keys: usize) -> bool {
-    let num_required_signatures = header.num_required_signatures as usize;
-    let writable_signed =
-        num_required_signatures.saturating_sub(header.num_readonly_signed_accounts as usize);
-    if index < num_required_signatures {
-        return index < writable_signed;
+fn sum_route_plan_amount<F>(route_plan: &[RoutePlanStep], mut extractor: F) -> Option<u64>
+where
+    F: FnMut(&RoutePlanStep) -> u64,
+{
+    if route_plan.is_empty() {
+        return None;
     }
 
-    let num_unsigned = total_keys.saturating_sub(num_required_signatures);
-    let writable_unsigned =
-        num_unsigned.saturating_sub(header.num_readonly_unsigned_accounts as usize);
-    let unsigned_index = index.saturating_sub(num_required_signatures);
-    unsigned_index < writable_unsigned
+    route_plan
+        .iter()
+        .try_fold(0u64, |acc, step| acc.checked_add(extractor(step)))
 }
 
-fn collect_lookup_addresses(message: &VersionedMessage) -> Vec<Pubkey> {
-    match message {
-        VersionedMessage::Legacy(_) => Vec::new(),
-        VersionedMessage::V0(v0) => v0
-            .address_table_lookups
-            .iter()
-            .map(|lookup| lookup.account_key)
-            .collect(),
+fn map_adapter_error(err: UltraAdapterError) -> UltraLegError {
+    match err {
+        UltraAdapterError::MissingTransaction => UltraLegError::MissingField {
+            field: "transaction",
+        },
+        UltraAdapterError::Decode(inner) => UltraLegError::Decode(inner),
+        UltraAdapterError::Instruction(message) => UltraLegError::Instruction(message),
+        UltraAdapterError::LookupFetch(error) => {
+            UltraLegError::Instruction(format!("拉取地址查找表失败: {error}"))
+        }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,7 +270,7 @@ mod tests {
     use solana_message::Message as LegacyMessageType;
     use solana_sdk::pubkey::Pubkey;
     use solana_sdk::{
-        instruction::Instruction as SdkInstruction,
+        instruction::{AccountMeta, Instruction as SdkInstruction},
         transaction::{Transaction, VersionedTransaction},
     };
 
@@ -344,6 +350,8 @@ mod tests {
             LegSide::Buy,
             UltraQuoteConfig::default(),
             UltraSwapConfig::default(),
+            Pubkey::new_unique(),
+            None,
         );
 
         let tx = build_test_transaction();
@@ -354,7 +362,7 @@ mod tests {
             .expect("plan");
 
         assert_eq!(plan.instructions.len(), 1);
-        assert_eq!(plan.compute_budget_instructions.len(), 1);
+        assert_eq!(plan.compute_budget_instructions.len(), 0);
         assert!(plan.blockhash.is_some());
         assert_eq!(plan.prioritization_fee_lamports, Some(1_000));
         assert!(plan.address_lookup_table_addresses.is_empty());
@@ -372,6 +380,8 @@ mod tests {
             LegSide::Sell,
             quote_config,
             UltraSwapConfig::default(),
+            Pubkey::new_unique(),
+            None,
         );
         let intent = QuoteIntent::new(Pubkey::new_unique(), Pubkey::new_unique(), 10, 50);
         let request = provider.build_order_request(&intent).expect("request");

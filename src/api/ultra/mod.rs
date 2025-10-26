@@ -18,6 +18,8 @@ use url::form_urlencoded;
 use crate::config::{BotConfig, LoggingConfig, LoggingProfile};
 use crate::monitoring::metrics::prometheus_enabled;
 use crate::monitoring::{LatencyMetadata, guard_with_level};
+use reqwest::header::HeaderName;
+use reqwest::header::{ACCEPT, ACCEPT_ENCODING, HeaderValue, USER_AGENT};
 
 pub mod execute;
 pub mod order;
@@ -27,8 +29,8 @@ pub mod serde_helpers;
 pub use execute::{ExecuteRequest, ExecuteResponse, ExecuteStatus, SwapEvent};
 #[allow(unused_imports)]
 pub use order::{
-    OrderRequest, OrderResponse, OrderResponsePayload, PlatformFee, RoutePlanStep, Router,
-    SwapInfo, SwapMode,
+    OrderRequest, OrderResponse, OrderResponsePayload, RoutePlanStep, Router, SwapInfo, SwapMode,
+    UltraPlatformFee,
 };
 
 #[derive(Clone, Debug)]
@@ -49,11 +51,17 @@ impl UltraApiClient {
         bot_config: &BotConfig,
         logging: &LoggingConfig,
     ) -> Self {
+        let trimmed = base_url.trim();
+        let normalized = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            trimmed.to_string()
+        } else {
+            format!("https://{trimmed}")
+        };
         let quote_timeout = Duration::from_millis(bot_config.quote_ms);
         let swap_ms = bot_config.swap_ms.unwrap_or(bot_config.quote_ms);
         let execute_timeout = Duration::from_millis(swap_ms);
         Self {
-            base_url,
+            base_url: normalized,
             client,
             order_timeout: quote_timeout,
             execute_timeout,
@@ -99,7 +107,22 @@ impl UltraApiClient {
             .client
             .get(&url)
             .timeout(self.order_timeout)
-            .query(request);
+            .query(request)
+            .header(ACCEPT, HeaderValue::from_static("*/*"))
+            .header(ACCEPT_ENCODING, HeaderValue::from_static("gzip, deflate, br"))
+            .header(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"))
+            .header(
+                HeaderName::from_static("origin"),
+                HeaderValue::from_static("https://jup.ag"),
+            )
+            .header(
+                HeaderName::from_static("referer"),
+                HeaderValue::from_static("https://jup.ag/"),
+            )
+            .header(
+                HeaderName::from_static("x-client-platform"),
+                HeaderValue::from_static("jupiter.web.swap_page"),
+            );
         if !request.extra_query_params.is_empty() {
             http_request = http_request.query(&request.extra_query_params);
         }
@@ -171,15 +194,23 @@ impl UltraApiClient {
         let elapsed = guard.finish();
         let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
         self.record_order_metrics("success", Some(elapsed_ms), Some(status));
+        let log_input_mint = order.input_mint.unwrap_or_default();
+        let log_output_mint = order.output_mint.unwrap_or_default();
+        let log_in_amount = order.in_amount.unwrap_or_default();
+        let log_out_amount = order.out_amount.unwrap_or_default();
+        let log_swap_mode = order.swap_mode.unwrap_or(SwapMode::ExactIn);
+        let log_router = order.router.as_deref().unwrap_or("<none>");
+        let log_quote_id = order.quote_id.as_deref().unwrap_or("<none>");
+
         info!(
             target: "ultra::order",
-            input_mint = %order.input_mint,
-            output_mint = %order.output_mint,
-            in_amount = order.in_amount,
-            out_amount = order.out_amount,
-            swap_mode = ?order.swap_mode,
-            router = %order.router,
-            quote_id = order.quote_id.as_deref().unwrap_or("<none>"),
+            input_mint = %log_input_mint,
+            output_mint = %log_output_mint,
+            in_amount = log_in_amount,
+            out_amount = log_out_amount,
+            swap_mode = ?log_swap_mode,
+            router = %log_router,
+            quote_id = log_quote_id,
             elapsed_ms = format_args!("{elapsed_ms:.3}"),
             "Ultra /order 响应成功"
         );
@@ -188,9 +219,9 @@ impl UltraApiClient {
                 target: "ultra::order",
                 elapsed_ms = format_args!("{elapsed_ms:.3}"),
                 slow_threshold_ms = self.slow_order_warn_ms,
-                input_mint = %order.input_mint,
-                output_mint = %order.output_mint,
-                router = %order.router,
+                input_mint = %log_input_mint,
+                output_mint = %log_output_mint,
+                router = %log_router,
                 "Ultra /order 耗时超过告警阈值"
             );
         }

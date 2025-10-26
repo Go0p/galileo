@@ -5,13 +5,17 @@ use async_trait::async_trait;
 use solana_compute_budget_interface as compute_budget;
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use thiserror::Error;
-use tracing::debug;
+use tracing::{debug, info};
 
-use crate::api::titan::{Instruction as TitanInstruction, SwapRoute, TitanError};
+use crate::api::titan::{
+    Instruction as TitanInstruction, SwapRoute, TitanError,
+    manager::{TitanLeg, TitanQuoteUpdate, TitanSubscriptionConfig, subscribe_quote_stream},
+};
 use crate::multi_leg::leg::LegProvider;
 use crate::multi_leg::types::{
     AggregatorKind, LegBuildContext, LegDescriptor, LegPlan, LegQuote, LegSide, QuoteIntent,
 };
+use crate::strategy::types::TradePair;
 
 /// Titan 报价源抽象，便于在单元测试中注入 mock。
 #[async_trait]
@@ -40,6 +44,80 @@ impl<S> TitanLegProvider<S> {
             descriptor: LegDescriptor::new(AggregatorKind::Titan, side),
             source: Arc::new(source),
         }
+    }
+}
+
+/// 基于 Titan WebSocket 推流的报价源实现。
+#[derive(Clone, Debug)]
+pub struct TitanWsQuoteSource {
+    config: TitanSubscriptionConfig,
+}
+
+impl TitanWsQuoteSource {
+    pub fn new(config: TitanSubscriptionConfig) -> Self {
+        Self { config }
+    }
+
+    fn select_best_route(update: &TitanQuoteUpdate) -> Option<(String, SwapRoute)> {
+        update
+            .quotes
+            .quotes
+            .iter()
+            .max_by_key(|(_, route)| route.out_amount)
+            .map(|(provider, route)| (provider.clone(), route.clone()))
+    }
+}
+
+#[async_trait]
+impl TitanQuoteSource for TitanWsQuoteSource {
+    async fn quote(
+        &self,
+        intent: &QuoteIntent,
+        side: LegSide,
+    ) -> Result<TitanQuote, TitanLegError> {
+        if side != LegSide::Buy {
+            return Err(TitanLegError::Source("Titan 仅支持买腿报价".to_string()));
+        }
+
+        let trade_pair = TradePair::from_pubkeys(intent.input_mint, intent.output_mint);
+        let mut stream = subscribe_quote_stream(
+            self.config.clone(),
+            &trade_pair,
+            TitanLeg::Forward,
+            intent.amount,
+        )
+        .await
+        .map_err(TitanLegError::from)?;
+
+        info!(
+            target: "multi_leg::titan",
+            amount = intent.amount,
+            input = %intent.input_mint,
+            output = %intent.output_mint,
+            "已建立 Titan 报价流"
+        );
+
+        while let Some(update) = stream.recv().await {
+            if let Some((provider, route)) = Self::select_best_route(&update) {
+                info!(
+                    target: "multi_leg::titan",
+                    provider = provider,
+                    out_amount = route.out_amount,
+                    in_amount = route.in_amount,
+                    slippage_bps = route.slippage_bps,
+                    "Titan 报价更新"
+                );
+                return Ok(TitanQuote {
+                    route,
+                    provider,
+                    quote_id: Some(update.quotes.id.clone()),
+                });
+            }
+        }
+
+        Err(TitanLegError::Source(
+            "Titan 推流结束但未获得有效路线".to_string(),
+        ))
     }
 }
 
@@ -118,6 +196,11 @@ where
             prioritization_fee_lamports: None,
             blockhash: None,
             raw_transaction: None,
+            signer_rewrite: None,
+            account_rewrites: Vec::new(),
+            requested_compute_unit_limit: None,
+            requested_compute_unit_price_micro_lamports: None,
+            requested_tip_lamports: None,
         })
     }
 }

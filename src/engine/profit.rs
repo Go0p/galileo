@@ -2,7 +2,7 @@ use rand::prelude::IndexedRandom;
 use tracing::debug;
 
 use super::aggregator::{AggregatorKind, QuotePayloadVariant, QuoteResponseVariant};
-use super::types::{DoubleQuote, SwapOpportunity};
+use super::types::{DoubleQuote, SwapOpportunity, UltraSwapLegs};
 
 #[derive(Debug, Clone)]
 pub struct TipConfig {
@@ -41,6 +41,21 @@ impl ProfitEvaluator {
             config,
             tip_calculator,
         }
+    }
+
+    pub fn evaluate_multi_leg(&self, gross_profit_lamports: i128) -> Option<MultiLegProfit> {
+        if gross_profit_lamports <= 0 {
+            return None;
+        }
+        let profit_u64 = gross_profit_lamports.min(i128::from(u64::MAX)).max(0) as u64;
+        if profit_u64 < self.config.min_profit_threshold_lamports {
+            return None;
+        }
+        let tip_lamports = self.tip_calculator.calculate(profit_u64);
+        Some(MultiLegProfit {
+            gross_profit_lamports: profit_u64,
+            tip_lamports,
+        })
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
@@ -82,14 +97,33 @@ impl ProfitEvaluator {
             tip_lamports,
         );
 
+        let ultra_legs = match (&double_quote.forward, &double_quote.reverse) {
+            (QuoteResponseVariant::Ultra(forward), QuoteResponseVariant::Ultra(reverse)) => {
+                let (_, forward_payload) = forward.clone().into_parts();
+                let (_, reverse_payload) = reverse.clone().into_parts();
+                Some(UltraSwapLegs {
+                    forward: forward_payload,
+                    reverse: reverse_payload,
+                })
+            }
+            _ => None,
+        };
+
         Some(SwapOpportunity {
             pair: pair.clone(),
             amount_in,
             profit_lamports: profit_u64,
             tip_lamports,
             merged_quote: Some(merged),
+            ultra_legs,
         })
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct MultiLegProfit {
+    pub gross_profit_lamports: u64,
+    pub tip_lamports: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -131,7 +165,6 @@ impl TipCalculator {
         }
     }
 }
-
 fn merge_quotes(
     forward: &QuoteResponseVariant,
     reverse: &QuoteResponseVariant,
@@ -140,7 +173,8 @@ fn merge_quotes(
 ) -> QuotePayloadVariant {
     match (forward.kind(), reverse.kind()) {
         (AggregatorKind::Jupiter, AggregatorKind::Jupiter)
-        | (AggregatorKind::Dflow, AggregatorKind::Dflow) => {
+        | (AggregatorKind::Dflow, AggregatorKind::Dflow)
+        | (AggregatorKind::Ultra, AggregatorKind::Ultra) => {
             let mut merged = forward.clone_payload();
             let reverse_payload = reverse.clone_payload();
 

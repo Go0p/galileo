@@ -1,4 +1,5 @@
 use std::convert::TryFrom;
+use std::str::FromStr;
 
 use tracing::{debug, warn};
 
@@ -7,8 +8,10 @@ use crate::api::dflow::{
     DflowApiClient, DflowError, QuoteRequest as DflowQuoteRequest, SlippageBps, SlippagePreset,
 };
 use crate::api::jupiter::{JupiterApiClient, QuoteRequest};
-use crate::config::{DflowQuoteConfig, JupiterQuoteConfig};
+use crate::api::ultra::{OrderRequest as UltraOrderRequest, Router as UltraRouter, UltraApiClient};
+use crate::config::{DflowQuoteConfig, JupiterQuoteConfig, UltraQuoteConfig};
 use crate::strategy::types::TradePair;
+use solana_sdk::pubkey::Pubkey;
 
 use super::error::{EngineError, EngineResult};
 use super::types::{DoubleQuote, QuoteTask};
@@ -35,7 +38,59 @@ pub enum QuoteBackend {
         client: DflowApiClient,
         defaults: DflowQuoteConfig,
     },
+    Ultra {
+        client: UltraApiClient,
+        defaults: UltraQuoteDefaults,
+    },
     Disabled,
+}
+
+#[derive(Clone)]
+pub struct UltraQuoteDefaults {
+    pub config: UltraQuoteConfig,
+    pub taker: Option<Pubkey>,
+    pub include_routers: Option<String>,
+}
+
+impl UltraQuoteDefaults {
+    fn new(config: UltraQuoteConfig) -> Self {
+        let taker = config.taker.as_ref().and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                match Pubkey::from_str(trimmed) {
+                    Ok(pk) => Some(pk),
+                    Err(err) => {
+                        warn!(
+                            target: "engine::quote",
+                            taker = %value,
+                            error = %err,
+                            "Ultra taker 配置解析失败，忽略该字段"
+                        );
+                        None
+                    }
+                }
+            }
+        });
+        let include_routers = if config.include_routers.is_empty() {
+            None
+        } else {
+            Some(
+                config
+                    .include_routers
+                    .iter()
+                    .map(|label| label.to_ascii_lowercase())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+        };
+        Self {
+            config,
+            taker,
+            include_routers,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -53,6 +108,15 @@ impl QuoteExecutor {
     pub fn for_dflow(client: DflowApiClient, defaults: DflowQuoteConfig) -> Self {
         Self {
             backend: QuoteBackend::Dflow { client, defaults },
+        }
+    }
+
+    pub fn for_ultra(client: UltraApiClient, defaults: UltraQuoteConfig) -> Self {
+        Self {
+            backend: QuoteBackend::Ultra {
+                client,
+                defaults: UltraQuoteDefaults::new(defaults),
+            },
         }
     }
 
@@ -203,6 +267,50 @@ impl QuoteExecutor {
                     }
                 }
             }
+            QuoteBackend::Ultra { client, defaults } => {
+                let cfg = &defaults.config;
+                let mut request =
+                    UltraOrderRequest::new(pair.input_pubkey, pair.output_pubkey, amount);
+                request.slippage_bps = config.slippage_bps;
+                request.use_wsol = cfg.use_wsol;
+                request.taker = defaults.taker;
+                if let Some(ref fee_type) = cfg.broadcast_fee_type {
+                    let trimmed = fee_type.trim();
+                    if !trimmed.is_empty() {
+                        request.broadcast_fee_type = Some(trimmed.to_string());
+                    }
+                } else {
+                    request.broadcast_fee_type = Some("exactFee".to_string());
+                }
+                if let Some(tip) = cfg.jito_tip_lamports {
+                    if tip > 0 {
+                        request.jito_tip_lamports = Some(tip);
+                    }
+                }
+                if let Some(priority) = cfg.priority_fee_lamports {
+                    if priority > 0 {
+                        request.priority_fee_lamports = Some(priority);
+                    }
+                }
+                if let Some(ref routers) = defaults.include_routers {
+                    request
+                        .extra_query_params
+                        .insert("routers".to_string(), routers.clone());
+                }
+                if !cfg.exclude_routers.is_empty() {
+                    let mut parsed = Vec::with_capacity(cfg.exclude_routers.len());
+                    for label in &cfg.exclude_routers {
+                        let router = parse_ultra_router(label)?;
+                        parsed.push(router);
+                    }
+                    request.exclude_routers = parsed;
+                }
+                if !config.dex_blacklist.is_empty() {
+                    request.exclude_dexes = Some(config.dex_blacklist.join(","));
+                }
+                let response = client.order(&request).await?;
+                Ok(Some(QuoteResponseVariant::Ultra(response)))
+            }
             QuoteBackend::Disabled => {
                 warn!(
                     target: "engine::quote",
@@ -227,4 +335,20 @@ fn apply_jupiter_defaults(defaults: &JupiterQuoteConfig, request: &mut QuoteRequ
     {
         request.restrict_intermediate_tokens = Some(false);
     }
+}
+
+fn parse_ultra_router(label: &str) -> EngineResult<UltraRouter> {
+    let normalized = label.trim().to_ascii_lowercase();
+    let router = match normalized.as_str() {
+        "metis" => UltraRouter::metis(),
+        "jupiterz" => UltraRouter::jupiterz(),
+        "dflow" => UltraRouter::dflow(),
+        "okx" => UltraRouter::okx(),
+        other => {
+            return Err(EngineError::InvalidConfig(format!(
+                "未知的 Ultra router: {other}"
+            )));
+        }
+    };
+    Ok(router)
 }

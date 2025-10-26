@@ -8,7 +8,8 @@ mod precheck;
 mod profit;
 mod quote;
 mod scheduler;
-mod swap;
+mod swap_preparer;
+pub mod ultra;
 mod types;
 
 pub use aggregator::SwapInstructionsVariant;
@@ -21,11 +22,13 @@ pub use precheck::AccountPrechecker;
 pub use profit::{ProfitConfig, ProfitEvaluator, TipConfig};
 pub use quote::{QuoteConfig, QuoteExecutor};
 pub use scheduler::Scheduler;
-pub use swap::{ComputeUnitPriceMode, SwapInstructionFetcher};
+pub use swap_preparer::{ComputeUnitPriceMode, SwapPreparer};
 pub use types::{ExecutionPlan, QuoteTask, StrategyTick, SwapOpportunity, TradeProfile};
 
+use self::aggregator::MultiLegInstructions;
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -48,6 +51,13 @@ use crate::flashloan::FlashloanOutcome;
 use crate::flashloan::marginfi::MarginfiFlashloanManager;
 use crate::lander::{Deadline, LanderStack};
 use crate::monitoring::events;
+use crate::multi_leg::orchestrator::{LegPairDescriptor, LegPairPlan};
+use crate::multi_leg::runtime::{MultiLegRuntime, PairPlanBatchResult, PairPlanRequest};
+use crate::multi_leg::types::{
+    AggregatorKind as MultiLegAggregatorKind, LegBuildContext as MultiLegBuildContext,
+    LegDescriptor as MultiLegDescriptor, LegPlan, LegSide as MultiLegSide,
+    QuoteIntent as MultiLegQuoteIntent,
+};
 use crate::strategy::types::{BlindDex, BlindMarketMeta, BlindOrder, BlindStep, TradePair};
 use crate::strategy::{Strategy, StrategyEvent};
 use crate::txs::jupiter::route_v2::{RouteV2Accounts, RouteV2InstructionBuilder};
@@ -63,6 +73,102 @@ const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
 pub const FALLBACK_CU_LIMIT: u32 = 230_000;
 const COMPUTE_BUDGET_PROGRAM_ID: Pubkey =
     solana_sdk::pubkey!("ComputeBudget111111111111111111111111111111");
+
+struct LegCombination {
+    buy_index: usize,
+    sell_index: usize,
+}
+
+#[derive(Default)]
+struct LegContextDefaults {
+    wrap_and_unwrap_sol: Option<bool>,
+    dynamic_compute_unit_limit: Option<bool>,
+}
+
+pub struct MultiLegEngineContext {
+    runtime: Arc<MultiLegRuntime>,
+    combinations: Vec<LegCombination>,
+    leg_defaults: HashMap<MultiLegAggregatorKind, LegContextDefaults>,
+}
+
+impl MultiLegEngineContext {
+    pub fn from_runtime(runtime: Arc<MultiLegRuntime>) -> Self {
+        let buy_count = runtime.orchestrator().buy_legs().len();
+        let sell_count = runtime.orchestrator().sell_legs().len();
+        let mut combinations = Vec::with_capacity(buy_count.saturating_mul(sell_count));
+        for buy_index in 0..buy_count {
+            for sell_index in 0..sell_count {
+                combinations.push(LegCombination {
+                    buy_index,
+                    sell_index,
+                });
+            }
+        }
+        Self {
+            runtime,
+            combinations,
+            leg_defaults: HashMap::new(),
+        }
+    }
+
+    pub fn set_wrap_and_unwrap_sol(&mut self, kind: MultiLegAggregatorKind, value: bool) {
+        self.leg_defaults
+            .entry(kind)
+            .or_default()
+            .wrap_and_unwrap_sol = Some(value);
+    }
+
+    pub fn set_dynamic_compute_unit_limit(&mut self, kind: MultiLegAggregatorKind, value: bool) {
+        self.leg_defaults
+            .entry(kind)
+            .or_default()
+            .dynamic_compute_unit_limit = Some(value);
+    }
+
+    fn runtime(&self) -> &MultiLegRuntime {
+        &self.runtime
+    }
+
+    fn combinations(&self) -> &[LegCombination] {
+        &self.combinations
+    }
+
+    fn build_context(
+        &self,
+        descriptor: &MultiLegDescriptor,
+        payer: Pubkey,
+        compute_unit_price: Option<u64>,
+    ) -> MultiLegBuildContext {
+        let mut ctx = MultiLegBuildContext::default();
+        ctx.payer = payer;
+        ctx.compute_unit_price_micro_lamports = compute_unit_price;
+        if let Some(defaults) = self.leg_defaults.get(&descriptor.kind) {
+            if let Some(flag) = defaults.wrap_and_unwrap_sol {
+                ctx.wrap_and_unwrap_sol = Some(flag);
+            }
+            if let Some(flag) = defaults.dynamic_compute_unit_limit {
+                ctx.dynamic_compute_unit_limit = Some(flag);
+            }
+        }
+        ctx
+    }
+}
+
+struct MultiLegExecution {
+    descriptor: LegPairDescriptor,
+    pair: TradePair,
+    trade_size: u64,
+    plan: LegPairPlan,
+    gross_profit: u64,
+    tip_lamports: u64,
+    tag: Option<String>,
+}
+
+impl MultiLegExecution {
+    fn net_profit(&self) -> i128 {
+        self.gross_profit as i128 - self.tip_lamports as i128
+    }
+}
 
 pub(super) struct MintSchedule {
     amounts: Vec<u64>,
@@ -170,7 +276,7 @@ where
     identity: EngineIdentity,
     quote_executor: QuoteExecutor,
     profit_evaluator: ProfitEvaluator,
-    swap_fetcher: SwapInstructionFetcher,
+    swap_preparer: SwapPreparer,
     tx_builder: TransactionBuilder,
     scheduler: Scheduler,
     flashloan: Option<MarginfiFlashloanManager>,
@@ -179,6 +285,7 @@ where
     trade_profiles: BTreeMap<Pubkey, MintSchedule>,
     variant_planner: TxVariantPlanner,
     consecutive_lander_failures: usize,
+    multi_leg: Option<MultiLegEngineContext>,
 }
 
 impl<S> StrategyEngine<S>
@@ -192,13 +299,14 @@ where
         identity: EngineIdentity,
         quote_executor: QuoteExecutor,
         profit_evaluator: ProfitEvaluator,
-        swap_fetcher: SwapInstructionFetcher,
+        swap_preparer: SwapPreparer,
         tx_builder: TransactionBuilder,
         scheduler: Scheduler,
         flashloan: Option<MarginfiFlashloanManager>,
         settings: EngineSettings,
         trade_pairs: Vec<TradePair>,
         trade_profiles: BTreeMap<Pubkey, TradeProfile>,
+        multi_leg: Option<MultiLegEngineContext>,
     ) -> Self {
         let trade_profiles = trade_profiles
             .into_iter()
@@ -210,7 +318,7 @@ where
             identity,
             quote_executor,
             profit_evaluator,
-            swap_fetcher,
+            swap_preparer,
             tx_builder,
             scheduler,
             flashloan,
@@ -219,6 +327,7 @@ where
             trade_profiles,
             variant_planner: TxVariantPlanner::new(),
             consecutive_lander_failures: 0,
+            multi_leg,
         }
     }
 
@@ -344,7 +453,7 @@ where
         let sampled_price = self
             .settings
             .sample_compute_unit_price()
-            .or_else(|| self.swap_fetcher.sample_compute_unit_price());
+            .or_else(|| self.swap_preparer.sample_compute_unit_price());
         if let Some(price) = sampled_price {
             compute_budget_instructions.push(compute_unit_price_instruction(price));
         }
@@ -380,6 +489,7 @@ where
             profit_lamports: 0,
             tip_lamports: 0,
             merged_quote: None,
+            ultra_legs: None,
         };
 
         let FlashloanOutcome {
@@ -705,6 +815,12 @@ where
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
     async fn process_task(&mut self, task: QuoteTask) -> EngineResult<()> {
+        if let Some(mut context) = self.multi_leg.take() {
+            let result = self.process_multi_leg_task(&mut context, task).await;
+            self.multi_leg = Some(context);
+            return result;
+        }
+
         let strategy_name = self.strategy.name();
         events::quote_start(strategy_name, &task);
         let quote_started = Instant::now();
@@ -746,6 +862,338 @@ where
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
+    async fn process_multi_leg_task(
+        &mut self,
+        ctx: &mut MultiLegEngineContext,
+        task: QuoteTask,
+    ) -> EngineResult<()> {
+        if task.amount == 0 {
+            return Ok(());
+        }
+
+        let combinations = ctx.combinations();
+        if combinations.is_empty() {
+            debug!(
+                target: "engine::multi_leg",
+                input_mint = %task.pair.input_mint,
+                output_mint = %task.pair.output_mint,
+                "无可用的腿组合，跳过本次任务"
+            );
+            return Ok(());
+        }
+
+        let compute_unit_price = self.settings.sample_compute_unit_price();
+        let buy_intent_template = MultiLegQuoteIntent::new(
+            task.pair.input_pubkey,
+            task.pair.output_pubkey,
+            task.amount,
+            0,
+        );
+        let sell_intent_template = MultiLegQuoteIntent::new(
+            task.pair.output_pubkey,
+            task.pair.input_pubkey,
+            task.amount,
+            0,
+        );
+        let tag_value = format!(
+            "{}->{}/{}",
+            task.pair.input_mint, task.pair.output_mint, task.amount
+        );
+
+        let runtime = ctx.runtime();
+        let mut requests = Vec::with_capacity(combinations.len());
+        for combo in combinations {
+            let buy_descriptor = match runtime
+                .orchestrator()
+                .descriptor(MultiLegSide::Buy, combo.buy_index)
+                .cloned()
+            {
+                Some(descriptor) => descriptor,
+                None => continue,
+            };
+            let sell_descriptor = match runtime
+                .orchestrator()
+                .descriptor(MultiLegSide::Sell, combo.sell_index)
+                .cloned()
+            {
+                Some(descriptor) => descriptor,
+                None => continue,
+            };
+
+            let buy_context =
+                ctx.build_context(&buy_descriptor, self.identity.pubkey, compute_unit_price);
+            let sell_context =
+                ctx.build_context(&sell_descriptor, self.identity.pubkey, compute_unit_price);
+
+            requests.push(PairPlanRequest {
+                buy_index: combo.buy_index,
+                sell_index: combo.sell_index,
+                buy_intent: buy_intent_template.clone(),
+                sell_intent: sell_intent_template.clone(),
+                buy_context,
+                sell_context,
+                tag: Some(tag_value.clone()),
+            });
+        }
+
+        if requests.is_empty() {
+            return Ok(());
+        }
+
+        let batch = ctx.runtime().plan_pair_batch_with_profit(requests).await;
+
+        let PairPlanBatchResult {
+            successes,
+            failures,
+        } = batch;
+
+        for failure in failures {
+            warn!(
+                target: "engine::multi_leg",
+                input_mint = %task.pair.input_mint,
+                output_mint = %task.pair.output_mint,
+                amount = task.amount,
+                buy_index = failure.buy_index,
+                sell_index = failure.sell_index,
+                error = %failure.error,
+                "多腿腿组合规划失败"
+            );
+        }
+
+        let mut best_opportunity: Option<MultiLegExecution> = None;
+
+        for evaluation in successes.into_iter() {
+            if evaluation.profit_lamports <= 0 {
+                debug!(
+                    target: "engine::multi_leg",
+                    input_mint = %task.pair.input_mint,
+                    output_mint = %task.pair.output_mint,
+                    amount = task.amount,
+                    profit = evaluation.profit_lamports,
+                    "多腿收益非正值，丢弃"
+                );
+                continue;
+            }
+
+            let Some(profit) = self
+                .profit_evaluator
+                .evaluate_multi_leg(evaluation.profit_lamports)
+            else {
+                debug!(
+                    target: "engine::multi_leg",
+                    input_mint = %task.pair.input_mint,
+                    output_mint = %task.pair.output_mint,
+                    amount = task.amount,
+                    profit = evaluation.profit_lamports,
+                    "多腿收益低于阈值，丢弃"
+                );
+                continue;
+            };
+
+            let candidate = MultiLegExecution {
+                descriptor: evaluation.descriptor,
+                pair: task.pair.clone(),
+                trade_size: evaluation.trade_size,
+                plan: evaluation.plan,
+                gross_profit: profit.gross_profit_lamports,
+                tip_lamports: profit.tip_lamports,
+                tag: evaluation.tag,
+            };
+
+            if candidate.net_profit() <= 0 {
+                debug!(
+                    target: "engine::multi_leg",
+                    input_mint = %candidate.pair.input_mint,
+                    output_mint = %candidate.pair.output_mint,
+                    amount = candidate.trade_size,
+                    net_profit = candidate.net_profit(),
+                    "多腿净收益不满足条件，丢弃"
+                );
+                continue;
+            }
+
+            let replace = best_opportunity
+                .as_ref()
+                .map(|current| candidate.net_profit() > current.net_profit())
+                .unwrap_or(true);
+
+            if replace {
+                best_opportunity = Some(candidate);
+            }
+        }
+
+        if let Some(mut candidate) = best_opportunity {
+            if let Err(err) = runtime.populate_pair_plan(&mut candidate.plan).await {
+                return Err(EngineError::Transaction(err.into()));
+            }
+            self.execute_multi_leg(candidate).await
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn execute_multi_leg(&mut self, execution: MultiLegExecution) -> EngineResult<()> {
+        let strategy_name = self.strategy.name();
+
+        let MultiLegExecution {
+            descriptor,
+            pair,
+            trade_size,
+            plan,
+            gross_profit,
+            tip_lamports,
+            tag,
+        } = execution;
+
+        let net_profit = gross_profit as i128 - tip_lamports as i128;
+
+        info!(
+            target: "engine::multi_leg",
+            strategy = strategy_name,
+            input_mint = %pair.input_mint,
+            output_mint = %pair.output_mint,
+            amount = trade_size,
+            gross_profit,
+            tip = tip_lamports,
+            net_profit,
+            buy = %descriptor.buy.kind,
+            sell = %descriptor.sell.kind,
+            tag = tag.as_deref().unwrap_or(""),
+            "检测到多腿套利机会"
+        );
+
+        let mut bundle = assemble_multi_leg_instructions(&plan);
+        let mut final_instructions = bundle.flatten_instructions();
+
+        if let Some(manager) = &self.flashloan {
+            let flashloan_opportunity = SwapOpportunity {
+                pair: pair.clone(),
+                amount_in: trade_size,
+                profit_lamports: gross_profit,
+                tip_lamports,
+                merged_quote: None,
+                ultra_legs: None,
+            };
+            let flashloan_variant = SwapInstructionsVariant::MultiLeg(bundle.clone());
+            let outcome = manager
+                .assemble(&self.identity, &flashloan_opportunity, &flashloan_variant)
+                .await
+                .map_err(EngineError::from)?;
+            final_instructions = outcome.instructions;
+            if let Some(meta) = outcome.metadata {
+                let overhead = manager.compute_unit_overhead();
+                if overhead > 0 {
+                    let new_limit = bundle.compute_unit_limit.saturating_add(overhead);
+                    if !override_compute_unit_limit(&mut final_instructions, new_limit) {
+                        final_instructions.insert(0, compute_unit_limit_instruction(new_limit));
+                    }
+                    if let Some(ix) = bundle.compute_budget_instructions.iter_mut().find(|ix| {
+                        ix.program_id == COMPUTE_BUDGET_PROGRAM_ID && ix.data.first() == Some(&2)
+                    }) {
+                        *ix = compute_unit_limit_instruction(new_limit);
+                    } else {
+                        bundle
+                            .compute_budget_instructions
+                            .insert(0, compute_unit_limit_instruction(new_limit));
+                    }
+                    bundle.compute_unit_limit = new_limit;
+                }
+
+                events::flashloan_applied(
+                    strategy_name,
+                    meta.protocol.as_str(),
+                    &meta.mint,
+                    meta.borrow_amount,
+                    meta.inner_instruction_count,
+                );
+            }
+        }
+
+        let variant = SwapInstructionsVariant::MultiLeg(bundle);
+
+        let prepared = self
+            .tx_builder
+            .build_with_sequence(&self.identity, &variant, final_instructions, tip_lamports)
+            .await?;
+
+        info!(
+            target: "engine::multi_leg",
+            strategy = strategy_name,
+            slot = prepared.slot,
+            blockhash = %prepared.blockhash,
+            "多腿交易已构建"
+        );
+
+        if self.settings.dry_run {
+            info!(
+                target: "engine::dry_run",
+                strategy = strategy_name,
+                slot = prepared.slot,
+                blockhash = %prepared.blockhash,
+                landers = self.landers.count(),
+                "dry-run 模式：多腿交易已构建，跳过落地"
+            );
+            return Ok(());
+        }
+
+        let dispatch_strategy = self.settings.dispatch_strategy;
+        let variant_layout = self.landers.variant_layout(dispatch_strategy);
+        let plan = self
+            .variant_planner
+            .plan(dispatch_strategy, &prepared, &variant_layout);
+
+        let deadline = Deadline::from_instant(Instant::now() + self.settings.landing_timeout);
+        let tx_signature = plan
+            .primary_variant()
+            .and_then(|variant| variant.signature());
+
+        match self
+            .landers
+            .submit_plan(&plan, deadline, strategy_name)
+            .await
+        {
+            Ok(_) => {
+                self.consecutive_lander_failures = 0;
+                Ok(())
+            }
+            Err(err) => {
+                debug!(
+                    target: "engine::lander",
+                    error = %err,
+                    tx_signature = tx_signature.as_deref().unwrap_or(""),
+                    "lander submission detail"
+                );
+                let message = tx_signature
+                    .as_ref()
+                    .map(|sig| format!("交易 {sig} 落地失败"))
+                    .unwrap_or_else(|| "交易落地失败".to_string());
+                self.consecutive_lander_failures =
+                    self.consecutive_lander_failures.saturating_add(1);
+                let consecutive = self.consecutive_lander_failures;
+                if let Some(limit) = self.settings.max_consecutive_failures {
+                    if limit != 0 && consecutive >= limit {
+                        warn!(
+                            target: "engine::lander",
+                            tx_signature = tx_signature.as_deref().unwrap_or(""),
+                            consecutive = consecutive,
+                            limit = limit,
+                            "落地失败，连续失败达到上限"
+                        );
+                        return Err(EngineError::Landing(message));
+                    }
+                }
+                warn!(
+                    target: "engine::lander",
+                    tx_signature = tx_signature.as_deref().unwrap_or(""),
+                    consecutive = consecutive,
+                    "落地失败，跳过当前机会"
+                );
+                Ok(())
+            }
+        }
+    }
+
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     async fn execute_plan(&mut self, plan: ExecutionPlan) -> EngineResult<()> {
         let ExecutionPlan {
             opportunity,
@@ -763,7 +1211,11 @@ where
             "检测到套利机会"
         );
 
-        let instructions = match self.swap_fetcher.fetch(&opportunity, &self.identity).await {
+        let swap_variant = match self
+            .swap_preparer
+            .prepare(&opportunity, &self.identity)
+            .await
+        {
             Ok(value) => value,
             Err(err) => {
                 if let EngineError::Dflow(dflow_err @ DflowError::ApiStatus { status, body, .. }) =
@@ -812,14 +1264,14 @@ where
                 return Err(err);
             }
         };
-        let mut compute_unit_limit = instructions.compute_unit_limit();
-        let prioritization_fee = instructions
+        let mut compute_unit_limit = swap_variant.compute_unit_limit();
+        let prioritization_fee = swap_variant
             .prioritization_fee_lamports()
             .unwrap_or_default();
         let (mut final_instructions, flashloan_meta, flashloan_overhead) = match &self.flashloan {
             Some(manager) => {
                 let outcome = manager
-                    .assemble(&self.identity, &opportunity, &instructions)
+                    .assemble(&self.identity, &opportunity, &swap_variant)
                     .await
                     .map_err(EngineError::from)?;
                 let overhead = outcome
@@ -829,7 +1281,7 @@ where
                 (outcome.instructions, outcome.metadata, overhead)
             }
             None => (
-                instructions.flatten_instructions(),
+                swap_variant.flatten_instructions(),
                 None,
                 Option::<u32>::None,
             ),
@@ -866,7 +1318,7 @@ where
             .tx_builder
             .build_with_sequence(
                 &self.identity,
-                &instructions,
+                &swap_variant,
                 final_instructions,
                 opportunity.tip_lamports,
             )
@@ -1031,4 +1483,116 @@ fn override_compute_unit_limit(instructions: &mut [Instruction], new_limit: u32)
         }
     }
     false
+}
+
+fn assemble_multi_leg_instructions(plan: &LegPairPlan) -> MultiLegInstructions {
+    let (buy_cb, buy_limit) = extract_plan_compute_requirements(&plan.buy);
+    let (sell_cb, sell_limit) = extract_plan_compute_requirements(&plan.sell);
+
+    let mut compute_budget_instructions = Vec::new();
+    compute_budget_instructions.extend(buy_cb);
+    compute_budget_instructions.extend(sell_cb);
+
+    let mut main_instructions = Vec::new();
+    main_instructions.extend(plan.buy.instructions.iter().cloned());
+    main_instructions.extend(plan.sell.instructions.iter().cloned());
+
+    let mut address_lookup_table_addresses = Vec::new();
+    address_lookup_table_addresses.extend(plan.buy.address_lookup_table_addresses.iter().cloned());
+    address_lookup_table_addresses.extend(plan.sell.address_lookup_table_addresses.iter().cloned());
+
+    let mut resolved_lookup_tables = Vec::new();
+    resolved_lookup_tables.extend(plan.buy.resolved_lookup_tables.iter().cloned());
+    resolved_lookup_tables.extend(plan.sell.resolved_lookup_tables.iter().cloned());
+
+    let fee_sum = plan
+        .buy
+        .prioritization_fee_lamports
+        .unwrap_or(0)
+        .saturating_add(plan.sell.prioritization_fee_lamports.unwrap_or(0));
+    let prioritization_fee = if fee_sum > 0 { Some(fee_sum) } else { None };
+
+    let mut merged_limit = buy_limit
+        .unwrap_or(0)
+        .saturating_add(sell_limit.unwrap_or(0));
+    let merged_price = plan
+        .buy
+        .requested_compute_unit_price_micro_lamports
+        .or(plan.sell.requested_compute_unit_price_micro_lamports);
+
+    if merged_limit == 0 {
+        merged_limit =
+            extract_compute_unit_limit(&compute_budget_instructions).unwrap_or(FALLBACK_CU_LIMIT);
+    }
+
+    compute_budget_instructions.retain(|ix| {
+        if ix.program_id != COMPUTE_BUDGET_PROGRAM_ID {
+            return true;
+        }
+        match ix.data.first().copied() {
+            Some(2) | Some(3) => false,
+            _ => true,
+        }
+    });
+
+    let mut final_compute_budget = Vec::new();
+    final_compute_budget.push(compute_unit_limit_instruction(merged_limit));
+    if let Some(price) = merged_price {
+        if price > 0 {
+            final_compute_budget.push(compute_unit_price_instruction(price));
+        }
+    }
+    final_compute_budget.extend(compute_budget_instructions);
+
+    let mut bundle = MultiLegInstructions::new(
+        final_compute_budget,
+        main_instructions,
+        address_lookup_table_addresses,
+        resolved_lookup_tables,
+        prioritization_fee,
+        merged_limit,
+    );
+    bundle.dedup_lookup_tables();
+    bundle
+}
+
+fn extract_compute_unit_limit(instructions: &[Instruction]) -> Option<u32> {
+    for ix in instructions {
+        if ix.program_id == COMPUTE_BUDGET_PROGRAM_ID && ix.data.first() == Some(&2) {
+            if ix.data.len() >= 5 {
+                let mut buf = [0u8; 4];
+                buf.copy_from_slice(&ix.data[1..5]);
+                return Some(u32::from_le_bytes(buf));
+            }
+        }
+    }
+    None
+}
+
+fn extract_plan_compute_requirements(plan: &LegPlan) -> (Vec<Instruction>, Option<u32>) {
+    let mut residual = Vec::new();
+    let mut limit = plan.requested_compute_unit_limit;
+
+    for ix in &plan.compute_budget_instructions {
+        if ix.program_id == COMPUTE_BUDGET_PROGRAM_ID {
+            match ix.data.first().copied() {
+                Some(2) => {
+                    if limit.is_none() && ix.data.len() >= 5 {
+                        let mut buf = [0u8; 4];
+                        buf.copy_from_slice(&ix.data[1..5]);
+                        limit = Some(u32::from_le_bytes(buf));
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        residual.push(ix.clone());
+    }
+
+    if limit.is_none() {
+        limit = plan.requested_compute_unit_limit;
+    }
+
+    (residual, limit)
 }

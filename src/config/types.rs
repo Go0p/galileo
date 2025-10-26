@@ -104,6 +104,8 @@ pub enum EngineBackend {
     Jupiter,
     Dflow,
     Ultra,
+    #[serde(rename = "multi-legs")]
+    MultiLegs,
     None,
 }
 
@@ -214,6 +216,8 @@ pub struct UltraEngineConfig {
     #[serde(default)]
     pub leg: Option<LegRole>,
     #[serde(default)]
+    pub legs: Vec<LegRole>,
+    #[serde(default)]
     pub api_quote_base: Option<String>,
     #[serde(default)]
     pub api_swap_base: Option<String>,
@@ -229,12 +233,26 @@ pub struct UltraEngineConfig {
     pub wait_on_429_ms: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct UltraQuoteConfig {
     #[serde(default)]
     pub include_routers: Vec<String>,
     #[serde(default)]
     pub exclude_routers: Vec<String>,
+    #[serde(default)]
+    pub taker: Option<String>,
+    #[serde(default)]
+    pub use_wsol: bool,
+    #[serde(default)]
+    pub broadcast_fee_type: Option<String>,
+    #[serde(default)]
+    pub jito_tip_lamports: Option<u64>,
+    #[serde(default = "default_priority_fee_lamports")]
+    pub priority_fee_lamports: Option<u64>,
+}
+
+fn default_priority_fee_lamports() -> Option<u64> {
+    Some(10)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -250,6 +268,7 @@ impl Default for UltraEngineConfig {
         Self {
             enable: false,
             leg: None,
+            legs: Vec::new(),
             api_quote_base: None,
             api_swap_base: None,
             api_proxy: None,
@@ -257,6 +276,20 @@ impl Default for UltraEngineConfig {
             swap_config: UltraSwapConfig::default(),
             max_consecutive_failures: 0,
             wait_on_429_ms: 0,
+        }
+    }
+}
+
+impl Default for UltraQuoteConfig {
+    fn default() -> Self {
+        Self {
+            include_routers: Vec::new(),
+            exclude_routers: Vec::new(),
+            taker: None,
+            use_wsol: false,
+            broadcast_fee_type: None,
+            jito_tip_lamports: None,
+            priority_fee_lamports: default_priority_fee_lamports(),
         }
     }
 }

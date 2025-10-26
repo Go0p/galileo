@@ -67,6 +67,7 @@ fn sample_opportunity() -> SwapOpportunity {
         profit_lamports: 0,
         tip_lamports: 0,
         merged_quote: None,
+        ultra_legs: None,
     }
 }
 

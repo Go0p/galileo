@@ -141,4 +141,15 @@ pub struct LegPlan {
     pub prioritization_fee_lamports: Option<u64>,
     pub blockhash: Option<Hash>,
     pub raw_transaction: Option<VersionedTransaction>,
+    pub signer_rewrite: Option<SignerRewrite>,
+    pub account_rewrites: Vec<(Pubkey, Pubkey)>,
+    pub requested_compute_unit_limit: Option<u32>,
+    pub requested_compute_unit_price_micro_lamports: Option<u64>,
+    pub requested_tip_lamports: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SignerRewrite {
+    pub original: Pubkey,
+    pub replacement: Pubkey,
 }

@@ -125,6 +125,11 @@ impl DflowLegProvider {
             prioritization_fee_lamports: swap.prioritization_fee_lamports,
             blockhash: Some(swap.blockhash_with_metadata.blockhash),
             raw_transaction: None,
+            signer_rewrite: None,
+            account_rewrites: Vec::new(),
+            requested_compute_unit_limit: None,
+            requested_compute_unit_price_micro_lamports: None,
+            requested_tip_lamports: None,
         }
     }
 }
@@ -158,6 +163,11 @@ impl LegProvider for DflowLegProvider {
     ) -> Result<Self::Plan, Self::BuildError> {
         let request = self.build_swap_request(quote, context);
         let response = self.client.swap_instructions(&request).await?;
-        Ok(self.into_plan(quote, response))
+        let mut plan = self.into_plan(quote, response);
+        if plan.requested_compute_unit_price_micro_lamports.is_none() {
+            plan.requested_compute_unit_price_micro_lamports =
+                context.compute_unit_price_micro_lamports;
+        }
+        Ok(plan)
     }
 }

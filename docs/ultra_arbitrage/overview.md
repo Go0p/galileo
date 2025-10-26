@@ -16,7 +16,9 @@
   - `plan_pair_with_alts` 自动以买腿保底产出调整卖腿规模，确保两腿严格对接。
   - `plan_pair_batch_with_profit` 支持多 trade size 并发规划并返回收益降序列表，可直接输送给收益评估。
   - Titan 推流入口集成内置限流 / 防抖（默认 2 并发、200ms debounce），避免 WS 过载。
-- 当前尚未把 `MultiLegRuntime` 接入策略主循环，Engine 仍由纯盲发掌控；多腿输出计划暂未落地或计入收益评估。
+- `StrategyEngine` 已在 `engine.backend = multi-legs` 模式下直接调用 `MultiLegRuntime`，复用盲发调度生成
+  PairPlan 请求，并在选择最优收益后通过 `TransactionBuilder` + `LanderStack` 完成落地（dry-run 下仍保留
+  全量构建链路）。
 
 ## multi_leg 模块新增内容
 - **类型抽象**：`LegSide`、`QuoteIntent`、`LegBuildContext`、`LegPlan`、`LegDescriptor` 描述腿角色、报价意图与输出计划。
@@ -27,13 +29,23 @@
 
 ## 聚合器角色说明
 - **DFlow**：仍支持独立的双腿套利；当在 `galileo.yaml` 中配置 `leg: buy/sell` 时，可按角色暴露给 multi-leg 组合层。`DflowLegProvider` 已落地。
-- **Ultra**：需要与其他腿组合，`/order` 返回的未签名交易已由 `UltraLegProvider` 解码并清理 ComputeBudget 指令，保留原始交易便于后续补充 ALT；当前若响应包含 ALT 需由 orchestrator 下游补拉。
+- **Ultra**：需要与其他腿组合，`/order` 返回的未签名交易已由 `UltraLegProvider` 解码并清理 ComputeBudget 指令；若响应包含 ALT，会记录 lookup 表地址并由 runtime 通过 ALT 缓存自动拉取与还原指令账户。Ultra 自带的 CU limit/price、tip 会被剥离，由合并阶段统一计算总 CU 限制与优先费。
 - **Titan**：只能承担买腿，`TitanLegProvider` 基于可注入的报价源（WS/MPC）生成标准指令集合；Titan 报价不会提供 `/swap-instructions`，需与其他卖腿（DFlow 等）拼装。
 
 ## 配置映射
 - `galileo.yaml` 中每个聚合器新增 `enable` + `leg` 字段；未配置 `leg` 的聚合器保持原有行为，不参与多腿组合。
 - 当存在至少一条 `buy` 与一条 `sell` 腿且均启用时，multi_leg orchestrator 将尝试组合；仍可保留 DFlow 独立套利作为兜底。
 - Titan 固定 `leg: buy`，Ultra/DFlow 可配置 `buy` 或 `sell`。
+
+## Multi-Legs 引擎入口
+- 新增 `galileo.engine.backend = "multi-legs"`，由盲发策略照常提供 base/quote mint 与 trade size，engine 层负责 orchestrator 落地。
+- backend=multi-legs 时：
+  - 读取 `engine.{ultra,dflow,titan}`，实例化至多两个 provider（Titan 固定 buy，Ultra/DFlow 按 `leg` 字段决定方向）。
+  - 提前初始化 `MultiLegRuntime`（ALT 缓存 + Titan 流量限制），记录可用腿信息，后续迭代将把 runtime 接入策略主循环。
+  - 继续复用盲发配置生成的 trade pair/size，零成本抽象原则保持不变。
+
+目前 multi-legs 已完成策略主循环与落地链路串联，后续工作重点转向指标补齐、回归测试与多腿指令的
+性能调优。
 
 ## 下一步流程（高层）
 1. **腿发现**：解析配置 → 实例化各聚合器的 `LegProvider`（已完成 DFlow/Ultra/Titan）。  

@@ -5,15 +5,18 @@ use std::time::{Duration, Instant};
 use anyhow::{Error, Result, anyhow};
 use futures::future::{join_all, try_join};
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::pubkey::Pubkey;
+use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
 use tracing::{debug, instrument, warn};
 
 use crate::multi_leg::alt_cache::AltCache;
 use crate::multi_leg::orchestrator::{LegPairDescriptor, LegPairPlan, MultiLegOrchestrator};
+use crate::multi_leg::transaction::instructions::{
+    InstructionExtractionError, extract_instructions,
+};
 use crate::multi_leg::types::{
-    AggregatorKind, LegBuildContext, LegDescriptor, LegPlan, LegSide, QuoteIntent,
+    AggregatorKind, LegBuildContext, LegDescriptor, LegPlan, LegSide, QuoteIntent, SignerRewrite,
 };
 
 /// 运行时容器：封装 orchestrator、ALT 缓存与 RPC，提供高层计划接口。
@@ -139,6 +142,31 @@ impl MultiLegRuntime {
         buy_context: &LegBuildContext,
         sell_context: &LegBuildContext,
     ) -> Result<LegPairPlan> {
+        let mut plan = self
+            .plan_pair_raw(
+                buy_index,
+                sell_index,
+                buy_intent,
+                sell_intent,
+                buy_context,
+                sell_context,
+            )
+            .await?;
+
+        self.populate_pair_plan(&mut plan).await?;
+
+        Ok(plan)
+    }
+
+    async fn plan_pair_raw(
+        &self,
+        buy_index: usize,
+        sell_index: usize,
+        buy_intent: &QuoteIntent,
+        sell_intent: &QuoteIntent,
+        buy_context: &LegBuildContext,
+        sell_context: &LegBuildContext,
+    ) -> Result<LegPairPlan> {
         let buy_descriptor = self
             .orchestrator
             .descriptor(LegSide::Buy, buy_index)
@@ -153,7 +181,7 @@ impl MultiLegRuntime {
         let _buy_guard = self.concurrency.acquire(&buy_descriptor).await;
         let _sell_guard = self.concurrency.acquire(&sell_descriptor).await;
 
-        let mut plan = self
+        let plan = self
             .orchestrator
             .plan_pair(
                 buy_index,
@@ -165,13 +193,16 @@ impl MultiLegRuntime {
             )
             .await?;
 
+        Ok(plan)
+    }
+
+    pub async fn populate_pair_plan(&self, plan: &mut LegPairPlan) -> Result<()> {
         try_join(
             self.populate_leg_plan(&mut plan.buy),
             self.populate_leg_plan(&mut plan.sell),
         )
-        .await?;
-
-        Ok(plan)
+        .await
+        .map(|_| ())
     }
 
     /// 同时对多条腿组合请求进行规划，输出按收益降序排列的计划列表。
@@ -189,7 +220,7 @@ impl MultiLegRuntime {
                 let runtime = self;
                 async move {
                     let result = runtime
-                        .plan_pair_with_alts(
+                        .plan_pair_raw(
                             request.buy_index,
                             request.sell_index,
                             &request.buy_intent,
@@ -259,6 +290,7 @@ impl MultiLegRuntime {
 
         if unique.is_empty() {
             plan.resolved_lookup_tables.clear();
+            self.rebuild_plan_instructions(plan)?;
             return Ok(());
         }
 
@@ -272,7 +304,88 @@ impl MultiLegRuntime {
             .filter_map(|key| table_map.remove(key))
             .collect();
 
+        self.rebuild_plan_instructions(plan)?;
+
         Ok(())
+    }
+
+    fn rebuild_plan_instructions(&self, plan: &mut LegPlan) -> Result<()> {
+        let needs_rebuild = plan.raw_transaction.is_some()
+            && (plan.instructions.is_empty() || plan.compute_budget_instructions.is_empty());
+
+        if needs_rebuild {
+            let tx = plan
+                .raw_transaction
+                .as_ref()
+                .expect("guard ensures raw_transaction exists");
+
+            let bundle =
+                extract_instructions(&tx.message, Some(plan.resolved_lookup_tables.as_slice()))
+                    .map_err(|err| match err {
+                        InstructionExtractionError::MissingLookupTables { count } => {
+                            anyhow!("地址查找表缺失: 仍需 {count} 个")
+                        }
+                        InstructionExtractionError::LookupTableNotFound { table } => {
+                            anyhow!("地址查找表 {table} 未解析")
+                        }
+                        InstructionExtractionError::LookupIndexOutOfBounds {
+                            table,
+                            index,
+                            len,
+                        } => {
+                            anyhow!("地址查找表 {table} 索引 {index} 超出范围 (len = {len})")
+                        }
+                        InstructionExtractionError::ProgramIndexOutOfBounds { index, total } => {
+                            anyhow!("program index {index} 超出账户数量 {total}")
+                        }
+                        InstructionExtractionError::AccountIndexOutOfBounds { index, total } => {
+                            anyhow!("account index {index} 超出账户数量 {total}")
+                        }
+                    })?;
+
+            plan.compute_budget_instructions = bundle.compute_budget_instructions;
+            plan.instructions = bundle.other_instructions;
+        }
+
+        if let Some(rewrite) = plan.signer_rewrite {
+            rewrite_instruction_accounts(&mut plan.compute_budget_instructions, rewrite);
+            rewrite_instruction_accounts(&mut plan.instructions, rewrite);
+        }
+        if !plan.account_rewrites.is_empty() {
+            rewrite_instruction_accounts_map(
+                &mut plan.compute_budget_instructions,
+                &plan.account_rewrites,
+            );
+            rewrite_instruction_accounts_map(&mut plan.instructions, &plan.account_rewrites);
+        }
+
+        Ok(())
+    }
+}
+
+fn rewrite_instruction_accounts(instructions: &mut [Instruction], rewrite: SignerRewrite) {
+    for ix in instructions {
+        for account in &mut ix.accounts {
+            if account.pubkey == rewrite.original {
+                account.pubkey = rewrite.replacement;
+            }
+        }
+    }
+}
+
+fn rewrite_instruction_accounts_map(
+    instructions: &mut [Instruction],
+    rewrites: &[(Pubkey, Pubkey)],
+) {
+    for ix in instructions {
+        for account in &mut ix.accounts {
+            for (from, to) in rewrites {
+                if account.pubkey == *from {
+                    account.pubkey = *to;
+                    break;
+                }
+            }
+        }
     }
 }
 

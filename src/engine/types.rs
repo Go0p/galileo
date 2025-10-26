@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use super::aggregator::{QuotePayloadVariant, QuoteResponseVariant};
+use crate::api::ultra::order::OrderResponsePayload;
 use crate::strategy::types::TradePair;
 
 #[derive(Debug, Clone)]
@@ -45,12 +46,19 @@ pub struct SwapOpportunity {
     pub profit_lamports: u64,
     pub tip_lamports: u64,
     pub merged_quote: Option<QuotePayloadVariant>,
+    pub ultra_legs: Option<UltraSwapLegs>,
 }
 
 impl SwapOpportunity {
     pub fn net_profit(&self) -> i128 {
         self.profit_lamports as i128 - self.tip_lamports as i128
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct UltraSwapLegs {
+    pub forward: OrderResponsePayload,
+    pub reverse: OrderResponsePayload,
 }
 
 #[derive(Debug, Clone)]

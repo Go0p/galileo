@@ -2,7 +2,7 @@
 
 ## Ultra `/order`
 1. **解码**：`UltraLegProvider` 内部调用 `multi_leg::transaction::decoder::decode_base64_transaction` 将 base64 交易解析成 `VersionedTransaction`，同时将原始交易写入 `LegPlan.raw_transaction`，便于后续对 ALT / 优先费二次处理。  
-2. **指令清理**：遍历 `VersionedMessage`，按 Program ID 拆分 ComputeBudget 指令并置入 `compute_budget_instructions`，其余 swap/setup/cleanup 指令保留在 `LegPlan.instructions`。当前实现仅支持无地址查找表（ALT）的交易；若 Ultra 返回 ALT，需 orchestrator 在合并阶段补拉。  
+2. **指令清理**：遍历 `VersionedMessage`，按 Program ID 拆分 ComputeBudget 指令并置入 `compute_budget_instructions`，其余 swap/setup/cleanup 指令保留在 `LegPlan.instructions`。若 Ultra 返回带 ALT 的 v0 交易，会将 lookup 表地址写入 `LegPlan.address_lookup_table_addresses`，由 runtime 利用 ALT 缓存自动拉取并还原指令账户；Ultra 默认附带的 `SetComputeUnitLimit/Price` 和 1000 lamports tip transfer 在这里会被剥离，仅保留纯粹的路由指令。  
 3. **附加元数据**：保留 `prioritization_fee_lamports`、`routePlan`、`requestId` 等字段，为收益评估与监控打点提供上下文。
 
 ## DFlow 提供方（已实现）

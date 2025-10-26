@@ -310,6 +310,11 @@ mod tests {
             prioritization_fee_lamports: None,
             blockhash: None,
             raw_transaction: None,
+            signer_rewrite: None,
+            account_rewrites: Vec::new(),
+            requested_compute_unit_limit: None,
+            requested_compute_unit_price_micro_lamports: None,
+            requested_tip_lamports: None,
         };
         MockProvider { descriptor, plan }
     }

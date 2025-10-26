@@ -11,7 +11,6 @@ use solana_sdk::pubkey::Pubkey;
 
 use super::serde_helpers::{field_as_string, option_field_as_string};
 
-pub use crate::api::jupiter::quote::PlatformFee;
 pub use crate::api::jupiter::quote::RoutePlanStep;
 pub use crate::api::jupiter::quote::SwapInfo;
 pub use crate::api::jupiter::quote::SwapMode;
@@ -89,6 +88,20 @@ pub struct OrderRequest {
     pub output_mint: Pubkey,
     #[serde(with = "field_as_string")]
     pub amount: u64,
+    #[serde(default = "default_swap_mode")]
+    pub swap_mode: SwapMode,
+    #[serde(default = "default_slippage_bps")]
+    pub slippage_bps: u16,
+    #[serde(default = "default_use_wsol")]
+    pub use_wsol: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub broadcast_fee_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jito_tip_lamports: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority_fee_lamports: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude_dexes: Option<String>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         with = "option_field_as_string"
@@ -107,8 +120,6 @@ pub struct OrderRequest {
         serialize_with = "serialize_router_list"
     )]
     pub exclude_routers: Vec<Router>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exclude_dexes: Option<String>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         with = "option_field_as_string"
@@ -124,6 +135,12 @@ impl OrderRequest {
             input_mint,
             output_mint,
             amount,
+            swap_mode: SwapMode::ExactIn,
+            slippage_bps: default_slippage_bps(),
+            use_wsol: default_use_wsol(),
+            broadcast_fee_type: None,
+            jito_tip_lamports: None,
+            priority_fee_lamports: None,
             taker: None,
             referral_account: None,
             referral_fee: None,
@@ -148,6 +165,18 @@ impl OrderRequest {
     }
 }
 
+fn default_swap_mode() -> SwapMode {
+    SwapMode::ExactIn
+}
+
+const fn default_slippage_bps() -> u16 {
+    0
+}
+
+const fn default_use_wsol() -> bool {
+    false
+}
+
 fn serialize_router_list<S>(routers: &[Router], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -163,19 +192,22 @@ where
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderResponsePayload {
-    pub mode: String,
-    #[serde(with = "field_as_string")]
-    pub input_mint: Pubkey,
-    #[serde(with = "field_as_string")]
-    pub output_mint: Pubkey,
-    #[serde(with = "field_as_string")]
-    pub in_amount: u64,
-    #[serde(with = "field_as_string")]
-    pub out_amount: u64,
-    #[serde(with = "field_as_string")]
-    pub other_amount_threshold: u64,
-    pub swap_mode: SwapMode,
-    pub slippage_bps: u16,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default, with = "option_field_as_string")]
+    pub input_mint: Option<Pubkey>,
+    #[serde(default, with = "option_field_as_string")]
+    pub output_mint: Option<Pubkey>,
+    #[serde(default, with = "option_field_as_string")]
+    pub in_amount: Option<u64>,
+    #[serde(default, with = "option_field_as_string")]
+    pub out_amount: Option<u64>,
+    #[serde(default, with = "option_field_as_string")]
+    pub other_amount_threshold: Option<u64>,
+    #[serde(default)]
+    pub swap_mode: Option<SwapMode>,
+    #[serde(default)]
+    pub slippage_bps: Option<u16>,
     #[serde(default)]
     pub in_usd_value: Decimal,
     #[serde(default)]
@@ -190,16 +222,26 @@ pub struct OrderResponsePayload {
     pub route_plan: Vec<RoutePlanStep>,
     #[serde(default, with = "option_field_as_string")]
     pub fee_mint: Option<Pubkey>,
-    pub fee_bps: u16,
-    pub signature_fee_lamports: u64,
-    pub prioritization_fee_lamports: u64,
-    pub rent_fee_lamports: u64,
-    pub swap_type: String,
-    pub router: String,
-    pub transaction: String,
-    pub gasless: bool,
-    pub request_id: String,
-    pub total_time: u64,
+    #[serde(default)]
+    pub fee_bps: Option<u16>,
+    #[serde(default)]
+    pub signature_fee_lamports: Option<u64>,
+    #[serde(default)]
+    pub prioritization_fee_lamports: Option<u64>,
+    #[serde(default)]
+    pub rent_fee_lamports: Option<u64>,
+    #[serde(default)]
+    pub swap_type: Option<String>,
+    #[serde(default)]
+    pub router: Option<String>,
+    #[serde(default)]
+    pub transaction: Option<String>,
+    #[serde(default)]
+    pub gasless: Option<bool>,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub total_time: Option<u64>,
     #[serde(default, with = "option_field_as_string")]
     pub taker: Option<Pubkey>,
     #[serde(default)]
@@ -209,7 +251,7 @@ pub struct OrderResponsePayload {
     #[serde(default)]
     pub expire_at: Option<String>,
     #[serde(default)]
-    pub platform_fee: Option<PlatformFee>,
+    pub platform_fee: Option<UltraPlatformFee>,
     #[serde(default)]
     pub error_code: Option<i64>,
     #[serde(default)]
@@ -220,6 +262,15 @@ pub struct OrderResponsePayload {
 pub struct OrderResponse {
     pub raw: Value,
     data: OrderResponsePayload,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UltraPlatformFee {
+    #[serde(default, with = "option_field_as_string")]
+    pub amount: Option<u64>,
+    #[serde(default)]
+    pub fee_bps: Option<u16>,
 }
 
 impl OrderResponse {
@@ -304,8 +355,33 @@ mod tests {
             "errorMessage": null
         });
         let response = OrderResponse::try_from_value(payload).expect("parse");
-        assert_eq!(response.swap_mode, SwapMode::ExactIn);
-        assert_eq!(response.swap_type, "aggregator");
-        assert_eq!(response.router, "aggregator");
+        assert_eq!(response.swap_mode, Some(SwapMode::ExactIn));
+        assert_eq!(response.swap_type.as_deref(), Some("aggregator"));
+        assert_eq!(response.router.as_deref(), Some("aggregator"));
+    }
+
+    #[test]
+    fn deserialize_order_response_without_in_amount() {
+        let payload = json!({
+            "inputMint": "So11111111111111111111111111111111111111112",
+            "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "routePlan": [{
+                "swapInfo": {
+                    "ammKey": "11111111111111111111111111111111",
+                    "label": "unit",
+                    "inputMint": "So11111111111111111111111111111111111111112",
+                    "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                    "inAmount": "1",
+                    "outAmount": "2",
+                    "feeAmount": "0",
+                    "feeMint": "11111111111111111111111111111111"
+                },
+                "percent": 100
+            }],
+            "swapMode": "ExactIn"
+        });
+        let response = OrderResponse::try_from_value(payload).expect("parse");
+        assert_eq!(response.route_plan.len(), 1);
+        assert_eq!(response.route_plan[0].swap_info.in_amount, 1);
     }
 }
