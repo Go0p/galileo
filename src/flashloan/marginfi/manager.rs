@@ -18,7 +18,7 @@ use super::account::{MarginfiAccountEnsure, ensure_marginfi_account};
 use super::compute_associated_token_address;
 use super::instructions::MarginfiFlashloan;
 
-const BALANCE_CACHE_TTL: Duration = Duration::from_millis(500);
+const BALANCE_STATIC_TTL: Duration = Duration::from_secs(60 * 60 * 24); // effectively static
 
 #[derive(Debug, Clone, Default)]
 pub struct MarginfiAccountRegistry {
@@ -43,6 +43,7 @@ impl MarginfiAccountRegistry {
 struct BalanceCacheEntry {
     amount: u64,
     fetched_at: Instant,
+    ttl: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -170,7 +171,7 @@ impl MarginfiFlashloanManager {
         {
             let cache = self.balance_cache.lock().await;
             if let Some(entry) = cache.get(&ata) {
-                if entry.fetched_at.elapsed() < BALANCE_CACHE_TTL {
+                if entry.fetched_at.elapsed() < entry.ttl {
                     return Ok(entry.amount);
                 }
             }
@@ -193,6 +194,7 @@ impl MarginfiFlashloanManager {
             BalanceCacheEntry {
                 amount,
                 fetched_at: Instant::now(),
+                ttl: BALANCE_STATIC_TTL,
             },
         );
 
