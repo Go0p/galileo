@@ -7,9 +7,9 @@
 ## 0. 实施进度
 - [x] 阶段 1：网络资源池基础设施（`IpInventory` / `IpAllocator` 骨架落地，配置解析扩展完成）
 - [x] 阶段 2：并发调度重构（`QuoteDispatcher::dispatch` 结合 `Semaphore + FuturesUnordered` 实现批次并发，`QuoteExecutor` 支持复用单次 lease 完成买/卖腿报价）
-- [ ] 阶段 3：退避与观测接入（HTTP 限流/超时已接入 `mark_outcome`，报价事件已输出 `batch_id`/`local_ip` 指标，仍需补全 swap/lander 链路与看板说明）
-- [ ] 阶段 4：Multi-leg & Titan（已完成 2/3 项）
-- [ ] 阶段 5：Lander & 落地（`TransactionBuilder` 已复用 IP，后续补充分发指标与退避优化）
+- [ ] 阶段 3：退避与观测接入（HTTP 限流/超时已接入 `mark_outcome`，报价事件已输出 `batch_id`/`local_ip` 指标，仍需补全 swap/lander 链路指标与看板说明）
+- [ ] 阶段 4：Multi-leg & Titan（已完成 2/3 项，待补集成测试验证 Titan 双 size 并发）
+- [ ] 阶段 5：Lander & 落地（`SwapPreparer`/`TransactionBuilder`/`LanderStack` 已接入 IP 池，仍需补充分发指标与退避策略）
 
 ---
 
