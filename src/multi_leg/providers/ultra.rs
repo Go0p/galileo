@@ -16,6 +16,7 @@ use crate::engine::ultra::{
 };
 use crate::multi_leg::leg::LegProvider;
 use crate::multi_leg::transaction::decoder::DecodeTxError;
+use crate::multi_leg::transaction::instructions::InstructionExtractionError;
 use crate::multi_leg::types::{
     AggregatorKind, LegBuildContext, LegDescriptor, LegPlan, LegQuote, LegSide, QuoteIntent,
 };
@@ -255,7 +256,18 @@ fn map_adapter_error(err: UltraAdapterError) -> UltraLegError {
             field: "transaction",
         },
         UltraAdapterError::Decode(inner) => UltraLegError::Decode(inner),
-        UltraAdapterError::Instruction(message) => UltraLegError::Instruction(message),
+        UltraAdapterError::Instruction(inner) => match inner {
+            InstructionExtractionError::MissingLookupTables { count } => {
+                UltraLegError::AddressLookupPending { count }
+            }
+            InstructionExtractionError::LookupTableNotFound { table } => {
+                UltraLegError::AddressLookupMissing { table }
+            }
+            InstructionExtractionError::LookupIndexOutOfBounds { table, index, len } => {
+                UltraLegError::AddressLookupIndexOutOfBounds { table, index, len }
+            }
+            other => UltraLegError::Instruction(other.to_string()),
+        },
         UltraAdapterError::LookupFetch(error) => {
             UltraLegError::Instruction(format!("拉取地址查找表失败: {error}"))
         }

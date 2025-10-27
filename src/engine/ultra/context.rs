@@ -25,7 +25,10 @@ impl UltraContext {
 #[derive(Clone)]
 pub enum UltraLookupResolver {
     /// 立即通过 RPC + AltCache 解析查找表。
-    Fetch { rpc: Arc<RpcClient>, alt_cache: AltCache },
+    Fetch {
+        rpc: Arc<RpcClient>,
+        alt_cache: AltCache,
+    },
     /// 延迟解析：仅返回查找表地址，由调用方稍后处理。
     Deferred,
 }

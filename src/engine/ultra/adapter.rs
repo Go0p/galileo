@@ -11,10 +11,11 @@ use solana_sdk::pubkey::Pubkey;
 use spl_associated_token_account::get_associated_token_address;
 use spl_token::solana_program::pubkey::Pubkey as SplPubkey;
 use thiserror::Error;
+use tracing::{error, warn};
 
 use crate::api::ultra::OrderResponsePayload;
 use crate::multi_leg::alt_cache::AltCache;
-use crate::multi_leg::transaction::decoder::{decode_base64_transaction, DecodeTxError};
+use crate::multi_leg::transaction::decoder::{DecodeTxError, decode_base64_transaction};
 use crate::multi_leg::transaction::instructions::{
     InstructionBundle, InstructionExtractionError, extract_instructions,
     rewrite_instruction_accounts_map,
@@ -40,32 +41,27 @@ impl UltraAdapter {
             .transaction
             .clone()
             .ok_or(UltraAdapterError::MissingTransaction)?;
-        let versioned_tx = decode_base64_transaction(&transaction_b64)
-            .map_err(UltraAdapterError::Decode)?;
+        let versioned_tx =
+            decode_base64_transaction(&transaction_b64).map_err(UltraAdapterError::Decode)?;
         let lookup_addresses = collect_lookup_addresses(&versioned_tx.message);
 
         let mut resolved_lookup_tables = Vec::new();
         let (bundle, lookup_state) = match extract_instructions(&versioned_tx.message, None) {
             Ok(bundle) => (Some(bundle), UltraLookupState::Resolved),
-            Err(InstructionExtractionError::MissingLookupTables { .. }) => {
-                match lookup_resolver {
-                    UltraLookupResolver::Fetch { rpc, alt_cache } => {
-                        resolved_lookup_tables = fetch_lookup_tables(
-                            &alt_cache,
-                            &rpc,
-                            &lookup_addresses,
-                        )
-                        .await?;
-                        let bundle = extract_instructions(
-                            &versioned_tx.message,
-                            Some(resolved_lookup_tables.as_slice()),
-                        )
-                        .map_err(map_instruction_error)?;
-                        (Some(bundle), UltraLookupState::Resolved)
-                    }
-                    UltraLookupResolver::Deferred => (None, UltraLookupState::Pending),
+            Err(InstructionExtractionError::MissingLookupTables { .. }) => match lookup_resolver {
+                UltraLookupResolver::Fetch { rpc, alt_cache } => {
+                    let (bundle, tables) = resolve_instructions_with_lookup_retry(
+                        &alt_cache,
+                        &rpc,
+                        &versioned_tx.message,
+                        &lookup_addresses,
+                    )
+                    .await?;
+                    resolved_lookup_tables = tables;
+                    (Some(bundle), UltraLookupState::Resolved)
                 }
-            }
+                UltraLookupResolver::Deferred => (None, UltraLookupState::Pending),
+            },
             Err(err) => return Err(map_instruction_error(err)),
         };
 
@@ -95,10 +91,7 @@ impl UltraAdapter {
 
         let account_rewrites = build_account_rewrites(payload, params.taker_hint, expected_signer);
         if !account_rewrites.is_empty() && matches!(lookup_state, UltraLookupState::Resolved) {
-            rewrite_instruction_accounts_map(
-                &mut compute_budget_instructions,
-                &account_rewrites,
-            );
+            rewrite_instruction_accounts_map(&mut compute_budget_instructions, &account_rewrites);
             rewrite_instruction_accounts_map(&mut main_instructions, &account_rewrites);
         }
 
@@ -115,7 +108,6 @@ impl UltraAdapter {
             lookup_state,
         })
     }
-
 }
 
 pub struct UltraPreparationParams<'a> {
@@ -151,7 +143,7 @@ pub enum UltraAdapterError {
     #[error("Ultra 交易解码失败: {0}")]
     Decode(DecodeTxError),
     #[error("Ultra 指令解析失败: {0}")]
-    Instruction(String),
+    Instruction(InstructionExtractionError),
     #[error("拉取地址查找表失败: {0}")]
     LookupFetch(AnyError),
 }
@@ -214,7 +206,54 @@ fn parse_compute_unit_price(ix: &Instruction) -> Option<u64> {
 }
 
 fn map_instruction_error(err: InstructionExtractionError) -> UltraAdapterError {
-    UltraAdapterError::Instruction(err.to_string())
+    UltraAdapterError::Instruction(err)
+}
+
+async fn resolve_instructions_with_lookup_retry(
+    alt_cache: &AltCache,
+    rpc: &Arc<RpcClient>,
+    message: &VersionedMessage,
+    lookup_addresses: &[Pubkey],
+) -> Result<(InstructionBundle, Vec<AddressLookupTableAccount>), UltraAdapterError> {
+    let mut tables = fetch_lookup_tables(alt_cache, rpc, lookup_addresses).await?;
+    match extract_instructions(message, Some(tables.as_slice())) {
+        Ok(bundle) => Ok((bundle, tables)),
+        Err(err @ InstructionExtractionError::LookupIndexOutOfBounds { .. }) => {
+            warn!(
+                target = "engine::ultra",
+                lookup_tables = lookup_addresses.len(),
+                error = %err,
+                "检测到 ALT 缓存过期，触发强制刷新"
+            );
+            tables = refresh_lookup_tables(alt_cache, rpc, lookup_addresses).await?;
+            match extract_instructions(message, Some(tables.as_slice())) {
+                Ok(bundle) => Ok((bundle, tables)),
+                Err(err @ InstructionExtractionError::LookupIndexOutOfBounds { .. }) => {
+                    error!(
+                        target = "engine::ultra",
+                        lookup_tables = lookup_addresses.len(),
+                        error = %err,
+                        "ALT 强制刷新后仍出现索引越界"
+                    );
+                    Err(UltraAdapterError::Instruction(err))
+                }
+                Err(other) => Err(map_instruction_error(other)),
+            }
+        }
+        Err(other) => Err(map_instruction_error(other)),
+    }
+}
+
+async fn refresh_lookup_tables(
+    alt_cache: &AltCache,
+    rpc: &Arc<RpcClient>,
+    lookup_addresses: &[Pubkey],
+) -> Result<Vec<AddressLookupTableAccount>, UltraAdapterError> {
+    alt_cache
+        .refresh_many(rpc, lookup_addresses)
+        .await
+        .map_err(UltraAdapterError::LookupFetch)?;
+    fetch_lookup_tables(alt_cache, rpc, lookup_addresses).await
 }
 
 fn build_account_rewrites(
@@ -222,10 +261,7 @@ fn build_account_rewrites(
     taker_hint: Option<Pubkey>,
     expected_signer: Pubkey,
 ) -> Vec<(Pubkey, Pubkey)> {
-    let response_taker = payload
-        .taker
-        .or(taker_hint)
-        .unwrap_or(expected_signer);
+    let response_taker = payload.taker.or(taker_hint).unwrap_or(expected_signer);
     if response_taker == expected_signer {
         return Vec::new();
     }

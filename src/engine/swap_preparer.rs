@@ -18,7 +18,7 @@ use crate::api::jupiter::{
 use crate::config::{DflowSwapConfig, JupiterSwapConfig};
 use crate::engine::ultra::{
     UltraAdapter, UltraAdapterError, UltraContext, UltraFinalizedSwap, UltraLookupResolver,
-    UltraPreparedSwap, UltraPreparationParams,
+    UltraPreparationParams, UltraPreparedSwap,
 };
 use crate::multi_leg::alt_cache::AltCache;
 use rand::Rng;
@@ -220,34 +220,27 @@ impl SwapPreparer {
                     UltraPreparationParams::new(&legs.forward),
                     UltraContext::new(
                         expected_signer,
-                            UltraLookupResolver::Fetch {
-                                rpc: Arc::clone(&rpc),
-                                alt_cache: alt_cache.clone(),
-                            },
-                        ),
-                    )
-                    .await
-                    .map_err(map_adapter_error)?;
-
-                let reverse = UltraAdapter::prepare(
-                    UltraPreparationParams::new(&legs.reverse),
-                    UltraContext::new(
-                        expected_signer,
                         UltraLookupResolver::Fetch {
-                            rpc,
-                            alt_cache,
+                            rpc: Arc::clone(&rpc),
+                            alt_cache: alt_cache.clone(),
                         },
                     ),
                 )
                 .await
                 .map_err(map_adapter_error)?;
 
-                let finalized = combine_ultra_swaps(
-                    forward,
-                    reverse,
-                    FALLBACK_CU_LIMIT,
-                    override_price,
-                );
+                let reverse = UltraAdapter::prepare(
+                    UltraPreparationParams::new(&legs.reverse),
+                    UltraContext::new(
+                        expected_signer,
+                        UltraLookupResolver::Fetch { rpc, alt_cache },
+                    ),
+                )
+                .await
+                .map_err(map_adapter_error)?;
+
+                let finalized =
+                    combine_ultra_swaps(forward, reverse, FALLBACK_CU_LIMIT, override_price);
 
                 SwapInstructionsVariant::Ultra(finalized)
             }
@@ -287,8 +280,8 @@ fn map_adapter_error(err: UltraAdapterError) -> EngineError {
         UltraAdapterError::Decode(inner) => {
             EngineError::InvalidConfig(format!("Ultra 交易解码失败: {inner}"))
         }
-        UltraAdapterError::Instruction(msg) => {
-            EngineError::InvalidConfig(format!("Ultra 指令解析失败: {msg}"))
+        UltraAdapterError::Instruction(inner) => {
+            EngineError::InvalidConfig(format!("Ultra 指令解析失败: {inner}"))
         }
         UltraAdapterError::LookupFetch(err) => EngineError::Transaction(err),
     }
@@ -320,11 +313,11 @@ fn combine_ultra_swaps(
     }
 
     let mut compute_budget_instructions = Vec::new();
-    compute_budget_instructions
-        .push(ComputeBudgetInstruction::set_compute_unit_limit(combined_limit));
+    compute_budget_instructions.push(ComputeBudgetInstruction::set_compute_unit_limit(
+        combined_limit,
+    ));
     if let Some(price) = effective_price {
-        compute_budget_instructions
-            .push(ComputeBudgetInstruction::set_compute_unit_price(price));
+        compute_budget_instructions.push(ComputeBudgetInstruction::set_compute_unit_price(price));
     }
     compute_budget_instructions.extend(forward.compute_budget_instructions.clone());
     compute_budget_instructions.extend(reverse.compute_budget_instructions.clone());

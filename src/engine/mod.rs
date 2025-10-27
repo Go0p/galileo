@@ -9,8 +9,8 @@ mod profit;
 mod quote;
 mod scheduler;
 mod swap_preparer;
-pub mod ultra;
 mod types;
+pub mod ultra;
 
 pub use aggregator::SwapInstructionsVariant;
 pub use builder::{BuilderConfig, TransactionBuilder};
@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::pubkey::Pubkey;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::api::dflow::DflowError;
 use crate::api::jupiter::SwapInstructionsResponse;
@@ -1260,6 +1260,19 @@ where
                         "DFlow 指令失败，跳过当前机会"
                     );
                     return Ok(());
+                }
+                if let EngineError::InvalidConfig(message) = &err {
+                    if message.starts_with("Ultra 指令解析失败") {
+                        error!(
+                            target: "engine::swap",
+                            input_mint = %opportunity.pair.input_mint,
+                            output_mint = %opportunity.pair.output_mint,
+                            amount_in = opportunity.amount_in,
+                            error = %message,
+                            "Ultra 指令解析失败，跳过当前机会"
+                        );
+                        return Ok(());
+                    }
                 }
                 return Err(err);
             }

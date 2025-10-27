@@ -51,13 +51,35 @@ impl AltCache {
             return Ok(result);
         }
 
-        let batched = rpc.get_multiple_accounts(&missing).await?;
-        for (address, account) in missing.into_iter().zip(batched.into_iter()) {
+        if !missing.is_empty() {
+            let fetched = self.refresh_many(rpc, &missing).await?;
+            result.extend(fetched);
+        }
+
+        Ok(result)
+    }
+
+    /// 强制从 RPC 刷新一批 ALT，并替换缓存中的旧数据。
+    pub async fn refresh_many(
+        &self,
+        rpc: &Arc<RpcClient>,
+        keys: &[Pubkey],
+    ) -> anyhow::Result<Vec<AddressLookupTableAccount>> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let batched = rpc.get_multiple_accounts(keys).await?;
+        let mut fetched = Vec::new();
+        let mut removals = Vec::new();
+
+        for (address, account) in keys.iter().zip(batched.into_iter()) {
             match account {
                 Some(account) => {
-                    if let Some(table) = deserialize_lookup_table(&address, account) {
-                        self.insert(table.clone()).await;
-                        result.push(table);
+                    if let Some(table) = deserialize_lookup_table(address, account) {
+                        fetched.push(table);
+                    } else {
+                        removals.push(*address);
                     }
                 }
                 None => {
@@ -66,11 +88,22 @@ impl AltCache {
                         address = %address,
                         "ALT 账户不存在"
                     );
+                    removals.push(*address);
                 }
             }
         }
 
-        Ok(result)
+        if !fetched.is_empty() || !removals.is_empty() {
+            let mut guard = self.inner.write().await;
+            for table in &fetched {
+                guard.insert(table.key, table.clone());
+            }
+            for address in &removals {
+                guard.remove(address);
+            }
+        }
+
+        Ok(fetched)
     }
 }
 
