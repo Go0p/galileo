@@ -6,11 +6,15 @@ use serde::de::{Error as DeError, Visitor};
 use serde::{Deserialize, Deserializer};
 use solana_sdk::hash::Hash;
 use solana_sdk::instruction::Instruction;
-use solana_sdk::message::AddressLookupTableAccount;
+use solana_sdk::message::compiled_instruction::CompiledInstruction;
+use solana_sdk::message::{AddressLookupTableAccount, VersionedMessage};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
+use solana_sdk::signer::Signer;
 use solana_sdk::transaction::VersionedTransaction;
+use tracing::warn;
 
+use super::COMPUTE_BUDGET_PROGRAM_ID;
 use super::builder::PreparedTransaction;
 
 pub type VariantId = u32;
@@ -262,15 +266,29 @@ impl TxVariantPlanner {
             let needed = count.max(1);
             let mut variants = Vec::with_capacity(needed);
             for _ in 0..needed {
+                let mut variant_tx = prepared.transaction.clone();
+                let mut variant_instructions = prepared.instructions.clone();
+
+                if matches!(strategy, DispatchStrategy::OneByOne) {
+                    let bump = next_id.saturating_add(1) as u32;
+                    apply_variation(
+                        &mut variant_tx,
+                        &mut variant_instructions,
+                        &prepared.signer,
+                        bump,
+                        prepared.blockhash,
+                    );
+                }
+
                 let variant = TxVariant::new(
                     next_id,
-                    prepared.transaction.clone(),
+                    variant_tx,
                     prepared.blockhash,
                     prepared.slot,
                     prepared.last_valid_block_height,
                     prepared.signer.clone(),
                     prepared.tip_lamports,
-                    prepared.instructions.clone(),
+                    variant_instructions,
                     prepared.lookup_accounts.clone(),
                 );
                 variants.push(variant);
@@ -281,6 +299,91 @@ impl TxVariantPlanner {
 
         DispatchPlan::new(strategy, lander_variants)
     }
+}
+
+fn apply_variation(
+    tx: &mut VersionedTransaction,
+    instructions: &mut [Instruction],
+    signer: &Arc<Keypair>,
+    bump: u32,
+    blockhash: Hash,
+) -> bool {
+    if bump == 0 {
+        return false;
+    }
+
+    let Some(index) = adjust_instruction_list(instructions, bump) else {
+        return false;
+    };
+
+    match &mut tx.message {
+        VersionedMessage::Legacy(message) => {
+            adjust_compiled_at(&mut message.instructions, index, bump);
+        }
+        VersionedMessage::V0(message) => {
+            adjust_compiled_at(&mut message.instructions, index, bump);
+        }
+    }
+
+    if let Err(err) = resign_variant(tx, signer, blockhash) {
+        warn!(
+            target: "engine::planner",
+            error = %err,
+            "重新签名 one_by_one 变体失败"
+        );
+    }
+
+    true
+}
+
+fn adjust_instruction_list(instructions: &mut [Instruction], bump: u32) -> Option<usize> {
+    for (idx, instruction) in instructions.iter_mut().enumerate() {
+        if instruction.program_id != COMPUTE_BUDGET_PROGRAM_ID {
+            continue;
+        }
+        if adjust_budget_payload(instruction.data.as_mut_slice(), bump) {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn adjust_compiled_at(instructions: &mut [CompiledInstruction], idx: usize, bump: u32) -> bool {
+    if let Some(instruction) = instructions.get_mut(idx) {
+        adjust_budget_payload(instruction.data.as_mut_slice(), bump)
+    } else {
+        false
+    }
+}
+
+fn adjust_budget_payload(data: &mut [u8], bump: u32) -> bool {
+    if data.first() != Some(&2) {
+        return false;
+    }
+    if data.len() < 5 {
+        return false;
+    }
+    let mut buf = [0u8; 4];
+    buf.copy_from_slice(&data[1..5]);
+    let current = u32::from_le_bytes(buf);
+    let updated = current.saturating_add(bump.max(1));
+    data[1..5].copy_from_slice(&updated.to_le_bytes());
+    true
+}
+
+fn resign_variant(
+    tx: &mut VersionedTransaction,
+    signer: &Arc<Keypair>,
+    blockhash: Hash,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let signer_ref: &dyn Signer = signer.as_ref();
+    let resigned = VersionedTransaction::try_new(tx.message.clone(), &[signer_ref])?;
+    // ensure blockhash matches expected value; VersionedMessage already carries it.
+    if *resigned.message.recent_blockhash() != blockhash {
+        return Err("blockhash mismatch after resign".into());
+    }
+    *tx = resigned;
+    Ok(())
 }
 
 #[cfg(test)]
