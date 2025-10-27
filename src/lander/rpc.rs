@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -41,6 +42,7 @@ impl RpcLander {
         &self,
         variant: TxVariant,
         deadline: Deadline,
+        local_ip: Option<IpAddr>,
     ) -> Result<LanderReceipt, LanderError> {
         if deadline.expired() {
             return Err(LanderError::fatal("deadline expired before rpc submission"));
@@ -51,6 +53,7 @@ impl RpcLander {
             variant.transaction(),
             variant.slot(),
             &variant.blockhash().to_string(),
+            local_ip,
         )
         .await
     }
@@ -61,6 +64,7 @@ impl RpcLander {
         tx: &VersionedTransaction,
         slot: u64,
         blockhash: &str,
+        local_ip: Option<IpAddr>,
     ) -> Result<LanderReceipt, LanderError> {
         let signature = self
             .client
@@ -84,6 +88,7 @@ impl RpcLander {
             blockhash: blockhash.to_string(),
             signature: Some(signature.to_string()),
             variant_id,
+            local_ip,
         })
     }
 }

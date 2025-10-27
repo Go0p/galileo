@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +15,7 @@ use crate::cli::context::{
     resolve_global_http_proxy, resolve_instruction_memo, resolve_rpc_client,
 };
 use crate::config;
-use crate::config::{AppConfig, IntermediumConfig, LegRole};
+use crate::config::{AppConfig, IntermediumConfig, LegRole, QuoteParallelism};
 use crate::engine::{
     AccountPrechecker, BuilderConfig, ComputeUnitPriceMode, EngineError, EngineIdentity,
     EngineResult, EngineSettings, FALLBACK_CU_LIMIT, MultiLegEngineContext, ProfitConfig,
@@ -36,11 +37,18 @@ use crate::multi_leg::{
     runtime::{MultiLegRuntime, MultiLegRuntimeConfig},
     types::{AggregatorKind as MultiLegAggregatorKind, LegSide},
 };
+use crate::network::{
+    CooldownConfig, IpAllocator, IpBoundClientPool, IpInventory, IpInventoryConfig, NetworkError,
+    ReqwestClientFactoryFn, RpcClientFactoryFn,
+};
 use crate::pure_blind::market_cache::init_market_cache;
 use crate::strategy::{
     BlindStrategy, PureBlindRouteBuilder, PureBlindStrategy, Strategy, StrategyEvent,
 };
 use rand::Rng as _;
+use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_client::rpc_client::RpcClientConfig;
+use solana_rpc_client::http_sender::HttpSender;
 use solana_sdk::pubkey::Pubkey;
 use url::Url;
 
@@ -135,11 +143,14 @@ async fn run_blind_engine(
     let mut identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
 
+    let ip_allocator = build_ip_allocator(&config.galileo.bot.network)?;
+
     let multi_leg_runtime = if multi_leg_mode {
         let runtime = Arc::new(build_multi_leg_runtime(
             config,
             &identity,
             rpc_client.clone(),
+            Arc::clone(&ip_allocator),
         )?);
         log_multi_leg_init(runtime.as_ref(), dry_run);
         Some(runtime)
@@ -194,15 +205,24 @@ async fn run_blind_engine(
                 config.galileo.global.yellowstone_grpc_token.clone(),
                 config.galileo.bot.get_block_hash_by_grpc,
             );
+    let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+    let rpc_client_pool = build_rpc_client_pool(rpc_client.url().to_string(), global_proxy.clone());
     let mut submission_builder = reqwest::Client::builder();
-    if let Some(proxy_url) = resolve_global_http_proxy(&config.galileo.global) {
-        let proxy = reqwest::Proxy::all(&proxy_url)
+    if let Some(proxy_url) = global_proxy.as_ref() {
+        let proxy = reqwest::Proxy::all(proxy_url.as_str())
             .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
         submission_builder = submission_builder
             .proxy(proxy)
             .danger_accept_invalid_certs(true);
     }
     let submission_client = submission_builder.build()?;
+    let submission_client_pool = build_http_client_pool(None, global_proxy.clone(), false, None);
+    let tx_builder = TransactionBuilder::new(
+        rpc_client.clone(),
+        builder_config,
+        Arc::clone(&ip_allocator),
+        Some(rpc_client_pool),
+    );
 
     let marginfi_cfg = &config.galileo.flashloan.marginfi;
     let marginfi_accounts = parse_marginfi_accounts(marginfi_cfg)?;
@@ -262,7 +282,11 @@ async fn run_blind_engine(
     }
     let flashloan = flashloan_manager.try_into_enabled();
 
-    let lander_factory = LanderFactory::new(rpc_client.clone(), submission_client.clone());
+    let lander_factory = LanderFactory::new(
+        rpc_client.clone(),
+        submission_client.clone(),
+        Some(Arc::clone(&submission_client_pool)),
+    );
     let default_landers = ["rpc"];
 
     let lander_stack = Arc::new(
@@ -272,11 +296,17 @@ async fn run_blind_engine(
                 &blind_config.enable_landers,
                 &default_landers,
                 0,
+                Arc::clone(&ip_allocator),
             )
             .map_err(|err| anyhow!(err))?,
     );
 
+    let (quote_parallelism, quote_batch_interval) =
+        resolve_quote_dispatch_config(&config.galileo.engine, backend);
+
     let engine_settings = EngineSettings::new(quote_config)
+        .with_quote_parallelism(quote_parallelism)
+        .with_quote_batch_interval(quote_batch_interval)
         .with_dispatch_strategy(config.lander.lander.sending_strategy)
         .with_landing_timeout(landing_timeout)
         .with_dry_run(dry_run)
@@ -287,10 +317,11 @@ async fn run_blind_engine(
         BlindStrategy::new(),
         lander_stack.clone(),
         identity,
+        ip_allocator,
         quote_executor,
         ProfitEvaluator::new(profit_config),
         swap_preparer,
-        TransactionBuilder::new(rpc_client.clone(), builder_config),
+        tx_builder,
         Scheduler::new(),
         flashloan,
         engine_settings,
@@ -321,6 +352,7 @@ fn build_multi_leg_runtime(
     config: &AppConfig,
     identity: &EngineIdentity,
     rpc_client: Arc<solana_client::nonblocking::rpc_client::RpcClient>,
+    ip_allocator: Arc<IpAllocator>,
 ) -> Result<MultiLegRuntime> {
     let mut orchestrator = MultiLegOrchestrator::new();
 
@@ -337,10 +369,12 @@ fn build_multi_leg_runtime(
 
     let alt_cache = AltCache::new();
     let runtime_cfg = MultiLegRuntimeConfig::default();
+
     Ok(MultiLegRuntime::with_config(
         orchestrator,
         alt_cache,
         rpc_client,
+        ip_allocator,
         runtime_cfg,
     ))
 }
@@ -397,16 +431,31 @@ fn register_ultra_leg(
         return Err(anyhow!("ultra.api_quote_base 不能为空"));
     }
 
-    let http_client = build_http_client(
-        ultra_cfg.api_proxy.as_deref(),
-        resolve_global_http_proxy(&config.galileo.global),
-    )?;
+    let proxy_override = ultra_cfg
+        .api_proxy
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let global_proxy = resolve_global_http_proxy(&config.galileo.global)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
 
-    let ultra_client = UltraApiClient::new(
+    let http_client = build_http_client_with_options(
+        proxy_override.as_deref(),
+        global_proxy.clone(),
+        false,
+        None,
+        None,
+    )?;
+    let http_pool =
+        build_http_client_pool(proxy_override.clone(), global_proxy.clone(), false, None);
+
+    let ultra_client = UltraApiClient::with_ip_pool(
         http_client,
         api_base,
         &config.galileo.bot,
         &config.galileo.global.logging,
+        Some(http_pool),
     );
     let request_taker_override = ultra_cfg
         .quote_config
@@ -462,10 +511,23 @@ fn register_dflow_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
         .trim()
         .to_string();
 
-    let http_client = build_http_client(
-        dflow_cfg.api_proxy.as_deref(),
-        resolve_global_http_proxy(&config.galileo.global),
+    let proxy_override = dflow_cfg
+        .api_proxy
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let global_proxy = resolve_global_http_proxy(&config.galileo.global)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let http_client = build_http_client_with_options(
+        proxy_override.as_deref(),
+        global_proxy.clone(),
+        false,
+        None,
+        None,
     )?;
+    let http_pool =
+        build_http_client_pool(proxy_override.clone(), global_proxy.clone(), false, None);
 
     let max_failures = if dflow_cfg.max_consecutive_failures == 0 {
         None
@@ -474,7 +536,7 @@ fn register_dflow_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
     };
     let wait_on_429 = Duration::from_millis(dflow_cfg.wait_on_429_ms);
 
-    let dflow_client = DflowApiClient::new(
+    let dflow_client = DflowApiClient::with_ip_pool(
         http_client,
         quote_base,
         swap_base,
@@ -482,6 +544,7 @@ fn register_dflow_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
         &config.galileo.global.logging,
         max_failures,
         wait_on_429,
+        Some(http_pool),
     );
 
     let provider = DflowLegProvider::new(
@@ -552,12 +615,26 @@ fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
     Ok(())
 }
 
-pub(crate) fn build_http_client(
+pub(crate) fn build_http_client_with_options(
     proxy: Option<&str>,
     global_proxy: Option<String>,
+    no_proxy: bool,
+    local_ip: Option<IpAddr>,
+    user_agent: Option<&str>,
 ) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder();
-    if let Some(proxy_url) = proxy.and_then(|value| {
+
+    if let Some(agent) = user_agent {
+        builder = builder.user_agent(agent);
+    }
+
+    if let Some(ip) = local_ip {
+        builder = builder.local_address(ip);
+    }
+
+    if no_proxy {
+        builder = builder.no_proxy();
+    } else if let Some(proxy_url) = proxy.and_then(|value| {
         let trimmed = value.trim();
         if trimmed.is_empty() {
             None
@@ -580,6 +657,108 @@ pub(crate) fn build_http_client(
     builder
         .build()
         .map_err(|err| anyhow!("构建 HTTP 客户端失败: {err}"))
+}
+
+#[allow(dead_code)]
+pub(crate) fn build_http_client(
+    proxy: Option<&str>,
+    global_proxy: Option<String>,
+) -> Result<reqwest::Client> {
+    build_http_client_with_options(proxy, global_proxy, false, None, None)
+}
+
+pub(crate) fn build_http_client_pool(
+    proxy: Option<String>,
+    global_proxy: Option<String>,
+    no_proxy: bool,
+    user_agent: Option<String>,
+) -> Arc<IpBoundClientPool<ReqwestClientFactoryFn>> {
+    let proxy_clone = proxy.clone();
+    let global_clone = global_proxy.clone();
+    let agent_clone = user_agent.clone();
+    let factory: ReqwestClientFactoryFn = Box::new(move |ip: IpAddr| {
+        build_http_client_with_options(
+            proxy_clone.as_deref(),
+            global_clone.clone(),
+            no_proxy,
+            Some(ip),
+            agent_clone.as_deref(),
+        )
+        .map_err(|err| NetworkError::ClientPool(err.to_string()))
+    });
+    Arc::new(IpBoundClientPool::new(factory))
+}
+
+pub(crate) fn build_rpc_client_pool(
+    rpc_url: String,
+    global_proxy: Option<String>,
+) -> Arc<IpBoundClientPool<RpcClientFactoryFn>> {
+    let proxy = global_proxy;
+    let factory: RpcClientFactoryFn = Box::new(move |ip: IpAddr| {
+        let mut builder = reqwest::Client::builder()
+            .default_headers(HttpSender::default_headers())
+            .timeout(Duration::from_secs(30))
+            .pool_idle_timeout(Duration::from_secs(30))
+            .local_address(ip);
+
+        if let Some(proxy_url) = proxy.clone() {
+            let trimmed = proxy_url.trim().to_string();
+            if trimmed.is_empty() {
+                builder = builder.no_proxy();
+            } else {
+                let proxy = reqwest::Proxy::all(trimmed.as_str()).map_err(|err| {
+                    NetworkError::ClientPool(format!("global.proxy 地址无效 {trimmed}: {err}"))
+                })?;
+                builder = builder.proxy(proxy).danger_accept_invalid_certs(true);
+            }
+        } else {
+            builder = builder.no_proxy();
+        }
+
+        let client = builder.build().map_err(|err| {
+            NetworkError::ClientPool(format!("构建绑定 IP 的 RPC 客户端失败: {err}"))
+        })?;
+        let sender = HttpSender::new_with_client(rpc_url.clone(), client);
+        let rpc = RpcClient::new_sender(
+            sender,
+            RpcClientConfig::with_commitment(solana_commitment_config::CommitmentConfig::default()),
+        );
+        Ok(Arc::new(rpc))
+    });
+
+    Arc::new(IpBoundClientPool::new(factory))
+}
+
+fn resolve_quote_dispatch_config(
+    engine: &config::EngineConfig,
+    backend: &StrategyBackend<'_>,
+) -> (Option<u16>, Duration) {
+    match backend {
+        StrategyBackend::Jupiter { .. } => (
+            parallelism_override(engine.jupiter.quote_config.parallelism),
+            batch_interval_duration(engine.jupiter.quote_config.batch_interval_ms),
+        ),
+        StrategyBackend::Dflow { .. } => (
+            parallelism_override(engine.dflow.quote_config.parallelism),
+            batch_interval_duration(engine.dflow.quote_config.batch_interval_ms),
+        ),
+        StrategyBackend::Ultra { .. } => (
+            parallelism_override(engine.ultra.quote_config.parallelism),
+            batch_interval_duration(engine.ultra.quote_config.batch_interval_ms),
+        ),
+        StrategyBackend::None => (parallelism_override(QuoteParallelism::Auto), Duration::ZERO),
+    }
+}
+
+fn parallelism_override(value: QuoteParallelism) -> Option<u16> {
+    match value {
+        QuoteParallelism::Auto => None,
+        QuoteParallelism::Fixed(limit) => Some(limit.max(1)),
+    }
+}
+
+fn batch_interval_duration(value: Option<u64>) -> Duration {
+    value.map(Duration::from_millis).unwrap_or(Duration::ZERO)
 }
 
 async fn run_pure_blind_engine(
@@ -614,6 +793,7 @@ async fn run_pure_blind_engine(
     let profit_config = build_pure_profit_config(&config.lander.lander, &compute_unit_price_mode);
     let quote_config = build_pure_quote_config();
     let landing_timeout = resolve_landing_timeout(&config.galileo.bot);
+    let ip_allocator = build_ip_allocator(&config.galileo.bot.network)?;
 
     let builder_config =
         BuilderConfig::new(resolve_instruction_memo(&config.galileo.global.instruction))
@@ -622,15 +802,24 @@ async fn run_pure_blind_engine(
                 config.galileo.global.yellowstone_grpc_token.clone(),
                 config.galileo.bot.get_block_hash_by_grpc,
             );
+    let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+    let rpc_client_pool = build_rpc_client_pool(rpc_client.url().to_string(), global_proxy.clone());
     let mut submission_builder = reqwest::Client::builder();
-    if let Some(proxy_url) = resolve_global_http_proxy(&config.galileo.global) {
-        let proxy = reqwest::Proxy::all(&proxy_url)
+    if let Some(proxy_url) = global_proxy.as_ref() {
+        let proxy = reqwest::Proxy::all(proxy_url.as_str())
             .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
         submission_builder = submission_builder
             .proxy(proxy)
             .danger_accept_invalid_certs(true);
     }
     let submission_client = submission_builder.build()?;
+    let submission_client_pool = build_http_client_pool(None, global_proxy.clone(), false, None);
+    let tx_builder = TransactionBuilder::new(
+        rpc_client.clone(),
+        builder_config,
+        Arc::clone(&ip_allocator),
+        Some(rpc_client_pool),
+    );
 
     let market_cache_handle = init_market_cache(
         &pure_config.market_cache,
@@ -707,7 +896,11 @@ async fn run_pure_blind_engine(
     }
     let flashloan = flashloan_manager.try_into_enabled();
 
-    let lander_factory = LanderFactory::new(rpc_client.clone(), submission_client.clone());
+    let lander_factory = LanderFactory::new(
+        rpc_client.clone(),
+        submission_client.clone(),
+        Some(Arc::clone(&submission_client_pool)),
+    );
     let default_landers = ["rpc"];
 
     let lander_stack = Arc::new(
@@ -717,11 +910,17 @@ async fn run_pure_blind_engine(
                 &pure_config.enable_landers,
                 &default_landers,
                 0,
+                Arc::clone(&ip_allocator),
             )
             .map_err(|err| anyhow!(err))?,
     );
 
+    let (quote_parallelism, quote_batch_interval) =
+        resolve_quote_dispatch_config(&config.galileo.engine, backend);
+
     let engine_settings = EngineSettings::new(quote_config)
+        .with_quote_parallelism(quote_parallelism)
+        .with_quote_batch_interval(quote_batch_interval)
         .with_dispatch_strategy(config.lander.lander.sending_strategy)
         .with_landing_timeout(landing_timeout)
         .with_dry_run(dry_run)
@@ -737,10 +936,11 @@ async fn run_pure_blind_engine(
         PureBlindStrategy::new(routes).map_err(|err| anyhow!(err))?,
         lander_stack.clone(),
         identity,
+        ip_allocator,
         quote_executor,
         ProfitEvaluator::new(profit_config),
         swap_preparer,
-        TransactionBuilder::new(rpc_client.clone(), builder_config),
+        tx_builder,
         Scheduler::new(),
         flashloan,
         engine_settings,
@@ -1331,6 +1531,47 @@ fn generate_amounts(min: u64, max: u64, count: u32, strategy: &str) -> Vec<u64> 
                 .collect()
         }
     }
+}
+
+pub(crate) fn build_ip_allocator(cfg: &config::NetworkConfig) -> Result<Arc<IpAllocator>> {
+    let inventory_cfg = IpInventoryConfig {
+        enable_multiple_ip: cfg.enable_multiple_ip,
+        manual_ips: cfg.manual_ips.clone(),
+        blacklist: cfg.blacklist_ips.clone(),
+        allow_loopback: cfg.allow_loopback,
+    };
+
+    let inventory =
+        IpInventory::new(inventory_cfg).map_err(|err| anyhow!("初始化本地 IP 资源失败: {err}"))?;
+
+    let cooldown = CooldownConfig {
+        rate_limited_start: Duration::from_millis(cfg.cooldown_ms.rate_limited_start.max(1)),
+        timeout_start: Duration::from_millis(cfg.cooldown_ms.timeout_start.max(1)),
+    };
+
+    let allocator = IpAllocator::from_inventory(
+        inventory,
+        cfg.per_ip_inflight_limit.map(|limit| limit as usize),
+        cooldown,
+    );
+
+    let summary = allocator.summary();
+    let ips: Vec<String> = allocator
+        .slot_ips()
+        .into_iter()
+        .map(|ip| ip.to_string())
+        .collect();
+
+    info!(
+        target: "network::allocator",
+        total_slots = summary.total_slots,
+        per_ip_limit = ?summary.per_ip_inflight_limit,
+        source = ?summary.source,
+        ips = ?ips,
+        "IP 资源池已初始化"
+    );
+
+    Ok(Arc::new(allocator))
 }
 
 fn resolve_landing_timeout(bot: &config::BotConfig) -> Duration {

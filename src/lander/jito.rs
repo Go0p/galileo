@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,6 +34,7 @@ use url::Url;
 
 use crate::config::{LanderJitoConfig, LanderJitoUuidConfig, TipStrategyKind, TipStreamLevel};
 use crate::engine::{TxVariant, VariantId};
+use crate::network::{IpBoundClientPool, ReqwestClientFactoryFn};
 
 use super::error::LanderError;
 use super::stack::{Deadline, LanderReceipt};
@@ -65,10 +67,20 @@ pub struct JitoLander {
     client: Client,
     tip_selector: TipSelector,
     uuid_pool: Option<Arc<Mutex<UuidPool>>>,
+    client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
 }
 
 impl JitoLander {
+    #[allow(dead_code)]
     pub fn new(config: &LanderJitoConfig, client: Client) -> Self {
+        Self::with_ip_pool(config, client, None)
+    }
+
+    pub fn with_ip_pool(
+        config: &LanderJitoConfig,
+        client: Client,
+        client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
+    ) -> Self {
         let endpoints = config
             .endpoints
             .iter()
@@ -84,6 +96,7 @@ impl JitoLander {
             client,
             tip_selector,
             uuid_pool,
+            client_pool,
         }
     }
 
@@ -95,11 +108,23 @@ impl JitoLander {
         self.endpoints.clone()
     }
 
+    fn http_client(&self, local_ip: Option<IpAddr>) -> Result<Client, LanderError> {
+        if let Some(ip) = local_ip {
+            if let Some(pool) = &self.client_pool {
+                return pool
+                    .get_or_create(ip)
+                    .map_err(|err| LanderError::fatal(format!("构建绑定 IP 的客户端失败: {err}")));
+            }
+        }
+        Ok(self.client.clone())
+    }
+
     pub async fn submit_variant(
         &self,
         variant: TxVariant,
         deadline: Deadline,
         endpoint: Option<&str>,
+        local_ip: Option<IpAddr>,
     ) -> Result<LanderReceipt, LanderError> {
         if deadline.expired() {
             return Err(LanderError::fatal(
@@ -249,6 +274,7 @@ impl JitoLander {
         let slot = variant.slot();
         let blockhash = variant.blockhash().to_string();
         let variant_id = variant.id();
+        let client = self.http_client(local_ip)?;
 
         let mut futures = FuturesUnordered::new();
         for (endpoint_url, ticket, options_value) in requests {
@@ -270,7 +296,7 @@ impl JitoLander {
                 "params": params,
             });
 
-            let client = self.client.clone();
+            let client = client.clone();
             futures.push(async move {
                 let response = client
                     .post(endpoint_url.clone())
@@ -343,6 +369,7 @@ impl JitoLander {
                 blockhash: blockhash.clone(),
                 signature: bundle_id,
                 variant_id,
+                local_ip,
             });
         }
 

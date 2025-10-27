@@ -239,10 +239,11 @@ lander:
   - `galileo_quote_total{strategy, result}`
   - `galileo_quote_latency_ms_bucket`
   - `galileo_opportunity_detected_total{strategy}`
-  - `galileo_swap_compute_unit_limit_bucket{strategy}`
-  - `galileo_transaction_built_total{strategy}`
-  - `galileo_lander_attempt_total{strategy, lander, dispatch, variant}`
-  - `galileo_lander_success_total{strategy, lander, dispatch, variant}`、`galileo_lander_failure_total{strategy, lander, dispatch, variant}`
+  - `galileo_swap_compute_unit_limit_bucket{strategy,local_ip}`
+  - `galileo_transaction_built_total{strategy,local_ip}`
+  - `galileo_lander_attempt_total{strategy, lander, dispatch, variant, local_ip}`
+  - `galileo_lander_success_total{strategy, lander, dispatch, variant, local_ip}`、`galileo_lander_failure_total{strategy, lander, dispatch, variant, local_ip}`
+  - `galileo_lander_submission_total{strategy, lander, dispatch, variant, result, local_ip}`
   - `galileo_accounts_precheck_total{strategy}`
   - `galileo_accounts_precheck_mints_bucket{strategy}`
   - `galileo_accounts_precheck_created_bucket{strategy}`
@@ -255,7 +256,7 @@ lander:
 
 - **抓取与看板**：
   1. 在 Prometheus `scrape_configs` 中新增 job 指向 galileo 监听端口；Jupiter 端口（默认 `18081`）也保持抓取。
-  2. Grafana 可基于上述指标构建“机会发现/成功率、Quote 延迟、Lander 成功率”等看板。结合 Hotpath 报告可快速定位瓶颈。
+  2. Grafana 可基于上述指标构建“机会发现/成功率、Quote 延迟、Lander 成功率”等看板，尤其推荐按 `local_ip` 维度拆分 `galileo_lander_submission_total`、`galileo_swap_compute_unit_limit_bucket` 观察退避效果。结合 Hotpath 报告可快速定位瓶颈。
 
 - **性能注意事项**：仅在配置中启用 Prometheus 时才会初始化 exporter 并真正上报指标；默认关闭时，`metrics` 调用会落入空实现，不影响主套利流程。
 

@@ -18,6 +18,10 @@ use crate::multi_leg::transaction::instructions::{
 use crate::multi_leg::types::{
     AggregatorKind, LegBuildContext, LegDescriptor, LegPlan, LegSide, QuoteIntent, SignerRewrite,
 };
+use crate::multi_leg::types::{
+    AggregatorKind as MultiLegAggregatorKind, LegSide as MultiLegLegSide,
+};
+use crate::network::{IpAllocator, IpLeaseHandle, IpLeaseMode, IpTaskKind};
 
 /// 运行时容器：封装 orchestrator、ALT 缓存与 RPC，提供高层计划接口。
 pub struct MultiLegRuntime {
@@ -25,6 +29,7 @@ pub struct MultiLegRuntime {
     alt_cache: AltCache,
     rpc: Arc<RpcClient>,
     concurrency: ConcurrencyPolicy,
+    ip_allocator: Arc<IpAllocator>,
 }
 
 /// 运行时行为调优项。
@@ -50,11 +55,13 @@ impl MultiLegRuntime {
         orchestrator: MultiLegOrchestrator,
         alt_cache: AltCache,
         rpc: Arc<RpcClient>,
+        ip_allocator: Arc<IpAllocator>,
     ) -> Self {
         Self::with_config(
             orchestrator,
             alt_cache,
             rpc,
+            ip_allocator,
             MultiLegRuntimeConfig::default(),
         )
     }
@@ -63,6 +70,7 @@ impl MultiLegRuntime {
         orchestrator: MultiLegOrchestrator,
         alt_cache: AltCache,
         rpc: Arc<RpcClient>,
+        ip_allocator: Arc<IpAllocator>,
         config: MultiLegRuntimeConfig,
     ) -> Self {
         Self {
@@ -70,6 +78,7 @@ impl MultiLegRuntime {
             alt_cache,
             rpc,
             concurrency: ConcurrencyPolicy::new(config),
+            ip_allocator,
         }
     }
 
@@ -178,10 +187,13 @@ impl MultiLegRuntime {
             .cloned()
             .ok_or_else(|| anyhow!("卖腿索引 {sell_index} 超出范围"))?;
 
+        let buy_handle = self.acquire_leg_handle(&buy_descriptor).await?;
+        let sell_handle = self.acquire_leg_handle(&sell_descriptor).await?;
+
         let _buy_guard = self.concurrency.acquire(&buy_descriptor).await;
         let _sell_guard = self.concurrency.acquire(&sell_descriptor).await;
 
-        let plan = self
+        let result = self
             .orchestrator
             .plan_pair(
                 buy_index,
@@ -190,10 +202,33 @@ impl MultiLegRuntime {
                 sell_intent,
                 buy_context,
                 sell_context,
+                Some(&buy_handle),
+                Some(&sell_handle),
             )
-            .await?;
+            .await;
 
-        Ok(plan)
+        drop(buy_handle);
+        drop(sell_handle);
+
+        result
+    }
+
+    async fn acquire_leg_handle(&self, descriptor: &LegDescriptor) -> Result<IpLeaseHandle> {
+        let task_kind = to_ip_task_kind(descriptor);
+        let lease = self
+            .ip_allocator
+            .acquire(task_kind, IpLeaseMode::Ephemeral)
+            .await
+            .map_err(|err| {
+                anyhow!(
+                    "获取 {:?} {:?} IP 资源失败: {err}",
+                    descriptor.kind,
+                    descriptor.side
+                )
+            })?;
+        let handle = lease.handle();
+        drop(lease);
+        Ok(handle)
     }
 
     pub async fn populate_pair_plan(&self, plan: &mut LegPairPlan) -> Result<()> {
@@ -531,4 +566,18 @@ fn calculate_profit(plan: &LegPairPlan) -> i128 {
     let fees = plan.buy.prioritization_fee_lamports.unwrap_or(0) as i128
         + plan.sell.prioritization_fee_lamports.unwrap_or(0) as i128;
     sell_proceeds - buy_cost - fees
+}
+
+fn to_ip_task_kind(descriptor: &LegDescriptor) -> IpTaskKind {
+    let aggregator = match descriptor.kind {
+        AggregatorKind::Ultra => MultiLegAggregatorKind::Ultra,
+        AggregatorKind::Dflow => MultiLegAggregatorKind::Dflow,
+        AggregatorKind::Titan => MultiLegAggregatorKind::Titan,
+    };
+    let side = match descriptor.side {
+        LegSide::Buy => MultiLegLegSide::Buy,
+        LegSide::Sell => MultiLegLegSide::Sell,
+    };
+
+    IpTaskKind::MultiLegLeg { aggregator, side }
 }

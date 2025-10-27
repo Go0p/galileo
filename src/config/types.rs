@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -115,6 +116,99 @@ impl Default for EngineBackend {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuoteParallelism {
+    Auto,
+    Fixed(u16),
+}
+
+impl Default for QuoteParallelism {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+impl QuoteParallelism {
+    pub fn as_option(self) -> Option<u16> {
+        match self {
+            QuoteParallelism::Auto => None,
+            QuoteParallelism::Fixed(value) => Some(value),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for QuoteParallelism {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct QuoteParallelismVisitor;
+
+        impl<'de> Visitor<'de> for QuoteParallelismVisitor {
+            type Value = QuoteParallelism;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("正整数或字符串 \"auto\"")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                if value.eq_ignore_ascii_case("auto") {
+                    Ok(QuoteParallelism::Auto)
+                } else {
+                    let parsed = value
+                        .parse::<u16>()
+                        .map_err(|_| DeError::invalid_value(Unexpected::Str(value), &self))?;
+                    if parsed == 0 {
+                        Err(DeError::invalid_value(Unexpected::Unsigned(0), &"正整数"))
+                    } else {
+                        Ok(QuoteParallelism::Fixed(parsed))
+                    }
+                }
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                if value == 0 {
+                    return Err(DeError::invalid_value(Unexpected::Unsigned(0), &"正整数"));
+                }
+                if value > u16::MAX as u64 {
+                    return Err(DeError::invalid_value(
+                        Unexpected::Unsigned(value),
+                        &"不大于 u16::MAX 的正整数",
+                    ));
+                }
+                Ok(QuoteParallelism::Fixed(value as u16))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                if value <= 0 {
+                    return Err(DeError::invalid_value(
+                        Unexpected::Signed(value),
+                        &"大于 0 的整数",
+                    ));
+                }
+                if value > u16::MAX as i64 {
+                    return Err(DeError::invalid_value(
+                        Unexpected::Signed(value),
+                        &"不大于 u16::MAX 的正整数",
+                    ));
+                }
+                Ok(QuoteParallelism::Fixed(value as u16))
+            }
+        }
+
+        deserializer.deserialize_any(QuoteParallelismVisitor)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct JupiterEngineConfig {
     #[serde(default)]
@@ -135,6 +229,10 @@ pub struct JupiterQuoteConfig {
     pub only_direct_routes: bool,
     #[serde(default = "super::default_true")]
     pub restrict_intermediate_tokens: bool,
+    #[serde(default)]
+    pub parallelism: QuoteParallelism,
+    #[serde(default)]
+    pub batch_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -199,6 +297,10 @@ pub struct DflowQuoteConfig {
     pub only_direct_routes: bool,
     #[serde(default)]
     pub max_route_length: Option<u8>,
+    #[serde(default)]
+    pub parallelism: QuoteParallelism,
+    #[serde(default)]
+    pub batch_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -249,6 +351,10 @@ pub struct UltraQuoteConfig {
     pub jito_tip_lamports: Option<u64>,
     #[serde(default = "default_priority_fee_lamports")]
     pub priority_fee_lamports: Option<u64>,
+    #[serde(default)]
+    pub parallelism: QuoteParallelism,
+    #[serde(default)]
+    pub batch_interval_ms: Option<u64>,
 }
 
 fn default_priority_fee_lamports() -> Option<u64> {
@@ -290,6 +396,8 @@ impl Default for UltraQuoteConfig {
             broadcast_fee_type: None,
             jito_tip_lamports: None,
             priority_fee_lamports: default_priority_fee_lamports(),
+            parallelism: QuoteParallelism::default(),
+            batch_interval_ms: None,
         }
     }
 }
@@ -389,6 +497,8 @@ pub struct BotConfig {
     pub dry_run: bool,
     #[serde(default)]
     pub prometheus: PrometheusConfig,
+    #[serde(default)]
+    pub network: NetworkConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -401,6 +511,60 @@ pub struct CpuAffinityConfig {
     pub max_blocking_threads: Option<usize>,
     #[serde(default)]
     pub strict: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NetworkConfig {
+    #[serde(default)]
+    pub enable_multiple_ip: bool,
+    #[serde(default)]
+    pub manual_ips: Vec<IpAddr>,
+    #[serde(default)]
+    pub blacklist_ips: Vec<IpAddr>,
+    #[serde(default)]
+    pub allow_loopback: bool,
+    #[serde(default)]
+    pub per_ip_inflight_limit: Option<u32>,
+    #[serde(default)]
+    pub cooldown_ms: NetworkCooldownConfig,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            enable_multiple_ip: false,
+            manual_ips: Vec::new(),
+            blacklist_ips: Vec::new(),
+            allow_loopback: false,
+            per_ip_inflight_limit: None,
+            cooldown_ms: NetworkCooldownConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NetworkCooldownConfig {
+    #[serde(default = "default_rate_limited_cooldown_ms")]
+    pub rate_limited_start: u64,
+    #[serde(default = "default_timeout_cooldown_ms")]
+    pub timeout_start: u64,
+}
+
+impl Default for NetworkCooldownConfig {
+    fn default() -> Self {
+        Self {
+            rate_limited_start: default_rate_limited_cooldown_ms(),
+            timeout_start: default_timeout_cooldown_ms(),
+        }
+    }
+}
+
+fn default_rate_limited_cooldown_ms() -> u64 {
+    500
+}
+
+fn default_timeout_cooldown_ms() -> u64 {
+    250
 }
 
 #[derive(Debug, Clone, Deserialize)]

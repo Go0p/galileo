@@ -1,11 +1,14 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
+use std::sync::Arc;
+
 use tracing::info;
 
 use crate::api::jupiter::SwapInstructionsResponse;
 use crate::cli::args::{LanderCmd, LanderSendArgs};
 use crate::cli::context::{resolve_global_http_proxy, resolve_rpc_client};
+use crate::cli::strategy::{build_http_client_pool, build_ip_allocator, build_rpc_client_pool};
 use crate::config;
 use crate::config::AppConfig;
 use crate::engine::{
@@ -49,18 +52,30 @@ async fn send_transaction(
         config.galileo.global.yellowstone_grpc_token.clone(),
         config.galileo.bot.get_block_hash_by_grpc,
     );
-    let builder = TransactionBuilder::new(rpc_client.clone(), builder_config);
-
+    let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+    let rpc_client_pool = build_rpc_client_pool(rpc_client.url().to_string(), global_proxy.clone());
+    let ip_allocator = build_ip_allocator(&config.galileo.bot.network)?;
+    let builder = TransactionBuilder::new(
+        rpc_client.clone(),
+        builder_config,
+        Arc::clone(&ip_allocator),
+        Some(rpc_client_pool),
+    );
     let mut submission_builder = reqwest::Client::builder();
-    if let Some(proxy_url) = resolve_global_http_proxy(&config.galileo.global) {
-        let proxy = reqwest::Proxy::all(&proxy_url)
+    if let Some(proxy_url) = global_proxy.as_ref() {
+        let proxy = reqwest::Proxy::all(proxy_url.as_str())
             .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
         submission_builder = submission_builder
             .proxy(proxy)
             .danger_accept_invalid_certs(true);
     }
     let submission_client = submission_builder.build()?;
-    let lander_factory = LanderFactory::new(rpc_client.clone(), submission_client);
+    let submission_client_pool = build_http_client_pool(None, global_proxy.clone(), false, None);
+    let lander_factory = LanderFactory::new(
+        rpc_client.clone(),
+        submission_client,
+        Some(Arc::clone(&submission_client_pool)),
+    );
 
     let preferred: Vec<String> = if !args.landers.is_empty() {
         args.landers.clone()
@@ -69,7 +84,13 @@ async fn send_transaction(
     };
     let default_landers = ["rpc"];
     let lander_stack = lander_factory
-        .build_stack(lander_settings, preferred.as_slice(), &default_landers, 0)
+        .build_stack(
+            lander_settings,
+            preferred.as_slice(),
+            &default_landers,
+            0,
+            ip_allocator,
+        )
         .map_err(|err| anyhow!(err))?;
 
     let raw = tokio::fs::read_to_string(&args.instructions).await?;

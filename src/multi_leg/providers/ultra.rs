@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use reqwest::StatusCode;
 use serde_json::Value;
 use solana_sdk::pubkey::Pubkey;
 use thiserror::Error;
@@ -20,6 +21,7 @@ use crate::multi_leg::transaction::instructions::InstructionExtractionError;
 use crate::multi_leg::types::{
     AggregatorKind, LegBuildContext, LegDescriptor, LegPlan, LegQuote, LegSide, QuoteIntent,
 };
+use crate::network::{IpLeaseHandle, IpLeaseOutcome};
 
 /// Ultra API 的腿适配器，负责发起 `/order` 报价并将返回的 base64 交易
 /// 转换为统一的 `LegPlan`。
@@ -209,7 +211,11 @@ impl LegProvider for UltraLegProvider {
         self.descriptor.clone()
     }
 
-    async fn quote(&self, intent: &QuoteIntent) -> Result<Self::QuoteResponse, Self::BuildError> {
+    async fn quote(
+        &self,
+        intent: &QuoteIntent,
+        lease: Option<&IpLeaseHandle>,
+    ) -> Result<Self::QuoteResponse, Self::BuildError> {
         let request = self.build_order_request(intent)?;
         debug!(
             target: "multi_leg::ultra",
@@ -218,16 +224,69 @@ impl LegProvider for UltraLegProvider {
             amount = intent.amount,
             "请求 Ultra /order 报价"
         );
-        Ok(self.client.order(&request).await?)
+        match self
+            .client
+            .order_with_ip(&request, lease.map(|handle| handle.ip()))
+            .await
+        {
+            Ok(response) => Ok(response),
+            Err(err) => {
+                if let Some(handle) = lease {
+                    if let Some(outcome) = classify_ultra_api_error(&err) {
+                        handle.mark_outcome(outcome);
+                    }
+                }
+                Err(UltraLegError::Api(err))
+            }
+        }
     }
 
     async fn build_plan(
         &self,
         quote: &Self::QuoteResponse,
         context: &LegBuildContext,
+        _lease: Option<&IpLeaseHandle>,
     ) -> Result<Self::Plan, Self::BuildError> {
         self.decode_leg_plan(quote, context).await
     }
+}
+
+fn classify_ultra_api_error(err: &UltraError) -> Option<IpLeaseOutcome> {
+    match err {
+        UltraError::Http(inner) => classify_reqwest(inner),
+        UltraError::ApiStatus { status, .. } => map_status(status),
+        UltraError::Json(_) | UltraError::Schema(_) | UltraError::ClientPool(_) => {
+            Some(IpLeaseOutcome::NetworkError)
+        }
+    }
+}
+
+fn classify_reqwest(err: &reqwest::Error) -> Option<IpLeaseOutcome> {
+    if err.is_timeout() {
+        return Some(IpLeaseOutcome::Timeout);
+    }
+    if let Some(status) = err.status() {
+        if let Some(mapped) = map_status(&status) {
+            return Some(mapped);
+        }
+    }
+    if err.is_connect() || err.is_request() {
+        return Some(IpLeaseOutcome::NetworkError);
+    }
+    None
+}
+
+fn map_status(status: &StatusCode) -> Option<IpLeaseOutcome> {
+    if *status == StatusCode::TOO_MANY_REQUESTS {
+        return Some(IpLeaseOutcome::RateLimited);
+    }
+    if *status == StatusCode::REQUEST_TIMEOUT || *status == StatusCode::GATEWAY_TIMEOUT {
+        return Some(IpLeaseOutcome::Timeout);
+    }
+    if status.is_server_error() {
+        return Some(IpLeaseOutcome::NetworkError);
+    }
+    None
 }
 fn extract_u64(value: &Value, key: &str) -> Option<u64> {
     value.get(key).and_then(|entry| match entry {

@@ -6,6 +6,7 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use tracing::warn;
 
 use crate::config::LanderSettings;
+use crate::network::{IpAllocator, IpBoundClientPool, ReqwestClientFactoryFn};
 
 use super::error::LanderError;
 use super::jito::JitoLander;
@@ -17,13 +18,19 @@ use super::staked::StakedLander;
 pub struct LanderFactory {
     rpc_client: Arc<RpcClient>,
     http_client: Client,
+    client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
 }
 
 impl LanderFactory {
-    pub fn new(rpc_client: Arc<RpcClient>, http_client: Client) -> Self {
+    pub fn new(
+        rpc_client: Arc<RpcClient>,
+        http_client: Client,
+        client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
+    ) -> Self {
         Self {
             rpc_client,
             http_client,
+            client_pool,
         }
     }
 
@@ -33,6 +40,7 @@ impl LanderFactory {
         desired: &[String],
         fallback: &[&str],
         max_retries: usize,
+        ip_allocator: Arc<IpAllocator>,
     ) -> Result<LanderStack, LanderError> {
         let mut variants = Vec::new();
         let mut seen = HashSet::new();
@@ -67,7 +75,7 @@ impl LanderFactory {
             ));
         }
 
-        Ok(LanderStack::new(variants, max_retries))
+        Ok(LanderStack::new(variants, max_retries, ip_allocator))
     }
 
     fn instantiate(&self, settings: &LanderSettings, name: &str) -> Option<LanderVariant> {
@@ -86,9 +94,10 @@ impl LanderFactory {
                 if !has_endpoint {
                     None
                 } else {
-                    Some(LanderVariant::Jito(JitoLander::new(
+                    Some(LanderVariant::Jito(JitoLander::with_ip_pool(
                         cfg,
                         self.http_client.clone(),
+                        self.client_pool.clone(),
                     )))
                 }
             }),
@@ -102,12 +111,13 @@ impl LanderFactory {
                 if endpoints.is_empty() {
                     None
                 } else {
-                    Some(LanderVariant::Staked(StakedLander::new(
+                    Some(LanderVariant::Staked(StakedLander::with_ip_pool(
                         endpoints,
                         self.http_client.clone(),
                         settings.skip_preflight,
                         settings.max_retries,
                         settings.min_context_slot,
+                        self.client_pool.clone(),
                     )))
                 }
             }),

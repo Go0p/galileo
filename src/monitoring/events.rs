@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::time::Duration;
 
 use tracing::{info, warn};
@@ -125,7 +126,25 @@ pub fn flashloan_account_precheck(strategy: &str, account: &Pubkey, created: boo
     }
 }
 
-pub fn quote_start(strategy: &str, task: &QuoteTask) {
+fn ip_label(ip: Option<IpAddr>) -> String {
+    ip.map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn batch_label(batch_id: Option<u64>) -> String {
+    batch_id
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+pub fn quote_start(
+    strategy: &str,
+    task: &QuoteTask,
+    batch_id: Option<u64>,
+    local_ip: Option<IpAddr>,
+) {
+    let batch_repr = batch_id.map(|value| value.to_string());
+    let ip_repr = local_ip.map(|value| value.to_string());
     info!(
         target: "monitoring::quote",
         event = "start",
@@ -133,12 +152,23 @@ pub fn quote_start(strategy: &str, task: &QuoteTask) {
         input_mint = %task.pair.input_mint,
         output_mint = %task.pair.output_mint,
         amount = task.amount,
+        batch_id = ?batch_repr,
+        local_ip = ?ip_repr,
         "quote started"
     );
 }
 
-pub fn quote_end(strategy: &str, task: &QuoteTask, success: bool, elapsed: Duration) {
+pub fn quote_end(
+    strategy: &str,
+    task: &QuoteTask,
+    success: bool,
+    elapsed: Duration,
+    batch_id: Option<u64>,
+    local_ip: Option<IpAddr>,
+) {
     let latency_ms = elapsed.as_secs_f64() * 1_000.0;
+    let batch_repr = batch_id.map(|value| value.to_string());
+    let ip_repr = local_ip.map(|value| value.to_string());
 
     if success {
         info!(
@@ -150,6 +180,8 @@ pub fn quote_end(strategy: &str, task: &QuoteTask, success: bool, elapsed: Durat
             output_mint = %task.pair.output_mint,
             amount = task.amount,
             latency_ms,
+            batch_id = ?batch_repr,
+            local_ip = ?ip_repr,
             "quote completed"
         );
     } else {
@@ -162,22 +194,29 @@ pub fn quote_end(strategy: &str, task: &QuoteTask, success: bool, elapsed: Durat
             output_mint = %task.pair.output_mint,
             amount = task.amount,
             latency_ms,
+            batch_id = ?batch_repr,
+            local_ip = ?ip_repr,
             "quote returned no result"
         );
     }
 
     if prometheus_enabled() {
         let result = if success { "success" } else { "empty" };
+        let ip_value = ip_label(local_ip);
         counter!(
             "galileo_quote_total",
             "strategy" => strategy.to_string(),
-            "result" => result
+            "result" => result,
+            "local_ip" => ip_value.clone(),
+            "batch_id" => batch_label(batch_id)
         )
         .increment(1);
         histogram!(
             "galileo_quote_latency_ms",
             "strategy" => strategy.to_string(),
-            "result" => result
+            "result" => result,
+            "local_ip" => ip_value,
+            "batch_id" => batch_label(batch_id)
         )
         .record(latency_ms);
     }
@@ -189,7 +228,11 @@ pub fn quote_round_trip(
     aggregator: &str,
     first_leg_out: u64,
     round_trip_out: u64,
+    batch_id: Option<u64>,
+    local_ip: Option<IpAddr>,
 ) {
+    let batch_repr = batch_id.map(|value| value.to_string());
+    let ip_repr = local_ip.map(|value| value.to_string());
     info!(
         target: "monitoring::quote",
         event = "round_trip",
@@ -200,6 +243,8 @@ pub fn quote_round_trip(
         amount_in = task.amount,
         first_leg_out = first_leg_out,
         round_trip_out = round_trip_out,
+        batch_id = ?batch_repr,
+        local_ip = ?ip_repr,
         "round-trip quote summary"
     );
 }
@@ -237,7 +282,9 @@ pub fn swap_fetched(
     opportunity: &SwapOpportunity,
     compute_unit_limit: u32,
     prioritization_fee: u64,
+    local_ip: Option<IpAddr>,
 ) {
+    let ip_repr = local_ip.map(|value| value.to_string());
     info!(
         target: "monitoring::swap",
         event = "fetched",
@@ -247,18 +294,22 @@ pub fn swap_fetched(
         amount_in = opportunity.amount_in,
         compute_unit_limit,
         prioritization_fee,
+        local_ip = ?ip_repr,
         "swap instructions ready"
     );
 
     if prometheus_enabled() {
+        let ip_value = ip_label(local_ip);
         histogram!(
             "galileo_swap_compute_unit_limit",
-            "strategy" => strategy.to_string()
+            "strategy" => strategy.to_string(),
+            "local_ip" => ip_value.clone()
         )
         .record(compute_unit_limit as f64);
         histogram!(
             "galileo_swap_prioritization_fee_lamports",
-            "strategy" => strategy.to_string()
+            "strategy" => strategy.to_string(),
+            "local_ip" => ip_value
         )
         .record(prioritization_fee as f64);
     }
@@ -313,7 +364,9 @@ pub fn transaction_built(
     slot: u64,
     blockhash: &str,
     last_valid_block_height: Option<u64>,
+    local_ip: Option<IpAddr>,
 ) {
+    let ip_repr = local_ip.map(|value| value.to_string());
     info!(
         target: "monitoring::transaction",
         event = "built",
@@ -324,13 +377,15 @@ pub fn transaction_built(
         slot,
         blockhash,
         last_valid_block_height,
+        local_ip = ?ip_repr,
         "transaction prepared"
     );
 
     if prometheus_enabled() {
         counter!(
             "galileo_transaction_built_total",
-            "strategy" => strategy.to_string()
+            "strategy" => strategy.to_string(),
+            "local_ip" => ip_label(local_ip)
         )
         .increment(1);
     }
@@ -342,7 +397,9 @@ pub fn lander_attempt(
     name: &str,
     variant: VariantId,
     attempt: usize,
+    local_ip: Option<IpAddr>,
 ) {
+    let ip_repr = local_ip.map(|value| value.to_string());
     info!(
         target: "monitoring::lander",
         event = "attempt",
@@ -351,22 +408,26 @@ pub fn lander_attempt(
         lander = name,
         variant,
         attempt,
+        local_ip = ?ip_repr,
         "lander submission attempt"
     );
 
     if prometheus_enabled() {
+        let ip_value = ip_label(local_ip);
         counter!(
             "galileo_lander_attempt_total",
             "strategy" => strategy.to_string(),
             "lander" => name.to_string(),
             "dispatch" => dispatch.to_string(),
-            "variant" => variant.to_string()
+            "variant" => variant.to_string(),
+            "local_ip" => ip_value
         )
         .increment(1);
     }
 }
 
 pub fn lander_success(strategy: &str, dispatch: &str, attempt: usize, receipt: &LanderReceipt) {
+    let ip_repr = receipt.local_ip.map(|value| value.to_string());
     info!(
         target: "monitoring::lander",
         event = "success",
@@ -379,16 +440,29 @@ pub fn lander_success(strategy: &str, dispatch: &str, attempt: usize, receipt: &
         slot = receipt.slot,
         blockhash = %receipt.blockhash,
         signature = receipt.signature.as_deref().unwrap_or_default(),
+        local_ip = ?ip_repr,
         "lander submission succeeded"
     );
 
     if prometheus_enabled() {
+        let ip_value = ip_label(receipt.local_ip);
         counter!(
             "galileo_lander_success_total",
             "strategy" => strategy.to_string(),
             "lander" => receipt.lander.to_string(),
             "dispatch" => dispatch.to_string(),
-            "variant" => receipt.variant_id.to_string()
+            "variant" => receipt.variant_id.to_string(),
+            "local_ip" => ip_value.clone()
+        )
+        .increment(1);
+        counter!(
+            "galileo_lander_submission_total",
+            "strategy" => strategy.to_string(),
+            "lander" => receipt.lander.to_string(),
+            "dispatch" => dispatch.to_string(),
+            "variant" => receipt.variant_id.to_string(),
+            "local_ip" => ip_value,
+            "result" => "success".to_string()
         )
         .increment(1);
     }
@@ -400,8 +474,10 @@ pub fn lander_failure(
     name: &str,
     variant: VariantId,
     attempt: usize,
+    local_ip: Option<IpAddr>,
     err: &LanderError,
 ) {
+    let ip_repr = local_ip.map(|value| value.to_string());
     warn!(
         target: "monitoring::lander",
         event = "failure",
@@ -410,17 +486,30 @@ pub fn lander_failure(
         lander = name,
         variant,
         attempt,
+        local_ip = ?ip_repr,
         error = %err,
         "lander submission failed"
     );
 
     if prometheus_enabled() {
+        let ip_value = ip_label(local_ip);
         counter!(
             "galileo_lander_failure_total",
             "strategy" => strategy.to_string(),
             "lander" => name.to_string(),
             "dispatch" => dispatch.to_string(),
-            "variant" => variant.to_string()
+            "variant" => variant.to_string(),
+            "local_ip" => ip_value.clone()
+        )
+        .increment(1);
+        counter!(
+            "galileo_lander_submission_total",
+            "strategy" => strategy.to_string(),
+            "lander" => name.to_string(),
+            "dispatch" => dispatch.to_string(),
+            "variant" => variant.to_string(),
+            "local_ip" => ip_value,
+            "result" => "failure".to_string()
         )
         .increment(1);
     }

@@ -3,17 +3,19 @@
 use std::{
     collections::HashMap,
     io::{Read, Write},
+    net::{IpAddr, SocketAddr},
     sync::Arc,
 };
 
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use futures::{StreamExt, sink::SinkExt};
 use tokio::{
+    net::{TcpSocket, TcpStream, lookup_host},
     sync::{Mutex, mpsc, oneshot},
     task::JoinHandle,
 };
 use tokio_tungstenite::{
-    WebSocketStream, connect_async_tls_with_config,
+    WebSocketStream, client_async_tls_with_config,
     tungstenite::{Message, client::IntoClientRequest, http::HeaderValue},
 };
 use tracing::{debug, error, trace, warn};
@@ -108,10 +110,17 @@ struct TitanInner {
     use_gzip: bool,
 }
 
-type ConnectorStream = tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>;
+type ConnectorStream = tokio_tungstenite::MaybeTlsStream<TcpStream>;
 
 impl TitanWsClient {
     pub async fn connect(endpoint: Url) -> Result<Self, TitanError> {
+        Self::connect_with_local_ip(endpoint, None).await
+    }
+
+    pub async fn connect_with_local_ip(
+        endpoint: Url,
+        local_ip: Option<IpAddr>,
+    ) -> Result<Self, TitanError> {
         let mut request = endpoint
             .as_str()
             .into_client_request()
@@ -128,7 +137,53 @@ impl TitanWsClient {
             .headers_mut()
             .insert("User-Agent", HeaderValue::from_static(USER_AGENT));
 
-        let (stream, response) = connect_async_tls_with_config(request, None, false, None)
+        let host = request
+            .uri()
+            .host()
+            .ok_or_else(|| TitanError::Handshake("Titan endpoint 缺少 host".into()))?
+            .to_string();
+        let port = request
+            .uri()
+            .port_u16()
+            .unwrap_or_else(|| match request.uri().scheme_str() {
+                Some("wss") | Some("https") => 443,
+                _ => 80,
+            });
+
+        let targets: Vec<SocketAddr> = lookup_host((host.as_str(), port))
+            .await
+            .map_err(|err| TitanError::Handshake(format!("无法解析 {host}:{port}: {err}")))?
+            .collect();
+
+        if targets.is_empty() {
+            return Err(TitanError::Handshake(format!(
+                "解析 {host}:{port} 未返回任何地址"
+            )));
+        }
+
+        let mut last_err: Option<std::io::Error> = None;
+        let mut stream_opt: Option<TcpStream> = None;
+        for addr in targets {
+            match connect_with_optional_bind(addr, local_ip).await {
+                Ok(stream) => {
+                    stream_opt = Some(stream);
+                    break;
+                }
+                Err(err) => {
+                    last_err = Some(err);
+                    continue;
+                }
+            }
+        }
+
+        let stream = stream_opt.ok_or_else(|| {
+            let message = last_err
+                .map(|err| err.to_string())
+                .unwrap_or_else(|| "未知错误".to_string());
+            TitanError::Handshake(format!("连接 {host}:{port} 失败: {message}"))
+        })?;
+
+        let (stream, response) = client_async_tls_with_config(request, stream, None, None)
             .await
             .map_err(TitanError::Transport)?;
 
@@ -282,6 +337,31 @@ impl TitanWsClient {
     }
 }
 
+async fn connect_with_optional_bind(
+    addr: SocketAddr,
+    local_ip: Option<IpAddr>,
+) -> Result<TcpStream, std::io::Error> {
+    let socket = if addr.is_ipv4() {
+        TcpSocket::new_v4()?
+    } else {
+        TcpSocket::new_v6()?
+    };
+
+    if let Some(ip) = local_ip {
+        let same_family = (ip.is_ipv4() && addr.is_ipv4()) || (ip.is_ipv6() && addr.is_ipv6());
+        if !same_family {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "local IP family does not match remote address",
+            ));
+        }
+        socket.bind(SocketAddr::new(ip, 0))?;
+    }
+
+    let stream = socket.connect(addr).await?;
+    stream.set_nodelay(true)?;
+    Ok(stream)
+}
 impl TitanInner {
     async fn send_message(&self, payload: Vec<u8>) -> Result<(), TitanError> {
         let mut sink = self.sink.lock().await;

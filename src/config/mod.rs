@@ -217,6 +217,8 @@ impl Default for cfg::JupiterQuoteConfig {
         Self {
             only_direct_routes: false,
             restrict_intermediate_tokens: true,
+            parallelism: cfg::QuoteParallelism::default(),
+            batch_interval_ms: None,
         }
     }
 }
@@ -269,6 +271,8 @@ impl Default for cfg::DflowQuoteConfig {
             use_auto_slippage: true,
             only_direct_routes: false,
             max_route_length: None,
+            parallelism: cfg::QuoteParallelism::default(),
+            batch_interval_ms: None,
         }
     }
 }
@@ -350,6 +354,7 @@ impl Default for cfg::BotConfig {
             show_jupiter_logs: true,
             dry_run: false,
             prometheus: cfg::PrometheusConfig::default(),
+            network: cfg::NetworkConfig::default(),
         }
     }
 }

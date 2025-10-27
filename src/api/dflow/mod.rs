@@ -9,6 +9,7 @@ mod headers;
 use std::{
     error::Error as StdError,
     fmt,
+    net::IpAddr,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -30,6 +31,7 @@ use url::form_urlencoded;
 use crate::config::{BotConfig, LoggingConfig, LoggingProfile};
 use crate::monitoring::metrics::prometheus_enabled;
 use crate::monitoring::{LatencyMetadata, guard_with_level};
+use crate::network::{IpBoundClientPool, ReqwestClientFactoryFn};
 
 use self::headers::build_header_map;
 
@@ -97,6 +99,8 @@ pub enum DflowError {
         limit: usize,
         last_error: String,
     },
+    #[error("failed to construct IP-bound HTTP client: {0}")]
+    ClientPool(String),
 }
 
 impl DflowError {
@@ -130,6 +134,7 @@ pub struct DflowApiClient {
     wait_on_429: Duration,
     quote_failures: Arc<AtomicUsize>,
     swap_failures: Arc<AtomicUsize>,
+    client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
 }
 
 impl fmt::Debug for DflowApiClient {
@@ -144,11 +149,16 @@ impl fmt::Debug for DflowApiClient {
             .field("slow_swap_warn_ms", &self.slow_swap_warn_ms)
             .field("max_consecutive_failures", &self.max_consecutive_failures)
             .field("wait_on_429_ms", &self.wait_on_429.as_millis())
+            .field(
+                "ip_pool_size",
+                &self.client_pool.as_ref().map(|pool| pool.len()),
+            )
             .finish()
     }
 }
 
 impl DflowApiClient {
+    #[allow(dead_code)]
     pub fn new(
         client: reqwest::Client,
         quote_base_url: String,
@@ -157,6 +167,28 @@ impl DflowApiClient {
         logging: &LoggingConfig,
         max_consecutive_failures: Option<usize>,
         wait_on_429: Duration,
+    ) -> Self {
+        Self::with_ip_pool(
+            client,
+            quote_base_url,
+            swap_base_url,
+            bot_config,
+            logging,
+            max_consecutive_failures,
+            wait_on_429,
+            None,
+        )
+    }
+
+    pub fn with_ip_pool(
+        client: reqwest::Client,
+        quote_base_url: String,
+        swap_base_url: String,
+        bot_config: &BotConfig,
+        logging: &LoggingConfig,
+        max_consecutive_failures: Option<usize>,
+        wait_on_429: Duration,
+        client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
     ) -> Self {
         let quote_timeout = Duration::from_millis(bot_config.quote_ms);
         let swap_ms = bot_config.swap_ms.unwrap_or(bot_config.quote_ms);
@@ -174,6 +206,7 @@ impl DflowApiClient {
             wait_on_429,
             quote_failures: Arc::new(AtomicUsize::new(0)),
             swap_failures: Arc::new(AtomicUsize::new(0)),
+            client_pool,
         }
     }
 
@@ -236,6 +269,14 @@ impl DflowApiClient {
     }
 
     pub async fn quote(&self, request: &QuoteRequest) -> Result<QuoteResponse, DflowError> {
+        self.quote_with_ip(request, None).await
+    }
+
+    pub async fn quote_with_ip(
+        &self,
+        request: &QuoteRequest,
+        local_ip: Option<IpAddr>,
+    ) -> Result<QuoteResponse, DflowError> {
         let path = "/quote";
         let url = self.quote_endpoint(path);
         let metadata = LatencyMetadata::new(
@@ -297,8 +338,9 @@ impl DflowApiClient {
             "即将发起 DFlow 报价请求"
         );
 
-        let response = match self
-            .client
+        let client = self.http_client(local_ip)?;
+
+        let response = match client
             .get(&url)
             .timeout(self.quote_timeout)
             .query(request)
@@ -452,9 +494,21 @@ impl DflowApiClient {
         Ok(quote)
     }
 
+    fn http_client(&self, local_ip: Option<IpAddr>) -> Result<reqwest::Client, DflowError> {
+        if let Some(ip) = local_ip {
+            if let Some(pool) = &self.client_pool {
+                return pool
+                    .get_or_create(ip)
+                    .map_err(|err| DflowError::ClientPool(err.to_string()));
+            }
+        }
+        Ok(self.client.clone())
+    }
+
     pub async fn swap_instructions(
         &self,
         request: &SwapInstructionsRequest,
+        local_ip: Option<IpAddr>,
     ) -> Result<SwapInstructionsResponse, DflowError> {
         let path = "/swap-instructions";
         let url = self.swap_endpoint(path);
@@ -498,8 +552,9 @@ impl DflowApiClient {
             header_map.insert(HOST, value.clone());
         }
 
-        let response = match self
-            .client
+        let client = self.http_client(local_ip)?;
+
+        let response = match client
             .post(&url)
             .timeout(self.swap_timeout)
             .json(&body)

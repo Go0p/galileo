@@ -69,6 +69,10 @@ engine:
       # 将中间代币限制为具有稳定流动性的顶级代币集合。这将有助于降低兑换时潜在的高滑点错误率，并将对定价的影响降至最低。
       # 当您将 use_direct_route_only 设置为 false 时，这可以帮助加快 jupiter 的报价时间。不过，正如它所说，它也会限制在您的路线中使用的额外 mint。
       restrict_intermediate_tokens: true
+      # 并发配置："auto" 自动结合 IP 容量估算，也可填写正整数固定并发
+      parallelism: "auto"
+      # 报价批次发送间隔（毫秒），0 表示禁用额外节奏控制
+      batch_interval_ms: 0
     swap_config:
       # 跳过用户账户相关 RPC 调用，以减少重复拉取。
       # 设置为 false 时，不会有 setupInstructions 等创建 ATA 的指令
@@ -96,6 +100,8 @@ engine:
       # taker: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
       exclude_routers: []
       priority_fee_lamports: 10
+      parallelism: "auto"
+      batch_interval_ms: 0
     swap_config:
       dynamic_compute_unit_limit: true
       wrap_and_unwrap_sol: false
@@ -116,6 +122,8 @@ engine:
       use_auto_slippage: false
       only_direct_routes: false
       max_route_length: 3
+      parallelism: "auto"
+      batch_interval_ms: 0
     swap_config:
       dynamic_compute_unit_limit: true
       wrap_and_unwrap_sol: false
@@ -178,6 +186,22 @@ bot:
     max_blocking_threads: null
     # 严格模式：当核心列表无效时直接报错退出，而不是回退到默认调度
     strict: false
+  network:
+    # 是否启用多 IP 资源池；false 时退化为单 IP 但仍会走统一调度
+    enable_multiple_ip: true
+    # 手动指定可用的本地 IP 白名单，留空则使用自动发现
+    manual_ips: []
+    # 排除的本地 IP 黑名单，优先级高于白名单
+    blacklist_ips: []
+    # 调试时是否允许使用回环地址（127.0.0.1 等）
+    allow_loopback: false
+    # 单个 IP 同时允许的并发请求数；null 表示仅受退避逻辑约束
+    per_ip_inflight_limit: null
+    cooldown_ms:
+      # 命中 429 / 限流时的初始冷却时间（毫秒）
+      rate_limited_start: 500
+      # 连接超时 / 网络异常时的初始冷却时间（毫秒）
+      timeout_start: 250
   # 是否启用 prometheus
   prometheus:
     enable: true
@@ -360,6 +384,39 @@ pure_blind_strategy:
     enable_metrics: true
     route_labels: true         # 指标上打 route 名称标签
 
+copy_strategy:
+  enable: false
+  
+  wallets:
+    - address: "AAAAA4WQFj5MByDDxmraSAtumvWk8eNTAL5421SAdLRA"
+      # accounts 来源
+      source:
+        # 来源类型 rpc 或者 grpc
+        type: "rpc"
+        rpc:
+          # 拉取交易的间隔 分钟
+          pull_interval_minutes: 10
+          # 拉取交易的数量
+          pull_count: 100
+          # 节点列表
+          endpoints:
+            - "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
+        grpc:
+          yellowstone_grpc_url: ""
+          # yellowstone grpc token
+          yellowstone_grpc_token: ""
+          # 包含的 program id
+          include_program_ids:
+            - "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+          # 排除的 program id
+          exclude_program_ids: 
+            - ""
+          # 
+          fanout_count: 10
+        # 发送间隔
+        replay_interval_ms: 100
+        enable_landers:
+          - "jito"
 
 # 后跑策略
 # Backrun 策略的工作原理如下：

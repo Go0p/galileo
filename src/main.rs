@@ -18,6 +18,7 @@ mod jupiter;
 mod lander;
 mod monitoring;
 mod multi_leg;
+mod network;
 mod pure_blind;
 mod rpc;
 mod strategy;

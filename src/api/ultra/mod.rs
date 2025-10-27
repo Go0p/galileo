@@ -5,7 +5,7 @@
 
 #![allow(dead_code)] // TODO: 一旦 Ultra API 接入引擎流程，请移除该属性以恢复未使用代码检查。
 
-use std::time::Duration;
+use std::{fmt, net::IpAddr, sync::Arc, time::Duration};
 
 use metrics::{counter, histogram};
 use reqwest::StatusCode;
@@ -18,6 +18,7 @@ use url::form_urlencoded;
 use crate::config::{BotConfig, LoggingConfig, LoggingProfile};
 use crate::monitoring::metrics::prometheus_enabled;
 use crate::monitoring::{LatencyMetadata, guard_with_level};
+use crate::network::{IpBoundClientPool, ReqwestClientFactoryFn};
 use reqwest::header::HeaderName;
 use reqwest::header::{ACCEPT, ACCEPT_ENCODING, HeaderValue, USER_AGENT};
 
@@ -33,7 +34,7 @@ pub use order::{
     UltraPlatformFee,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct UltraApiClient {
     base_url: String,
     client: reqwest::Client,
@@ -42,6 +43,24 @@ pub struct UltraApiClient {
     log_profile: LoggingProfile,
     slow_order_warn_ms: u64,
     slow_execute_warn_ms: u64,
+    client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
+}
+
+impl fmt::Debug for UltraApiClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UltraApiClient")
+            .field("base_url", &self.base_url)
+            .field("order_timeout", &self.order_timeout)
+            .field("execute_timeout", &self.execute_timeout)
+            .field("log_profile", &self.log_profile)
+            .field("slow_order_warn_ms", &self.slow_order_warn_ms)
+            .field("slow_execute_warn_ms", &self.slow_execute_warn_ms)
+            .field(
+                "ip_pool_size",
+                &self.client_pool.as_ref().map(|pool| pool.len()),
+            )
+            .finish()
+    }
 }
 
 impl UltraApiClient {
@@ -50,6 +69,16 @@ impl UltraApiClient {
         base_url: String,
         bot_config: &BotConfig,
         logging: &LoggingConfig,
+    ) -> Self {
+        Self::with_ip_pool(client, base_url, bot_config, logging, None)
+    }
+
+    pub fn with_ip_pool(
+        client: reqwest::Client,
+        base_url: String,
+        bot_config: &BotConfig,
+        logging: &LoggingConfig,
+        client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
     ) -> Self {
         let trimmed = base_url.trim();
         let normalized = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
@@ -68,11 +97,20 @@ impl UltraApiClient {
             log_profile: logging.profile,
             slow_order_warn_ms: logging.slow_quote_warn_ms,
             slow_execute_warn_ms: logging.slow_swap_warn_ms,
+            client_pool,
         }
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub async fn order(&self, request: &OrderRequest) -> Result<OrderResponse, UltraError> {
+        self.order_with_ip(request, None).await
+    }
+
+    pub async fn order_with_ip(
+        &self,
+        request: &OrderRequest,
+        local_ip: Option<IpAddr>,
+    ) -> Result<OrderResponse, UltraError> {
         let url = self.endpoint("/order");
         let metadata = LatencyMetadata::new(
             [
@@ -103,8 +141,9 @@ impl UltraApiClient {
             "开始请求 Ultra /order"
         );
 
-        let mut http_request = self
-            .client
+        let client = self.http_client(local_ip)?;
+
+        let mut http_request = client
             .get(&url)
             .timeout(self.order_timeout)
             .query(request)
@@ -227,6 +266,17 @@ impl UltraApiClient {
         }
 
         Ok(order)
+    }
+
+    fn http_client(&self, local_ip: Option<IpAddr>) -> Result<reqwest::Client, UltraError> {
+        if let Some(ip) = local_ip {
+            if let Some(pool) = &self.client_pool {
+                return pool
+                    .get_or_create(ip)
+                    .map_err(|err| UltraError::ClientPool(err.to_string()));
+            }
+        }
+        Ok(self.client.clone())
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
@@ -407,6 +457,8 @@ pub enum UltraError {
     },
     #[error("Ultra API 响应格式不符合预期: {0}")]
     Schema(String),
+    #[error("failed to construct IP-bound HTTP client: {0}")]
+    ClientPool(String),
 }
 
 impl UltraApiClient {

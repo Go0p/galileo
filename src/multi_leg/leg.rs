@@ -3,6 +3,7 @@ use std::fmt::Debug;
 use async_trait::async_trait;
 
 use crate::multi_leg::types::{LegBuildContext, LegDescriptor, QuoteIntent};
+use crate::network::IpLeaseHandle;
 
 /// 套利腿提供方需要实现的通用接口。
 ///
@@ -18,12 +19,17 @@ pub trait LegProvider: Send + Sync + Debug {
     fn descriptor(&self) -> LegDescriptor;
 
     /// 发起报价请求。
-    async fn quote(&self, intent: &QuoteIntent) -> Result<Self::QuoteResponse, Self::BuildError>;
+    async fn quote(
+        &self,
+        intent: &QuoteIntent,
+        lease: Option<&IpLeaseHandle>,
+    ) -> Result<Self::QuoteResponse, Self::BuildError>;
 
     /// 根据报价构建执行计划，例如未签名交易或指令序列。
     async fn build_plan(
         &self,
         quote: &Self::QuoteResponse,
         context: &LegBuildContext,
+        lease: Option<&IpLeaseHandle>,
     ) -> Result<Self::Plan, Self::BuildError>;
 }

@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{fmt, net::IpAddr, sync::Arc, time::Duration};
 
 use metrics::{counter, histogram};
 use reqwest::StatusCode;
@@ -11,6 +11,7 @@ use crate::config::{BotConfig, LoggingConfig, LoggingProfile};
 use crate::jupiter::error::JupiterError;
 use crate::monitoring::metrics::prometheus_enabled;
 use crate::monitoring::{LatencyMetadata, guard_with_level};
+use crate::network::{IpBoundClientPool, ReqwestClientFactoryFn};
 
 pub mod quote;
 pub mod serde_helpers;
@@ -21,7 +22,7 @@ pub use swap_instructions::{
     ComputeUnitPriceMicroLamports, SwapInstructionsRequest, SwapInstructionsResponse,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct JupiterApiClient {
     base_url: String,
     client: reqwest::Client,
@@ -30,14 +31,43 @@ pub struct JupiterApiClient {
     log_profile: LoggingProfile,
     slow_quote_warn_ms: u64,
     slow_swap_warn_ms: u64,
+    client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
+}
+
+impl fmt::Debug for JupiterApiClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JupiterApiClient")
+            .field("base_url", &self.base_url)
+            .field("quote_timeout", &self.quote_timeout)
+            .field("swap_timeout", &self.swap_timeout)
+            .field("log_profile", &self.log_profile)
+            .field("slow_quote_warn_ms", &self.slow_quote_warn_ms)
+            .field("slow_swap_warn_ms", &self.slow_swap_warn_ms)
+            .field(
+                "ip_pool_size",
+                &self.client_pool.as_ref().map(|pool| pool.len()),
+            )
+            .finish()
+    }
 }
 
 impl JupiterApiClient {
+    #[allow(dead_code)]
     pub fn new(
         client: reqwest::Client,
         base_url: String,
         bot_config: &BotConfig,
         logging: &LoggingConfig,
+    ) -> Self {
+        Self::with_ip_pool(client, base_url, bot_config, logging, None)
+    }
+
+    pub fn with_ip_pool(
+        client: reqwest::Client,
+        base_url: String,
+        bot_config: &BotConfig,
+        logging: &LoggingConfig,
+        client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
     ) -> Self {
         let quote_timeout = Duration::from_millis(bot_config.quote_ms);
         let swap_ms = bot_config.swap_ms.unwrap_or(bot_config.quote_ms);
@@ -50,10 +80,19 @@ impl JupiterApiClient {
             log_profile: logging.profile,
             slow_quote_warn_ms: logging.slow_quote_warn_ms,
             slow_swap_warn_ms: logging.slow_swap_warn_ms,
+            client_pool,
         }
     }
 
     pub async fn quote(&self, request: &QuoteRequest) -> Result<QuoteResponse, JupiterError> {
+        self.quote_with_ip(request, None).await
+    }
+
+    pub async fn quote_with_ip(
+        &self,
+        request: &QuoteRequest,
+        local_ip: Option<IpAddr>,
+    ) -> Result<QuoteResponse, JupiterError> {
         let url = self.endpoint("/quote");
         let metadata = LatencyMetadata::new(
             [
@@ -81,11 +120,9 @@ impl JupiterApiClient {
             "开始请求 Jupiter 报价"
         );
 
-        let mut http_request = self
-            .client
-            .get(&url)
-            .timeout(self.quote_timeout)
-            .query(request);
+        let client = self.http_client(local_ip)?;
+
+        let mut http_request = client.get(&url).timeout(self.quote_timeout).query(request);
         if !request.extra_query_params.is_empty() {
             http_request = http_request.query(&request.extra_query_params);
         }
@@ -193,9 +230,21 @@ impl JupiterApiClient {
         Ok(quote)
     }
 
+    fn http_client(&self, local_ip: Option<IpAddr>) -> Result<reqwest::Client, JupiterError> {
+        if let Some(ip) = local_ip {
+            if let Some(pool) = &self.client_pool {
+                return pool
+                    .get_or_create(ip)
+                    .map_err(|err| JupiterError::ClientPool(err.to_string()));
+            }
+        }
+        Ok(self.client.clone())
+    }
+
     pub async fn swap_instructions(
         &self,
         request: &SwapInstructionsRequest,
+        local_ip: Option<IpAddr>,
     ) -> Result<SwapInstructionsResponse, JupiterError> {
         let url = self.endpoint("/swap-instructions");
         let metadata = LatencyMetadata::new(
@@ -245,8 +294,9 @@ impl JupiterApiClient {
             "即将发起 Jupiter Swap 指令请求"
         );
 
-        let response = self
-            .client
+        let client = self.http_client(local_ip)?;
+
+        let response = client
             .post(&url)
             .timeout(self.swap_timeout)
             .json(request)

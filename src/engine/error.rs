@@ -8,6 +8,7 @@ use thiserror::Error;
 use crate::api::dflow::DflowError;
 use crate::api::ultra::UltraError;
 use crate::jupiter::error::JupiterError;
+use crate::network::NetworkError;
 
 #[derive(Debug, Error)]
 pub enum EngineError {
@@ -25,6 +26,8 @@ pub enum EngineError {
     Json(#[from] serde_json::Error),
     #[error("RPC 请求失败: {0}")]
     Rpc(#[from] ClientError),
+    #[error("IP 资源分配失败: {0}")]
+    NetworkResource(#[from] NetworkError),
     #[error("网络请求失败: {0}")]
     Network(#[from] ReqwestError),
     #[error("交易构建失败: {0}")]

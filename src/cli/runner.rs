@@ -16,7 +16,9 @@ use crate::cli::context::{
 };
 use crate::cli::jupiter::handle_jupiter_cmd;
 use crate::cli::lander::handle_lander_cmd;
-use crate::cli::strategy::{StrategyMode, build_http_client, run_strategy};
+use crate::cli::strategy::{
+    StrategyMode, build_http_client_pool, build_http_client_with_options, run_strategy,
+};
 use crate::cli::utils::apply_quote_defaults;
 use crate::config::AppConfig;
 use crate::jupiter::JupiterBinaryManager;
@@ -51,14 +53,15 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let launch_overrides =
                 build_launch_overrides(&config.galileo.engine.jupiter, &config.galileo.intermedium);
             let base_url = resolve_jupiter_base_url(&config.galileo.bot, &jupiter_cfg);
-            let api_proxy = resolve_jupiter_api_proxy(&config.galileo.engine);
-            let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+            let api_proxy = resolve_jupiter_api_proxy(&config.galileo.engine)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            let global_proxy = resolve_global_http_proxy(&config.galileo.global)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
             let bypass_proxy = should_bypass_proxy(&base_url);
-            let mut api_http_builder =
-                reqwest::Client::builder().user_agent(crate::jupiter::updater::USER_AGENT);
-            if let Some(proxy_url) = api_proxy {
-                let proxy = reqwest::Proxy::all(&proxy_url)
-                    .map_err(|err| anyhow!("Jupiter API 代理地址无效 {proxy_url}: {err}"))?;
+
+            if let Some(proxy_url) = api_proxy.clone() {
                 if needs_jupiter {
                     info!(
                         target: "jupiter",
@@ -66,12 +69,7 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                         "Jupiter API 请求将通过配置的代理发送"
                     );
                 }
-                api_http_builder = api_http_builder
-                    .proxy(proxy)
-                    .danger_accept_invalid_certs(true);
             } else if let Some(proxy_url) = global_proxy.clone() {
-                let proxy = reqwest::Proxy::all(&proxy_url)
-                    .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
                 if needs_jupiter {
                     info!(
                         target: "jupiter",
@@ -79,20 +77,28 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                         "Jupiter API 请求将通过 global.proxy 发送"
                     );
                 }
-                api_http_builder = api_http_builder
-                    .proxy(proxy)
-                    .danger_accept_invalid_certs(true);
-            } else if bypass_proxy {
-                if needs_jupiter {
-                    info!(
-                        target: "jupiter",
-                        base_url = %base_url,
-                        "Jupiter API 请求绕过 HTTP 代理"
-                    );
-                }
-                api_http_builder = api_http_builder.no_proxy();
+            } else if bypass_proxy && needs_jupiter {
+                info!(
+                    target: "jupiter",
+                    base_url = %base_url,
+                    "Jupiter API 请求绕过 HTTP 代理"
+                );
             }
-            let api_http_client = api_http_builder.build()?;
+
+            let user_agent = crate::jupiter::updater::USER_AGENT;
+            let api_http_client = build_http_client_with_options(
+                api_proxy.as_deref(),
+                global_proxy.clone(),
+                bypass_proxy,
+                None,
+                Some(user_agent),
+            )?;
+            let api_client_pool = build_http_client_pool(
+                api_proxy.clone(),
+                global_proxy.clone(),
+                bypass_proxy,
+                Some(user_agent.to_string()),
+            );
             let manager = JupiterBinaryManager::new(
                 jupiter_cfg,
                 launch_overrides,
@@ -100,11 +106,12 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 config.galileo.bot.show_jupiter_logs,
                 needs_jupiter,
             )?;
-            let api_client = JupiterApiClient::new(
+            let api_client = JupiterApiClient::with_ip_pool(
                 api_http_client,
                 base_url,
                 &config.galileo.bot,
                 &config.galileo.global.logging,
+                Some(api_client_pool),
             );
             AggregatorContext::Jupiter {
                 manager,
@@ -126,35 +133,39 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 .api_swap_base
                 .clone()
                 .unwrap_or_else(|| quote_base.clone());
-            let mut api_http_builder = reqwest::Client::builder();
             let dflow_proxy = config
                 .galileo
                 .engine
                 .dflow
                 .api_proxy
                 .as_ref()
-                .map(|value| value.trim())
-                .filter(|value| !value.is_empty())
-                .map(|value| value.to_string());
-            if let Some(proxy_url) = dflow_proxy {
-                let proxy = reqwest::Proxy::all(&proxy_url)
-                    .map_err(|err| anyhow!("DFlow API 代理地址无效 {proxy_url}: {err}"))?;
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            let global_proxy = resolve_global_http_proxy(&config.galileo.global)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            if let Some(proxy_url) = dflow_proxy.clone() {
                 info!(
                     target: "dflow",
                     proxy = %proxy_url,
                     "DFlow API 请求将通过配置的代理发送"
                 );
-                api_http_builder = api_http_builder
-                    .proxy(proxy)
-                    .danger_accept_invalid_certs(true);
-            } else if let Some(proxy_url) = resolve_global_http_proxy(&config.galileo.global) {
-                let proxy = reqwest::Proxy::all(&proxy_url)
-                    .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
-                api_http_builder = api_http_builder
-                    .proxy(proxy)
-                    .danger_accept_invalid_certs(true);
+            } else if let Some(proxy_url) = global_proxy.clone() {
+                info!(
+                    target: "dflow",
+                    proxy = %proxy_url,
+                    "DFlow API 请求将通过配置的代理发送"
+                );
             }
-            let api_http_client = api_http_builder.build()?;
+            let api_http_client = build_http_client_with_options(
+                dflow_proxy.as_deref(),
+                global_proxy.clone(),
+                false,
+                None,
+                None,
+            )?;
+            let api_client_pool =
+                build_http_client_pool(dflow_proxy.clone(), global_proxy.clone(), false, None);
             let dflow_engine_cfg = &config.galileo.engine.dflow;
             let max_failures = if dflow_engine_cfg.max_consecutive_failures == 0 {
                 None
@@ -162,7 +173,7 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 Some(dflow_engine_cfg.max_consecutive_failures as usize)
             };
             let wait_on_429 = Duration::from_millis(dflow_engine_cfg.wait_on_429_ms);
-            let api_client = DflowApiClient::new(
+            let api_client = DflowApiClient::with_ip_pool(
                 api_http_client,
                 quote_base,
                 swap_base,
@@ -170,6 +181,7 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 &config.galileo.global.logging,
                 max_failures,
                 wait_on_429,
+                Some(api_client_pool),
             );
             AggregatorContext::Dflow { api_client }
         }
@@ -190,15 +202,42 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 return Err(anyhow!("ultra.api_quote_base 不能为空"));
             }
             let rpc_client = resolve_rpc_client(&config.galileo.global)?;
-            let http_client = build_http_client(
-                ultra_cfg.api_proxy.as_deref(),
-                resolve_global_http_proxy(&config.galileo.global),
+            let ultra_proxy = ultra_cfg
+                .api_proxy
+                .as_ref()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            let global_proxy = resolve_global_http_proxy(&config.galileo.global)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            if let Some(proxy_url) = ultra_proxy.clone() {
+                info!(
+                    target: "ultra",
+                    proxy = %proxy_url,
+                    "Ultra API 请求将通过配置的代理发送"
+                );
+            } else if let Some(proxy_url) = global_proxy.clone() {
+                info!(
+                    target: "ultra",
+                    proxy = %proxy_url,
+                    "Ultra API 请求将通过配置的代理发送"
+                );
+            }
+            let http_client = build_http_client_with_options(
+                ultra_proxy.as_deref(),
+                global_proxy.clone(),
+                false,
+                None,
+                None,
             )?;
-            let api_client = UltraApiClient::new(
+            let http_pool =
+                build_http_client_pool(ultra_proxy.clone(), global_proxy.clone(), false, None);
+            let api_client = UltraApiClient::with_ip_pool(
                 http_client,
                 api_base,
                 &config.galileo.bot,
                 &config.galileo.global.logging,
+                Some(http_pool),
             );
             AggregatorContext::Ultra {
                 api_client,
@@ -313,7 +352,7 @@ async fn dispatch(
                         Some(ComputeUnitPriceMicroLamports::MicroLamports(price));
                 }
 
-                let instructions = api_client.swap_instructions(&request).await?;
+                let instructions = api_client.swap_instructions(&request, None).await?;
                 println!("{}", serde_json::to_string_pretty(&instructions.raw)?);
             }
             AggregatorContext::Dflow { .. } => {

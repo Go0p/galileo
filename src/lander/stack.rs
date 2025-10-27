@@ -1,9 +1,13 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::Instant;
 
 #[cfg(test)]
 use std::collections::VecDeque;
 #[cfg(test)]
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -11,6 +15,7 @@ use tracing::{info, warn};
 
 use crate::engine::{DispatchPlan, DispatchStrategy, TxVariant, VariantId};
 use crate::monitoring::events;
+use crate::network::{IpAllocator, IpLeaseMode, IpLeaseOutcome, IpTaskKind};
 
 use super::error::LanderError;
 use super::jito::JitoLander;
@@ -38,6 +43,7 @@ pub struct LanderReceipt {
     pub blockhash: String,
     pub signature: Option<String>,
     pub variant_id: VariantId,
+    pub local_ip: Option<IpAddr>,
 }
 
 #[derive(Clone)]
@@ -85,15 +91,26 @@ impl LanderVariant {
         variant: TxVariant,
         deadline: Deadline,
         endpoint: Option<&str>,
+        local_ip: Option<IpAddr>,
     ) -> Result<LanderReceipt, LanderError> {
         match self {
-            LanderVariant::Rpc(lander) => lander.submit_variant(variant, deadline).await,
-            LanderVariant::Jito(lander) => lander.submit_variant(variant, deadline, endpoint).await,
+            LanderVariant::Rpc(lander) => lander.submit_variant(variant, deadline, local_ip).await,
+            LanderVariant::Jito(lander) => {
+                lander
+                    .submit_variant(variant, deadline, endpoint, local_ip)
+                    .await
+            }
             LanderVariant::Staked(lander) => {
-                lander.submit_variant(variant, deadline, endpoint).await
+                lander
+                    .submit_variant(variant, deadline, endpoint, local_ip)
+                    .await
             }
             #[cfg(test)]
-            LanderVariant::Test(lander) => lander.submit_variant(variant, deadline, endpoint).await,
+            LanderVariant::Test(lander) => {
+                lander
+                    .submit_variant(variant, deadline, endpoint, local_ip)
+                    .await
+            }
         }
     }
 }
@@ -102,13 +119,19 @@ impl LanderVariant {
 pub struct LanderStack {
     landers: Vec<LanderVariant>,
     max_retries: usize,
+    ip_allocator: Arc<IpAllocator>,
 }
 
 impl LanderStack {
-    pub fn new(landers: Vec<LanderVariant>, max_retries: usize) -> Self {
+    pub fn new(
+        landers: Vec<LanderVariant>,
+        max_retries: usize,
+        ip_allocator: Arc<IpAllocator>,
+    ) -> Self {
         Self {
             landers,
             max_retries,
+            ip_allocator,
         }
     }
 
@@ -187,35 +210,45 @@ impl LanderStack {
                 let variant_signature = variant.signature();
                 let current_attempt = attempt_idx;
                 let deadline_copy = deadline;
+                let allocator = Arc::clone(&self.ip_allocator);
+                let strategy = strategy_name.to_string();
+                let dispatch = dispatch_label.to_string();
 
-                events::lander_attempt(
-                    strategy_name,
-                    dispatch_label,
-                    lander_name,
-                    variant_id,
-                    current_attempt,
-                );
                 attempt_idx += 1;
 
                 futures.push(async move {
-                    let result = lander_clone
-                        .submit_variant(variant, deadline_copy, None)
-                        .await;
+                    let (local_ip, result) = submit_with_lease(
+                        allocator,
+                        lander_clone,
+                        variant,
+                        deadline_copy,
+                        None,
+                        &strategy,
+                        &dispatch,
+                        lander_name,
+                        variant_id,
+                        current_attempt,
+                    )
+                    .await;
                     (
                         lander_name,
                         current_attempt,
                         variant_id,
                         variant_signature,
+                        local_ip,
                         result,
                     )
                 });
             }
 
-            while let Some((lander_name, attempt, variant_id, signature, result)) =
+            while let Some((lander_name, attempt, variant_id, signature, local_ip, result)) =
                 futures.next().await
             {
                 match result {
-                    Ok(receipt) => {
+                    Ok(mut receipt) => {
+                        if receipt.local_ip.is_none() {
+                            receipt.local_ip = local_ip;
+                        }
                         events::lander_success(strategy_name, dispatch_label, attempt, &receipt);
                         if let Some(sig) = receipt.signature.as_deref() {
                             info!(
@@ -235,6 +268,7 @@ impl LanderStack {
                             lander_name,
                             variant_id,
                             attempt,
+                            local_ip,
                             &err,
                         );
                         warn!(
@@ -303,46 +337,55 @@ impl LanderStack {
                     let variant_signature = variant.signature();
                     let current_attempt = attempt_idx;
                     let deadline_copy = deadline;
+                    let allocator = Arc::clone(&self.ip_allocator);
+                    let strategy = strategy_name.to_string();
+                    let dispatch = dispatch_label.to_string();
+                    let endpoint_hint = endpoint_label.clone();
 
-                    events::lander_attempt(
-                        strategy_name,
-                        dispatch_label,
-                        lander_name,
-                        variant_id,
-                        current_attempt,
-                    );
                     attempt_idx += 1;
 
                     futures.push(async move {
-                        let result = match endpoint_label.as_deref() {
-                            Some(endpoint) => {
-                                lander_clone
-                                    .submit_variant(variant, deadline_copy, Some(endpoint))
-                                    .await
-                            }
-                            None => {
-                                lander_clone
-                                    .submit_variant(variant, deadline_copy, None)
-                                    .await
-                            }
-                        };
+                        let (local_ip, result) = submit_with_lease(
+                            allocator,
+                            lander_clone,
+                            variant,
+                            deadline_copy,
+                            endpoint_hint.clone(),
+                            &strategy,
+                            &dispatch,
+                            lander_name,
+                            variant_id,
+                            current_attempt,
+                        )
+                        .await;
                         (
                             lander_name,
                             endpoint_label,
                             current_attempt,
                             variant_id,
                             variant_signature,
+                            local_ip,
                             result,
                         )
                     });
                 }
             }
 
-            while let Some((lander_name, endpoint, attempt, variant_id, signature, result)) =
-                futures.next().await
+            while let Some((
+                lander_name,
+                endpoint,
+                attempt,
+                variant_id,
+                signature,
+                local_ip,
+                result,
+            )) = futures.next().await
             {
                 match result {
-                    Ok(receipt) => {
+                    Ok(mut receipt) => {
+                        if receipt.local_ip.is_none() {
+                            receipt.local_ip = local_ip;
+                        }
                         events::lander_success(strategy_name, dispatch_label, attempt, &receipt);
                         if let Some(sig) = receipt.signature.as_deref() {
                             info!(
@@ -362,6 +405,7 @@ impl LanderStack {
                             lander_name,
                             variant_id,
                             attempt,
+                            local_ip,
                             &err,
                         );
                         match endpoint {
@@ -392,6 +436,110 @@ impl LanderStack {
         Err(last_err
             .unwrap_or_else(|| LanderError::fatal("all landers failed to submit transaction")))
     }
+}
+
+async fn submit_with_lease(
+    allocator: Arc<IpAllocator>,
+    lander: LanderVariant,
+    variant: TxVariant,
+    deadline: Deadline,
+    endpoint: Option<String>,
+    strategy: &str,
+    dispatch: &str,
+    lander_name: &'static str,
+    variant_id: VariantId,
+    attempt: usize,
+) -> (Option<IpAddr>, Result<LanderReceipt, LanderError>) {
+    let endpoint_hash = compute_endpoint_hash(endpoint.as_deref(), variant_id);
+
+    let (local_ip, mut lease_handle) = match allocator
+        .acquire(
+            IpTaskKind::LanderSubmit { endpoint_hash },
+            IpLeaseMode::Ephemeral,
+        )
+        .await
+    {
+        Ok(lease) => {
+            let handle = lease.handle();
+            let ip = handle.ip();
+            drop(lease);
+            (Some(ip), Some(handle))
+        }
+        Err(err) => {
+            events::lander_attempt(strategy, dispatch, lander_name, variant_id, attempt, None);
+            let failure = LanderError::fatal(format!("获取 IP 资源失败: {err}"));
+            return (None, Err(failure));
+        }
+    };
+
+    events::lander_attempt(
+        strategy,
+        dispatch,
+        lander_name,
+        variant_id,
+        attempt,
+        local_ip,
+    );
+
+    let mut result = lander
+        .submit_variant(variant, deadline, endpoint.as_deref(), local_ip)
+        .await;
+
+    if let Some(handle) = lease_handle.take() {
+        if let Err(err) = &result {
+            if let Some(outcome) = classify_lander_error(err) {
+                handle.mark_outcome(outcome);
+            }
+        }
+        drop(handle);
+    }
+
+    if let Ok(receipt) = &mut result {
+        if receipt.local_ip.is_none() {
+            receipt.local_ip = local_ip;
+        }
+    }
+
+    (local_ip, result)
+}
+
+fn compute_endpoint_hash(endpoint: Option<&str>, variant_id: VariantId) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    if let Some(value) = endpoint {
+        value.hash(&mut hasher);
+    }
+    variant_id.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn classify_lander_error(err: &LanderError) -> Option<IpLeaseOutcome> {
+    match err {
+        LanderError::Network(inner) => classify_reqwest(inner),
+        LanderError::Rpc(_) => Some(IpLeaseOutcome::NetworkError),
+        LanderError::Fatal(_) => Some(IpLeaseOutcome::NetworkError),
+        _ => None,
+    }
+}
+
+fn classify_reqwest(err: &reqwest::Error) -> Option<IpLeaseOutcome> {
+    if err.is_timeout() {
+        return Some(IpLeaseOutcome::Timeout);
+    }
+    if let Some(status) = err.status() {
+        if status.as_u16() == 429 {
+            return Some(IpLeaseOutcome::RateLimited);
+        }
+        if status.as_u16() == 408 || status.as_u16() == 504 {
+            return Some(IpLeaseOutcome::Timeout);
+        }
+        if status.is_server_error() {
+            return Some(IpLeaseOutcome::NetworkError);
+        }
+    }
+    if err.is_connect() || err.is_request() {
+        return Some(IpLeaseOutcome::NetworkError);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -445,6 +593,7 @@ impl TestLander {
         variant: TxVariant,
         _deadline: Deadline,
         endpoint: Option<&str>,
+        local_ip: Option<IpAddr>,
     ) -> Result<LanderReceipt, LanderError> {
         let recorded = endpoint.map(|value| value.to_string());
         self.submissions.lock().unwrap().push(recorded.clone());
@@ -466,6 +615,7 @@ impl TestLander {
                     blockhash: variant.blockhash().to_string(),
                     signature,
                     variant_id: variant.id(),
+                    local_ip,
                 })
             }
             TestOutcome::Failure => Err(LanderError::fatal("test failure")),
@@ -477,6 +627,7 @@ impl TestLander {
 mod tests {
     use super::*;
     use crate::engine::{DispatchPlan, DispatchStrategy, VariantId};
+    use crate::network::{CooldownConfig, IpAllocator, IpInventory, IpInventoryConfig};
     use solana_sdk::hash::Hash;
     use solana_sdk::message::{Message, VersionedMessage};
     use solana_sdk::signature::{Keypair, Signer};
@@ -494,6 +645,21 @@ mod tests {
         TxVariant::new(id, transaction, Hash::default(), 0, None, signer, 0)
     }
 
+    fn test_ip_allocator() -> Arc<IpAllocator> {
+        let config = IpInventoryConfig {
+            enable_multiple_ip: false,
+            manual_ips: vec![std::net::IpAddr::from([127, 0, 0, 1])],
+            blacklist: Vec::new(),
+            allow_loopback: true,
+        };
+        let inventory = IpInventory::new(config).expect("build inventory");
+        Arc::new(IpAllocator::from_inventory(
+            inventory,
+            Some(2),
+            CooldownConfig::default(),
+        ))
+    }
+
     #[tokio::test]
     async fn all_at_once_dispatches_every_endpoint() {
         let variant = build_variant(0);
@@ -505,7 +671,11 @@ mod tests {
             },
         ];
         let test_lander = TestLander::new("test", vec!["https://a", "https://b"], outcomes);
-        let stack = LanderStack::new(vec![LanderVariant::Test(test_lander.clone())], 0);
+        let stack = LanderStack::new(
+            vec![LanderVariant::Test(test_lander.clone())],
+            0,
+            test_ip_allocator(),
+        );
 
         let deadline = Deadline::from_instant(Instant::now() + Duration::from_millis(50));
         let receipt = stack
@@ -534,7 +704,11 @@ mod tests {
             TestOutcome::Success { signature: None },
         ];
         let test_lander = TestLander::new("test", vec!["endpoint-a", "endpoint-b"], outcomes);
-        let stack = LanderStack::new(vec![LanderVariant::Test(test_lander.clone())], 0);
+        let stack = LanderStack::new(
+            vec![LanderVariant::Test(test_lander.clone())],
+            0,
+            test_ip_allocator(),
+        );
 
         let deadline = Deadline::from_instant(Instant::now() + Duration::from_millis(50));
         let receipt = stack

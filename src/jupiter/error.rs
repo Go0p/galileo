@@ -38,4 +38,6 @@ pub enum JupiterError {
     },
     #[error("unexpected response schema: {0}")]
     Schema(String),
+    #[error("failed to construct IP-bound HTTP client: {0}")]
+    ClientPool(String),
 }

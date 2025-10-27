@@ -10,6 +10,7 @@ use crate::api::dflow::{
 use crate::api::jupiter::{JupiterApiClient, QuoteRequest};
 use crate::api::ultra::{OrderRequest as UltraOrderRequest, Router as UltraRouter, UltraApiClient};
 use crate::config::{DflowQuoteConfig, JupiterQuoteConfig, UltraQuoteConfig};
+use crate::network::IpLeaseHandle;
 use crate::strategy::types::TradePair;
 use solana_sdk::pubkey::Pubkey;
 
@@ -131,8 +132,12 @@ impl QuoteExecutor {
         &self,
         task: &QuoteTask,
         config: &QuoteConfig,
+        lease: Option<&IpLeaseHandle>,
     ) -> EngineResult<Option<DoubleQuote>> {
-        let forward = match self.quote_once(&task.pair, task.amount, config).await? {
+        let forward = match self
+            .quote_once(&task.pair, task.amount, config, lease)
+            .await?
+        {
             Some(value) => value,
             None => return Ok(None),
         };
@@ -163,7 +168,7 @@ impl QuoteExecutor {
 
         let reverse_pair = task.pair.reversed();
         let reverse = match self
-            .quote_once(&reverse_pair, second_amount, config)
+            .quote_once(&reverse_pair, second_amount, config, lease)
             .await?
         {
             Some(value) => value,
@@ -189,7 +194,9 @@ impl QuoteExecutor {
         pair: &TradePair,
         amount: u64,
         config: &QuoteConfig,
+        lease: Option<&IpLeaseHandle>,
     ) -> EngineResult<Option<QuoteResponseVariant>> {
+        let local_ip = lease.map(|handle| handle.ip());
         match &self.backend {
             QuoteBackend::Jupiter { client, defaults } => {
                 let mut request = QuoteRequest::new(
@@ -214,7 +221,7 @@ impl QuoteExecutor {
                 }
 
                 apply_jupiter_defaults(defaults, &mut request);
-                let response = client.quote(&request).await?;
+                let response = client.quote_with_ip(&request, local_ip).await?;
                 Ok(Some(QuoteResponseVariant::Jupiter(response)))
             }
             QuoteBackend::Dflow { client, defaults } => {
@@ -238,7 +245,7 @@ impl QuoteExecutor {
                     request.slippage_bps = Some(SlippageBps::Fixed(config.slippage_bps));
                 }
 
-                match client.quote(&request).await {
+                match client.quote_with_ip(&request, local_ip).await {
                     Ok(response) => Ok(Some(QuoteResponseVariant::Dflow(response))),
                     Err(DflowError::RateLimited { status, body, .. }) => {
                         warn!(
@@ -308,7 +315,7 @@ impl QuoteExecutor {
                 if !config.dex_blacklist.is_empty() {
                     request.exclude_dexes = Some(config.dex_blacklist.join(","));
                 }
-                let response = client.order(&request).await?;
+                let response = client.order_with_ip(&request, local_ip).await?;
                 Ok(Some(QuoteResponseVariant::Ultra(response)))
             }
             QuoteBackend::Disabled => {

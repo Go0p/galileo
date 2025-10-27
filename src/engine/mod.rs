@@ -7,6 +7,7 @@ mod planner;
 mod precheck;
 mod profit;
 mod quote;
+mod quote_dispatcher;
 mod scheduler;
 mod swap_preparer;
 mod types;
@@ -14,20 +15,24 @@ pub mod ultra;
 
 pub use aggregator::SwapInstructionsVariant;
 pub use builder::{BuilderConfig, TransactionBuilder};
-pub use context::{Action, StrategyContext, StrategyDecision, StrategyResources};
+pub use context::{Action, QuoteBatchPlan, StrategyContext, StrategyDecision, StrategyResources};
 pub use error::{EngineError, EngineResult};
 pub use identity::EngineIdentity;
 pub use planner::{DispatchPlan, DispatchStrategy, TxVariant, TxVariantPlanner, VariantId};
 pub use precheck::AccountPrechecker;
 pub use profit::{ProfitConfig, ProfitEvaluator, TipConfig};
 pub use quote::{QuoteConfig, QuoteExecutor};
+pub use quote_dispatcher::QuoteDispatcher;
 pub use scheduler::Scheduler;
 pub use swap_preparer::{ComputeUnitPriceMode, SwapPreparer};
 pub use types::{ExecutionPlan, QuoteTask, StrategyTick, SwapOpportunity, TradeProfile};
 
+use self::types::DoubleQuote;
+
 use self::aggregator::MultiLegInstructions;
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -58,6 +63,7 @@ use crate::multi_leg::types::{
     LegDescriptor as MultiLegDescriptor, LegPlan, LegSide as MultiLegSide,
     QuoteIntent as MultiLegQuoteIntent,
 };
+use crate::network::{IpAllocator, IpLeaseHandle, IpLeaseMode, IpTaskKind};
 use crate::strategy::types::{BlindDex, BlindMarketMeta, BlindOrder, BlindStep, TradePair};
 use crate::strategy::{Strategy, StrategyEvent};
 use crate::txs::jupiter::route_v2::{RouteV2Accounts, RouteV2InstructionBuilder};
@@ -209,6 +215,10 @@ impl MintSchedule {
     fn mark_dispatched(&mut self, now: Instant) {
         self.next_ready = now + self.process_delay;
     }
+
+    fn process_delay(&self) -> Duration {
+        self.process_delay
+    }
 }
 
 #[derive(Clone)]
@@ -219,6 +229,8 @@ pub struct EngineSettings {
     pub dispatch_strategy: DispatchStrategy,
     pub cu_multiplier: f64,
     compute_unit_price_mode: Option<ComputeUnitPriceMode>,
+    pub quote_parallelism: Option<u16>,
+    pub quote_batch_interval: Duration,
 }
 
 impl EngineSettings {
@@ -230,6 +242,8 @@ impl EngineSettings {
             dispatch_strategy: DispatchStrategy::default(),
             cu_multiplier: 1.0,
             compute_unit_price_mode: None,
+            quote_parallelism: None,
+            quote_batch_interval: Duration::ZERO,
         }
     }
 
@@ -258,6 +272,16 @@ impl EngineSettings {
         self
     }
 
+    pub fn with_quote_parallelism(mut self, parallelism: Option<u16>) -> Self {
+        self.quote_parallelism = parallelism;
+        self
+    }
+
+    pub fn with_quote_batch_interval(mut self, interval: Duration) -> Self {
+        self.quote_batch_interval = interval;
+        self
+    }
+
     pub fn sample_compute_unit_price(&self) -> Option<u64> {
         self.compute_unit_price_mode
             .as_ref()
@@ -273,6 +297,8 @@ where
     strategy: S,
     landers: Arc<LanderStack>,
     identity: EngineIdentity,
+    ip_allocator: Arc<IpAllocator>,
+    quote_dispatcher: QuoteDispatcher,
     quote_executor: QuoteExecutor,
     profit_evaluator: ProfitEvaluator,
     swap_preparer: SwapPreparer,
@@ -283,6 +309,7 @@ where
     trade_pairs: Vec<TradePair>,
     trade_profiles: BTreeMap<Pubkey, MintSchedule>,
     variant_planner: TxVariantPlanner,
+    next_batch_id: u64,
     multi_leg: Option<MultiLegEngineContext>,
 }
 
@@ -295,6 +322,7 @@ where
         strategy: S,
         landers: Arc<LanderStack>,
         identity: EngineIdentity,
+        ip_allocator: Arc<IpAllocator>,
         quote_executor: QuoteExecutor,
         profit_evaluator: ProfitEvaluator,
         swap_preparer: SwapPreparer,
@@ -306,6 +334,11 @@ where
         trade_profiles: BTreeMap<Pubkey, TradeProfile>,
         multi_leg: Option<MultiLegEngineContext>,
     ) -> Self {
+        let quote_dispatcher = QuoteDispatcher::new(
+            Arc::clone(&ip_allocator),
+            settings.quote_parallelism,
+            settings.quote_batch_interval,
+        );
         let trade_profiles = trade_profiles
             .into_iter()
             .map(|(mint, profile)| (mint, MintSchedule::from_profile(profile)))
@@ -314,6 +347,8 @@ where
             strategy,
             landers,
             identity,
+            ip_allocator,
+            quote_dispatcher,
             quote_executor,
             profit_evaluator,
             swap_preparer,
@@ -324,6 +359,7 @@ where
             trade_pairs,
             trade_profiles,
             variant_planner: TxVariantPlanner::new(),
+            next_batch_id: 1,
             multi_leg,
         }
     }
@@ -340,6 +376,14 @@ where
             "策略引擎启动"
         );
 
+        debug!(
+            target: "engine::network",
+            total_slots = self.ip_allocator.total_slots(),
+            per_ip_limit = ?self.ip_allocator.per_ip_inflight_limit(),
+            source = ?self.ip_allocator.source(),
+            "IP 资源池就绪"
+        );
+
         self.run_jupiter().await
     }
 
@@ -354,12 +398,7 @@ where
     async fn handle_action(&mut self, action: Action) -> EngineResult<()> {
         match action {
             Action::Idle => Ok(()),
-            Action::Quote(tasks) => {
-                for task in tasks {
-                    self.process_task(task).await?;
-                }
-                Ok(())
-            }
+            Action::Quote(batches) => self.run_quote_batches(batches).await,
             Action::DispatchBlind(batch) => self.process_blind_batch(batch).await,
         }
     }
@@ -813,7 +852,141 @@ where
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
-    async fn process_task(&mut self, task: QuoteTask) -> EngineResult<()> {
+    async fn process_quote_batch_legacy(&mut self, batch: QuoteBatchPlan) -> EngineResult<()> {
+        let QuoteBatchPlan {
+            batch_id,
+            pair,
+            amount,
+            process_delay,
+        } = batch;
+
+        trace!(
+            target: "engine::quote",
+            batch_id,
+            amount,
+            process_delay = ?process_delay,
+            "处理报价批次（legacy）"
+        );
+
+        if !process_delay.is_zero() {
+            tokio::time::sleep(process_delay).await;
+        }
+
+        let lease = self
+            .ip_allocator
+            .acquire(IpTaskKind::QuoteBuy, IpLeaseMode::Ephemeral)
+            .await?;
+        let lease_handle = lease.handle();
+        drop(lease);
+        let local_ip = Some(lease_handle.ip());
+
+        let task = QuoteTask::new(pair, amount);
+        let result = self
+            .process_task(task, Some(&lease_handle), Some(batch_id), local_ip)
+            .await;
+
+        if let Err(err) = &result {
+            if let Some(outcome) = quote_dispatcher::classify_ip_outcome(err) {
+                lease_handle.mark_outcome(outcome);
+            }
+        }
+
+        result
+    }
+
+    async fn process_quote_outcome(
+        &mut self,
+        batch: QuoteBatchPlan,
+        quote: Option<DoubleQuote>,
+        local_ip: Option<IpAddr>,
+    ) -> EngineResult<()> {
+        let QuoteBatchPlan {
+            batch_id,
+            pair,
+            amount,
+            process_delay,
+        } = batch;
+
+        trace!(
+            target: "engine::quote",
+            batch_id,
+            amount,
+            process_delay = ?process_delay,
+            has_quote = quote.is_some(),
+            "处理并发报价结果"
+        );
+
+        let Some(double_quote) = quote else {
+            return Ok(());
+        };
+
+        let task = QuoteTask::new(pair.clone(), amount);
+        let forward_out = double_quote.forward.out_amount();
+        let reverse_out = double_quote.reverse.out_amount();
+        let aggregator = format!("{:?}", double_quote.forward.kind());
+        events::quote_round_trip(
+            self.strategy.name(),
+            &task,
+            aggregator.as_str(),
+            forward_out,
+            reverse_out,
+            Some(batch_id),
+            local_ip,
+        );
+
+        let Some(opportunity) = self
+            .profit_evaluator
+            .evaluate(task.amount, &double_quote, &pair)
+        else {
+            return Ok(());
+        };
+        events::profit_detected(self.strategy.name(), &opportunity);
+
+        let plan = ExecutionPlan::with_deadline(opportunity, self.settings.landing_timeout);
+        self.execute_plan(plan).await
+    }
+
+    async fn run_quote_batches(&mut self, batches: Vec<QuoteBatchPlan>) -> EngineResult<()> {
+        if batches.is_empty() {
+            return Ok(());
+        }
+
+        let planned_batches = self.quote_dispatcher.plan(batches);
+
+        if self.multi_leg.is_some() {
+            for batch in planned_batches {
+                self.process_quote_batch_legacy(batch).await?;
+            }
+            return Ok(());
+        }
+
+        let strategy_label = Arc::new(self.strategy.name().to_string());
+        let outcomes = self
+            .quote_dispatcher
+            .dispatch(
+                planned_batches,
+                self.quote_executor.clone(),
+                self.settings.quote.clone(),
+                Arc::clone(&strategy_label),
+            )
+            .await?;
+
+        for outcome in outcomes {
+            self.process_quote_outcome(outcome.batch, outcome.quote, outcome.local_ip)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
+    async fn process_task(
+        &mut self,
+        task: QuoteTask,
+        lease: Option<&IpLeaseHandle>,
+        batch_id: Option<u64>,
+        local_ip: Option<IpAddr>,
+    ) -> EngineResult<()> {
         if let Some(mut context) = self.multi_leg.take() {
             let result = self.process_multi_leg_task(&mut context, task).await;
             self.multi_leg = Some(context);
@@ -821,20 +994,34 @@ where
         }
 
         let strategy_name = self.strategy.name();
-        events::quote_start(strategy_name, &task);
+        events::quote_start(strategy_name, &task, batch_id, local_ip);
         let quote_started = Instant::now();
         let double_quote = match self
             .quote_executor
-            .round_trip(&task, &self.settings.quote)
+            .round_trip(&task, &self.settings.quote, lease)
             .await?
         {
             Some(value) => value,
             None => {
-                events::quote_end(strategy_name, &task, false, quote_started.elapsed());
+                events::quote_end(
+                    strategy_name,
+                    &task,
+                    false,
+                    quote_started.elapsed(),
+                    batch_id,
+                    local_ip,
+                );
                 return Ok(());
             }
         };
-        events::quote_end(strategy_name, &task, true, quote_started.elapsed());
+        events::quote_end(
+            strategy_name,
+            &task,
+            true,
+            quote_started.elapsed(),
+            batch_id,
+            local_ip,
+        );
         let forward_out = double_quote.forward.out_amount();
         let reverse_out = double_quote.reverse.out_amount();
         let aggregator = format!("{:?}", double_quote.forward.kind());
@@ -844,6 +1031,8 @@ where
             aggregator.as_str(),
             forward_out,
             reverse_out,
+            batch_id,
+            local_ip,
         );
 
         let opportunity =
@@ -1230,13 +1419,33 @@ where
             "检测到套利机会"
         );
 
-        let swap_variant = match self
-            .swap_preparer
-            .prepare(&opportunity, &self.identity)
+        let swap_lease = match self
+            .ip_allocator
+            .acquire(IpTaskKind::SwapInstruction, IpLeaseMode::Ephemeral)
             .await
         {
-            Ok(value) => value,
+            Ok(lease) => lease,
+            Err(err) => return Err(EngineError::NetworkResource(err)),
+        };
+        let swap_handle = swap_lease.handle();
+        let swap_ip = Some(swap_handle.ip());
+        drop(swap_lease);
+
+        let swap_variant = match self
+            .swap_preparer
+            .prepare(&opportunity, &self.identity, Some(&swap_handle))
+            .await
+        {
+            Ok(value) => {
+                drop(swap_handle);
+                value
+            }
             Err(err) => {
+                if let Some(outcome) = crate::engine::quote_dispatcher::classify_ip_outcome(&err) {
+                    swap_handle.mark_outcome(outcome);
+                }
+                drop(swap_handle);
+
                 if let EngineError::Dflow(dflow_err @ DflowError::ApiStatus { status, body, .. }) =
                     &err
                 {
@@ -1334,6 +1543,7 @@ where
             &opportunity,
             compute_unit_limit,
             prioritization_fee,
+            swap_ip,
         );
 
         if let Some(meta) = &flashloan_meta {
@@ -1361,6 +1571,7 @@ where
             prepared.slot,
             &prepared.blockhash.to_string(),
             prepared.last_valid_block_height,
+            swap_ip,
         );
 
         if self.settings.dry_run {
@@ -1435,6 +1646,7 @@ where
         let resources = StrategyResources {
             pairs: &self.trade_pairs,
             trade_profiles: &mut self.trade_profiles,
+            next_batch_id: &mut self.next_batch_id,
         };
         let ctx = StrategyContext::new(resources);
         let decision = self.strategy.on_market_event(&event, ctx);

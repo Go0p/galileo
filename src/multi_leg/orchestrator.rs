@@ -7,13 +7,19 @@ use tracing::debug;
 
 use crate::multi_leg::leg::LegProvider;
 use crate::multi_leg::types::{LegBuildContext, LegDescriptor, LegPlan, LegSide, QuoteIntent};
+use crate::network::IpLeaseHandle;
 
 /// 对外暴露的动态腿提供方接口，统一 quote + plan 调用。
 #[async_trait]
 pub trait DynLegProvider: Send + Sync {
     fn descriptor(&self) -> LegDescriptor;
 
-    async fn plan(&self, intent: &QuoteIntent, context: &LegBuildContext) -> Result<LegPlan>;
+    async fn plan(
+        &self,
+        intent: &QuoteIntent,
+        context: &LegBuildContext,
+        lease: Option<&IpLeaseHandle>,
+    ) -> Result<LegPlan>;
 }
 
 /// 将任意实现 [`LegProvider`] 的类型适配为 [`DynLegProvider`]。
@@ -39,11 +45,20 @@ where
         self.descriptor.clone()
     }
 
-    async fn plan(&self, intent: &QuoteIntent, context: &LegBuildContext) -> Result<LegPlan> {
-        let quote = self.inner.quote(intent).await.map_err(anyhow::Error::new)?;
+    async fn plan(
+        &self,
+        intent: &QuoteIntent,
+        context: &LegBuildContext,
+        lease: Option<&IpLeaseHandle>,
+    ) -> Result<LegPlan> {
+        let quote = self
+            .inner
+            .quote(intent, lease)
+            .await
+            .map_err(anyhow::Error::new)?;
         let plan = self
             .inner
-            .build_plan(&quote, context)
+            .build_plan(&quote, context, lease)
             .await
             .map_err(anyhow::Error::new)?;
         Ok(plan)
@@ -160,7 +175,7 @@ impl MultiLegOrchestrator {
             let descriptor = entry.descriptor.clone();
             let provider = Arc::clone(&entry.provider);
             async move {
-                let result = provider.plan(intent, context).await;
+                let result = provider.plan(intent, context, None).await;
                 PlanAttempt { descriptor, result }
             }
         });
@@ -177,6 +192,8 @@ impl MultiLegOrchestrator {
         sell_intent: &QuoteIntent,
         buy_context: &LegBuildContext,
         sell_context: &LegBuildContext,
+        buy_lease: Option<&IpLeaseHandle>,
+        sell_lease: Option<&IpLeaseHandle>,
     ) -> Result<LegPairPlan> {
         let buy_entry = self
             .buy_legs
@@ -191,7 +208,7 @@ impl MultiLegOrchestrator {
         let sell_provider = Arc::clone(&sell_entry.provider);
 
         let mut buy_plan = buy_provider
-            .plan(buy_intent, buy_context)
+            .plan(buy_intent, buy_context, buy_lease)
             .await
             .map_err(|err| anyhow!("买腿计划失败: {err}"))?;
 
@@ -202,7 +219,7 @@ impl MultiLegOrchestrator {
         let mut adjusted_sell_intent = sell_intent.clone();
         adjusted_sell_intent.amount = sell_amount;
         let sell_plan = sell_provider
-            .plan(&adjusted_sell_intent, sell_context)
+            .plan(&adjusted_sell_intent, sell_context, sell_lease)
             .await
             .map_err(|err| anyhow!("卖腿计划失败: {err}"))?;
 
@@ -273,6 +290,7 @@ mod tests {
         async fn quote(
             &self,
             _intent: &QuoteIntent,
+            _lease: Option<&IpLeaseHandle>,
         ) -> Result<Self::QuoteResponse, Self::BuildError> {
             Ok(())
         }
@@ -281,6 +299,7 @@ mod tests {
             &self,
             _quote: &Self::QuoteResponse,
             _context: &LegBuildContext,
+            _lease: Option<&IpLeaseHandle>,
         ) -> Result<Self::Plan, Self::BuildError> {
             Ok(self.plan.clone())
         }
@@ -359,7 +378,16 @@ mod tests {
             let context = LegBuildContext::default();
 
             let plan = orchestrator
-                .plan_pair(0, 0, &buy_intent, &sell_intent, &context, &context)
+                .plan_pair(
+                    0,
+                    0,
+                    &buy_intent,
+                    &sell_intent,
+                    &context,
+                    &context,
+                    None,
+                    None,
+                )
                 .await
                 .expect("plan pair");
 

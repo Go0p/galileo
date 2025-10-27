@@ -1,8 +1,10 @@
+use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::anyhow;
 use solana_address_lookup_table_interface::state::AddressLookupTable;
+use solana_client::client_error::{ClientError, ClientErrorKind};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::account::Account;
 use solana_sdk::hash::Hash;
@@ -16,6 +18,9 @@ use tracing::{debug, info, warn};
 use yellowstone_grpc_proto::geyser::CommitmentLevel;
 
 use crate::cache::{Cache, InMemoryBackend};
+use crate::network::{
+    IpAllocator, IpBoundClientPool, IpLeaseMode, IpLeaseOutcome, IpTaskKind, RpcClientFactoryFn,
+};
 use crate::rpc::BlockhashSnapshot;
 use crate::rpc::yellowstone::YellowstoneBlockhashClient;
 
@@ -95,10 +100,17 @@ pub struct TransactionBuilder {
     config: BuilderConfig,
     yellowstone: Option<YellowstoneBlockhashClient>,
     lookup_cache: Cache<InMemoryBackend<Pubkey, AddressLookupTableAccount>>,
+    ip_allocator: Arc<IpAllocator>,
+    rpc_pool: Option<Arc<IpBoundClientPool<RpcClientFactoryFn>>>,
 }
 
 impl TransactionBuilder {
-    pub fn new(rpc: Arc<RpcClient>, config: BuilderConfig) -> Self {
+    pub fn new(
+        rpc: Arc<RpcClient>,
+        config: BuilderConfig,
+        ip_allocator: Arc<IpAllocator>,
+        rpc_pool: Option<Arc<IpBoundClientPool<RpcClientFactoryFn>>>,
+    ) -> Self {
         let yellowstone =
             config
                 .yellowstone
@@ -133,6 +145,8 @@ impl TransactionBuilder {
             config,
             yellowstone,
             lookup_cache: Cache::new(InMemoryBackend::default()),
+            ip_allocator,
+            rpc_pool,
         }
     }
 
@@ -143,7 +157,7 @@ impl TransactionBuilder {
         instructions: &SwapInstructionsVariant,
         tip_lamports: u64,
     ) -> EngineResult<PreparedTransaction> {
-        self.build_internal(identity, instructions, None, tip_lamports)
+        self.build_with_options(identity, instructions, None, tip_lamports)
             .await
     }
 
@@ -154,8 +168,46 @@ impl TransactionBuilder {
         sequence: Vec<Instruction>,
         tip_lamports: u64,
     ) -> EngineResult<PreparedTransaction> {
-        self.build_internal(identity, instructions, Some(sequence), tip_lamports)
+        self.build_with_options(identity, instructions, Some(sequence), tip_lamports)
             .await
+    }
+
+    async fn build_with_options(
+        &self,
+        identity: &EngineIdentity,
+        instructions: &SwapInstructionsVariant,
+        override_sequence: Option<Vec<Instruction>>,
+        tip_lamports: u64,
+    ) -> EngineResult<PreparedTransaction> {
+        let lease = self
+            .ip_allocator
+            .acquire(IpTaskKind::SwapInstruction, IpLeaseMode::Ephemeral)
+            .await
+            .map_err(EngineError::NetworkResource)?;
+        let handle = lease.handle();
+        let local_ip = Some(handle.ip());
+        drop(lease);
+
+        let rpc = self.rpc_for_ip(local_ip);
+        let result = self
+            .build_internal(
+                identity,
+                instructions,
+                override_sequence,
+                tip_lamports,
+                &rpc,
+            )
+            .await;
+
+        if let Err(err) = &result {
+            if let Some(outcome) = classify_builder_error(err) {
+                handle.mark_outcome(outcome);
+            }
+        }
+
+        drop(handle);
+
+        result
     }
 
     async fn build_internal(
@@ -164,11 +216,12 @@ impl TransactionBuilder {
         instructions: &SwapInstructionsVariant,
         override_sequence: Option<Vec<Instruction>>,
         tip_lamports: u64,
+        rpc: &Arc<RpcClient>,
     ) -> EngineResult<PreparedTransaction> {
         let lookup_accounts = if let Some(resolved) = Self::resolved_tables(instructions) {
             resolved
         } else {
-            self.load_lookup_tables(instructions.address_lookup_table_addresses())
+            self.load_lookup_tables(rpc, instructions.address_lookup_table_addresses())
                 .await?
         };
 
@@ -179,7 +232,7 @@ impl TransactionBuilder {
                 last_valid_block_height: Some(meta.last_valid_block_height),
             }
         } else {
-            self.latest_blockhash().await?
+            self.latest_blockhash(rpc).await?
         };
         let blockhash = snapshot.blockhash;
         let last_valid_block_height = snapshot.last_valid_block_height;
@@ -223,6 +276,7 @@ impl TransactionBuilder {
 
     async fn load_lookup_tables(
         &self,
+        rpc: &Arc<RpcClient>,
         addresses: &[solana_sdk::pubkey::Pubkey],
     ) -> EngineResult<Vec<AddressLookupTableAccount>> {
         if addresses.is_empty() {
@@ -244,7 +298,7 @@ impl TransactionBuilder {
             return Ok(result);
         }
 
-        let fetched = self.fetch_lookup_tables(&missing).await?;
+        let fetched = self.fetch_lookup_tables(rpc, &missing).await?;
         for table in &fetched {
             self.lookup_cache
                 .insert_arc(table.key, Arc::new(table.clone()), None)
@@ -256,13 +310,14 @@ impl TransactionBuilder {
 
     async fn fetch_lookup_tables(
         &self,
+        rpc: &Arc<RpcClient>,
         addresses: &[Pubkey],
     ) -> EngineResult<Vec<AddressLookupTableAccount>> {
         const ALT_BATCH_LIMIT: usize = 100;
         let mut collected = Vec::new();
 
         for chunk in addresses.chunks(ALT_BATCH_LIMIT) {
-            match self.rpc.get_multiple_accounts(chunk).await {
+            match rpc.get_multiple_accounts(chunk).await {
                 Ok(accounts) => {
                     for (address, maybe_account) in chunk.iter().zip(accounts.into_iter()) {
                         match maybe_account {
@@ -286,7 +341,7 @@ impl TransactionBuilder {
                         "批量拉取 ALT 失败，回退逐条查询"
                     );
                     for address in chunk {
-                        match self.rpc.get_account(address).await {
+                        match rpc.get_account(address).await {
                             Ok(account) => {
                                 if let Some(table) = deserialize_lookup_table(address, account) {
                                     collected.push(table);
@@ -307,6 +362,25 @@ impl TransactionBuilder {
         Ok(collected)
     }
 
+    fn rpc_for_ip(&self, ip: Option<IpAddr>) -> Arc<RpcClient> {
+        if let Some(ip) = ip {
+            if let Some(pool) = &self.rpc_pool {
+                match pool.get_or_create(ip) {
+                    Ok(client) => return client,
+                    Err(err) => {
+                        warn!(
+                            target: "engine::builder",
+                            ip = %ip,
+                            error = %err,
+                            "构建绑定 IP 的 RPC 客户端失败，回退默认客户端"
+                        );
+                    }
+                }
+            }
+        }
+        Arc::clone(&self.rpc)
+    }
+
     fn resolved_tables(
         instructions: &SwapInstructionsVariant,
     ) -> Option<Vec<AddressLookupTableAccount>> {
@@ -318,7 +392,7 @@ impl TransactionBuilder {
         }
     }
 
-    async fn latest_blockhash(&self) -> EngineResult<BlockhashSnapshot> {
+    async fn latest_blockhash(&self, rpc: &Arc<RpcClient>) -> EngineResult<BlockhashSnapshot> {
         if let Some(client) = &self.yellowstone {
             match client.latest_blockhash().await {
                 Ok(snapshot) => return Ok(snapshot),
@@ -331,15 +405,11 @@ impl TransactionBuilder {
                 }
             }
         }
-        self.rpc_latest_blockhash().await
+        self.rpc_latest_blockhash(rpc).await
     }
 
-    async fn rpc_latest_blockhash(&self) -> EngineResult<BlockhashSnapshot> {
-        let blockhash = self
-            .rpc
-            .get_latest_blockhash()
-            .await
-            .map_err(EngineError::Rpc)?;
+    async fn rpc_latest_blockhash(&self, rpc: &Arc<RpcClient>) -> EngineResult<BlockhashSnapshot> {
+        let blockhash = rpc.get_latest_blockhash().await.map_err(EngineError::Rpc)?;
         Ok(BlockhashSnapshot {
             blockhash,
             slot: None,
@@ -388,4 +458,42 @@ fn build_memo_instruction(text: &str) -> Instruction {
         accounts: vec![],
         data: text.as_bytes().to_vec(),
     }
+}
+
+fn classify_builder_error(err: &EngineError) -> Option<IpLeaseOutcome> {
+    match err {
+        EngineError::Rpc(inner) => classify_client_error(inner),
+        EngineError::Network(inner) => classify_reqwest_error(inner),
+        EngineError::NetworkResource(_) => Some(IpLeaseOutcome::NetworkError),
+        _ => None,
+    }
+}
+
+fn classify_client_error(err: &ClientError) -> Option<IpLeaseOutcome> {
+    match err.kind() {
+        ClientErrorKind::Reqwest(inner) => classify_reqwest_error(inner),
+        ClientErrorKind::Io(_) => Some(IpLeaseOutcome::NetworkError),
+        _ => None,
+    }
+}
+
+fn classify_reqwest_error(err: &reqwest::Error) -> Option<IpLeaseOutcome> {
+    if err.is_timeout() {
+        return Some(IpLeaseOutcome::Timeout);
+    }
+    if let Some(status) = err.status() {
+        if status.as_u16() == 429 {
+            return Some(IpLeaseOutcome::RateLimited);
+        }
+        if status.as_u16() == 408 || status.as_u16() == 504 {
+            return Some(IpLeaseOutcome::Timeout);
+        }
+        if status.is_server_error() {
+            return Some(IpLeaseOutcome::NetworkError);
+        }
+    }
+    if err.is_connect() || err.is_request() {
+        return Some(IpLeaseOutcome::NetworkError);
+    }
+    None
 }

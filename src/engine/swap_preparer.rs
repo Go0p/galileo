@@ -21,6 +21,7 @@ use crate::engine::ultra::{
     UltraPreparationParams, UltraPreparedSwap,
 };
 use crate::multi_leg::alt_cache::AltCache;
+use crate::network::IpLeaseHandle;
 use rand::Rng;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
@@ -133,11 +134,14 @@ impl SwapPreparer {
         &self,
         opportunity: &SwapOpportunity,
         identity: &EngineIdentity,
+        lease: Option<&IpLeaseHandle>,
     ) -> EngineResult<SwapInstructionsVariant> {
         let payload = opportunity
             .merged_quote
             .clone()
             .ok_or_else(|| EngineError::InvalidConfig("套利机会缺少报价数据".into()))?;
+
+        let local_ip = lease.map(|handle| handle.ip());
 
         let variant = match (&self.backend, payload) {
             (
@@ -171,7 +175,7 @@ impl SwapPreparer {
                     }
                 }
 
-                let response = client.swap_instructions(&request).await?;
+                let response = client.swap_instructions(&request, local_ip).await?;
                 SwapInstructionsVariant::Jupiter(response)
             }
             (
@@ -203,7 +207,7 @@ impl SwapPreparer {
                     }
                 }
 
-                let response = client.swap_instructions(&request).await?;
+                let response = client.swap_instructions(&request, local_ip).await?;
                 SwapInstructionsVariant::Dflow(response)
             }
             (SwapPreparerBackend::Ultra { rpc, alt_cache }, QuotePayloadVariant::Ultra(_)) => {

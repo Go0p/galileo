@@ -1,4 +1,5 @@
 use std::fmt::Debug;
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -15,13 +16,18 @@ use crate::multi_leg::leg::LegProvider;
 use crate::multi_leg::types::{
     AggregatorKind, LegBuildContext, LegDescriptor, LegPlan, LegQuote, LegSide, QuoteIntent,
 };
+use crate::network::{IpLeaseHandle, IpLeaseOutcome};
 use crate::strategy::types::TradePair;
 
 /// Titan 报价源抽象，便于在单元测试中注入 mock。
 #[async_trait]
 pub trait TitanQuoteSource: Send + Sync {
-    async fn quote(&self, intent: &QuoteIntent, side: LegSide)
-    -> Result<TitanQuote, TitanLegError>;
+    async fn quote(
+        &self,
+        intent: &QuoteIntent,
+        side: LegSide,
+        local_ip: Option<IpAddr>,
+    ) -> Result<TitanQuote, TitanLegError>;
 }
 
 /// Titan 报价结构，封装选定的 SwapRoute 及相关上下文。
@@ -74,6 +80,7 @@ impl TitanQuoteSource for TitanWsQuoteSource {
         &self,
         intent: &QuoteIntent,
         side: LegSide,
+        local_ip: Option<IpAddr>,
     ) -> Result<TitanQuote, TitanLegError> {
         if side != LegSide::Buy {
             return Err(TitanLegError::Source("Titan 仅支持买腿报价".to_string()));
@@ -85,6 +92,7 @@ impl TitanQuoteSource for TitanWsQuoteSource {
             &trade_pair,
             TitanLeg::Forward,
             intent.amount,
+            local_ip,
         )
         .await
         .map_err(TitanLegError::from)?;
@@ -148,7 +156,11 @@ where
         self.descriptor.clone()
     }
 
-    async fn quote(&self, intent: &QuoteIntent) -> Result<Self::QuoteResponse, Self::BuildError> {
+    async fn quote(
+        &self,
+        intent: &QuoteIntent,
+        lease: Option<&IpLeaseHandle>,
+    ) -> Result<Self::QuoteResponse, Self::BuildError> {
         debug!(
             target: "multi_leg::titan",
             input = %intent.input_mint,
@@ -157,13 +169,32 @@ where
             side = %self.descriptor.side,
             "请求 Titan 报价"
         );
-        self.source.quote(intent, self.descriptor.side).await
+        let result = self
+            .source
+            .quote(
+                intent,
+                self.descriptor.side,
+                lease.map(|handle| handle.ip()),
+            )
+            .await;
+        if let Err(err) = &result {
+            if let Some(handle) = lease {
+                tracing::warn!(
+                    target = "multi_leg::titan",
+                    error = %err,
+                    "Titan 报价失败，标记网络错误"
+                );
+                handle.mark_outcome(IpLeaseOutcome::NetworkError);
+            }
+        }
+        result
     }
 
     async fn build_plan(
         &self,
         quote: &Self::QuoteResponse,
         _context: &LegBuildContext,
+        _lease: Option<&IpLeaseHandle>,
     ) -> Result<Self::Plan, Self::BuildError> {
         let instructions = quote
             .route
@@ -254,6 +285,7 @@ mod tests {
             &self,
             _intent: &QuoteIntent,
             _side: LegSide,
+            _local_ip: Option<IpAddr>,
         ) -> Result<TitanQuote, TitanLegError> {
             self.quote
                 .lock()
@@ -316,9 +348,9 @@ mod tests {
         let intent = QuoteIntent::new(Pubkey::new_unique(), Pubkey::new_unique(), 100, 50);
         let provider = TitanLegProvider::new(MockSource::with_quote(route), LegSide::Buy);
 
-        let quote = provider.quote(&intent).await.expect("quote");
+        let quote = provider.quote(&intent, None).await.expect("quote");
         let plan = provider
-            .build_plan(&quote, &LegBuildContext::default())
+            .build_plan(&quote, &LegBuildContext::default(), None)
             .await
             .expect("plan");
 

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use reqwest::StatusCode;
 use tracing::debug;
 
 use crate::api::dflow::{
@@ -12,6 +13,7 @@ use crate::multi_leg::leg::LegProvider;
 use crate::multi_leg::types::{
     AggregatorKind, LegBuildContext, LegDescriptor, LegPlan, LegQuote, LegSide, QuoteIntent,
 };
+use crate::network::{IpLeaseHandle, IpLeaseOutcome};
 
 /// DFlow 腿提供方，实现报价与指令获取的封装。
 #[derive(Clone, Debug)]
@@ -144,7 +146,11 @@ impl LegProvider for DflowLegProvider {
         self.descriptor.clone()
     }
 
-    async fn quote(&self, intent: &QuoteIntent) -> Result<Self::QuoteResponse, Self::BuildError> {
+    async fn quote(
+        &self,
+        intent: &QuoteIntent,
+        lease: Option<&IpLeaseHandle>,
+    ) -> Result<Self::QuoteResponse, Self::BuildError> {
         let request = self.build_quote_request(intent);
         debug!(
             target: "multi_leg::dflow",
@@ -153,16 +159,42 @@ impl LegProvider for DflowLegProvider {
             amount = intent.amount,
             "开始请求 DFlow 报价"
         );
-        self.client.quote(&request).await
+        let result = self
+            .client
+            .quote_with_ip(&request, lease.map(|handle| handle.ip()))
+            .await;
+        if let Err(err) = &result {
+            if let Some(handle) = lease {
+                if let Some(outcome) = classify_dflow_error(err) {
+                    handle.mark_outcome(outcome);
+                }
+            }
+        }
+        result
     }
 
     async fn build_plan(
         &self,
         quote: &Self::QuoteResponse,
         context: &LegBuildContext,
+        lease: Option<&IpLeaseHandle>,
     ) -> Result<Self::Plan, Self::BuildError> {
         let request = self.build_swap_request(quote, context);
-        let response = self.client.swap_instructions(&request).await?;
+        let response = match self
+            .client
+            .swap_instructions(&request, lease.map(|handle| handle.ip()))
+            .await
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                if let Some(handle) = lease {
+                    if let Some(outcome) = classify_dflow_error(&err) {
+                        handle.mark_outcome(outcome);
+                    }
+                }
+                return Err(err);
+            }
+        };
         let mut plan = self.into_plan(quote, response);
         if plan.requested_compute_unit_price_micro_lamports.is_none() {
             plan.requested_compute_unit_price_micro_lamports =
@@ -170,4 +202,45 @@ impl LegProvider for DflowLegProvider {
         }
         Ok(plan)
     }
+}
+
+fn classify_dflow_error(err: &DflowError) -> Option<IpLeaseOutcome> {
+    match err {
+        DflowError::RateLimited { .. } => Some(IpLeaseOutcome::RateLimited),
+        DflowError::ApiStatus { status, .. } => map_status(status),
+        DflowError::Http(inner) => classify_reqwest(inner),
+        DflowError::ConsecutiveFailureLimit { .. } => Some(IpLeaseOutcome::NetworkError),
+        DflowError::ClientPool(_) => Some(IpLeaseOutcome::NetworkError),
+        DflowError::Header(_) | DflowError::Schema(_) | DflowError::Json(_) => {
+            Some(IpLeaseOutcome::NetworkError)
+        }
+    }
+}
+
+fn classify_reqwest(err: &reqwest::Error) -> Option<IpLeaseOutcome> {
+    if err.is_timeout() {
+        return Some(IpLeaseOutcome::Timeout);
+    }
+    if let Some(status) = err.status() {
+        if let Some(mapped) = map_status(&status) {
+            return Some(mapped);
+        }
+    }
+    if err.is_connect() || err.is_request() {
+        return Some(IpLeaseOutcome::NetworkError);
+    }
+    None
+}
+
+fn map_status(status: &StatusCode) -> Option<IpLeaseOutcome> {
+    if *status == StatusCode::TOO_MANY_REQUESTS {
+        return Some(IpLeaseOutcome::RateLimited);
+    }
+    if *status == StatusCode::REQUEST_TIMEOUT || *status == StatusCode::GATEWAY_TIMEOUT {
+        return Some(IpLeaseOutcome::Timeout);
+    }
+    if status.is_server_error() {
+        return Some(IpLeaseOutcome::NetworkError);
+    }
+    None
 }

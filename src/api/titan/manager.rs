@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use solana_sdk::pubkey::Pubkey;
@@ -56,6 +57,7 @@ pub async fn subscribe_quote_stream(
     pair: &TradePair,
     leg: TitanLeg,
     amount: u64,
+    local_ip: Option<IpAddr>,
 ) -> Result<TitanQuoteStream, TitanError> {
     if amount == 0 {
         return Err(TitanError::Protocol(
@@ -64,7 +66,7 @@ pub async fn subscribe_quote_stream(
     }
 
     let endpoint = build_authenticated_endpoint(&config)?;
-    let client = Arc::new(TitanWsClient::connect(endpoint).await?);
+    let client = Arc::new(TitanWsClient::connect_with_local_ip(endpoint, local_ip).await?);
 
     let request = build_subscription_request(&config, pair, leg, amount);
     let session = client.subscribe_swap_quotes(request).await.map_err(|err| {

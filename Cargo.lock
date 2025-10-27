@@ -1268,6 +1268,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashmap"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1858,10 +1872,11 @@ dependencies = [
  "clap",
  "console",
  "core_affinity",
- "dashmap",
+ "dashmap 6.1.0",
  "flate2",
  "futures",
  "hotpath",
+ "if-addrs",
  "indicatif",
  "metrics",
  "metrics-exporter-prometheus",
@@ -1989,7 +2004,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68a7f542ee6b35af73b06abc0dad1c1bae89964e4e253bc4b587b91c9637867b"
 dependencies = [
  "cfg-if",
- "dashmap",
+ "dashmap 5.5.3",
  "futures",
  "futures-timer",
  "no-std-compat",
@@ -2455,6 +2470,16 @@ checksum = "3acae9609540aa318d1bc588455225fb2085b9ed0c4f6bd0d9d5bcd86f1a0344"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
+]
+
+[[package]]
+name = "if-addrs"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf39cc0423ee66021dc5eccface85580e4a001e0c5288bae8bea7ecb69225e90"
+dependencies = [
+ "libc",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4852,7 +4877,7 @@ checksum = "b17c4e94b0902099c0153268a854067e1fe4e459dc16f04f8f5f478e1677ad00"
 dependencies = [
  "async-trait",
  "bincode 1.3.3",
- "dashmap",
+ "dashmap 5.5.3",
  "futures",
  "futures-util",
  "indexmap 2.11.4",
@@ -6860,7 +6885,7 @@ dependencies = [
  "async-channel",
  "bytes",
  "crossbeam-channel",
- "dashmap",
+ "dashmap 5.5.3",
  "futures",
  "futures-util",
  "governor",

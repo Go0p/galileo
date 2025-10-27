@@ -1387,8 +1387,8 @@ impl Strategy for PureBlindStrategy {
 
                 for route in &self.routes {
                     if let Some(first_step) = route.forward.first() {
-                        if let Some(amounts) = ctx.take_amounts_if_ready(&first_step.input.mint) {
-                            for &amount in &amounts {
+                        if let Some(ready) = ctx.take_amounts_if_ready(&first_step.input.mint) {
+                            for &amount in &ready.amounts {
                                 let min_profit = route.min_profit();
                                 batch.push(BlindOrder {
                                     amount_in: amount,
@@ -1404,8 +1404,8 @@ impl Strategy for PureBlindStrategy {
                                 });
                             }
 
-                            if !amounts.is_empty() {
-                                let count = amounts.len();
+                            if !ready.amounts.is_empty() {
+                                let count = ready.amounts.len();
                                 events::pure_blind_orders_prepared(
                                     route.label(),
                                     "forward",

@@ -5,9 +5,12 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use reqwest::Client;
 use serde_json::{Value, json, map::Map};
+use std::net::IpAddr;
+use std::sync::Arc;
 use tracing::warn;
 
 use crate::engine::{TxVariant, VariantId};
+use crate::network::{IpBoundClientPool, ReqwestClientFactoryFn};
 
 use super::error::LanderError;
 use super::stack::{Deadline, LanderReceipt};
@@ -19,9 +22,11 @@ pub struct StakedLander {
     skip_preflight: Option<bool>,
     max_retries: Option<usize>,
     min_context_slot: Option<u64>,
+    client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
 }
 
 impl StakedLander {
+    #[allow(dead_code)]
     pub fn new(
         endpoints: Vec<String>,
         client: Client,
@@ -35,6 +40,25 @@ impl StakedLander {
             skip_preflight,
             max_retries,
             min_context_slot,
+            client_pool: None,
+        }
+    }
+
+    pub fn with_ip_pool(
+        endpoints: Vec<String>,
+        client: Client,
+        skip_preflight: Option<bool>,
+        max_retries: Option<usize>,
+        min_context_slot: Option<u64>,
+        client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
+    ) -> Self {
+        Self {
+            endpoints,
+            client,
+            skip_preflight,
+            max_retries,
+            min_context_slot,
+            client_pool,
         }
     }
 
@@ -46,11 +70,23 @@ impl StakedLander {
         self.endpoints.clone()
     }
 
+    fn http_client(&self, local_ip: Option<IpAddr>) -> Result<Client, LanderError> {
+        if let Some(ip) = local_ip {
+            if let Some(pool) = &self.client_pool {
+                return pool
+                    .get_or_create(ip)
+                    .map_err(|err| LanderError::fatal(format!("构建绑定 IP 的客户端失败: {err}")));
+            }
+        }
+        Ok(self.client.clone())
+    }
+
     pub async fn submit_variant(
         &self,
         variant: TxVariant,
         deadline: Deadline,
         endpoint: Option<&str>,
+        local_ip: Option<IpAddr>,
     ) -> Result<LanderReceipt, LanderError> {
         if deadline.expired() {
             return Err(LanderError::fatal(
@@ -87,10 +123,13 @@ impl StakedLander {
         let slot = variant.slot();
         let blockhash = variant.blockhash().to_string();
         let variant_id = variant.id();
+        let client = self.http_client(local_ip)?;
 
         if let Some(target) = endpoint {
             return self
-                .send_once(target, &payload, slot, &blockhash, variant_id)
+                .send_once(
+                    &client, target, &payload, slot, &blockhash, variant_id, local_ip,
+                )
                 .await;
         }
 
@@ -108,15 +147,18 @@ impl StakedLander {
             let payload_clone = payload.clone();
             let endpoint_clone = endpoint.clone();
             let blockhash_clone = blockhash.clone();
+            let client = client.clone();
 
             futures.push(async move {
                 lander
                     .send_once(
+                        &client,
                         &endpoint_clone,
                         &payload_clone,
                         slot,
                         blockhash_clone.as_str(),
                         variant_id,
+                        local_ip,
                     )
                     .await
                     .map(|receipt| (endpoint_clone, receipt))
@@ -144,14 +186,15 @@ impl StakedLander {
 
     async fn send_once(
         &self,
+        client: &Client,
         endpoint: &str,
         payload: &serde_json::Value,
         slot: u64,
         blockhash: &str,
         variant_id: VariantId,
+        local_ip: Option<IpAddr>,
     ) -> Result<LanderReceipt, LanderError> {
-        let response = self
-            .client
+        let response = client
             .post(endpoint)
             .json(payload)
             .send()
@@ -191,6 +234,7 @@ impl StakedLander {
             blockhash: blockhash.to_string(),
             signature,
             variant_id,
+            local_ip,
         })
     }
 }
