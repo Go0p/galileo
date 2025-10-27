@@ -1,14 +1,13 @@
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use crate::cache::{Cache, InMemoryBackend};
 use solana_client::client_error::{ClientError, ClientErrorKind};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_request::RpcError;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
-use tokio::sync::Mutex;
 
 use crate::config::FlashloanMarginfiConfig;
 use crate::engine::{EngineIdentity, SwapInstructionsVariant, SwapOpportunity};
@@ -39,13 +38,6 @@ impl MarginfiAccountRegistry {
     }
 }
 
-#[derive(Debug)]
-struct BalanceCacheEntry {
-    amount: u64,
-    fetched_at: Instant,
-    ttl: Duration,
-}
-
 #[derive(Debug, Clone)]
 pub struct MarginfiFlashloanPreparation {
     pub account: Pubkey,
@@ -58,7 +50,7 @@ pub struct MarginfiFlashloanManager {
     prefer_wallet_balance: bool,
     configured_default: Option<Pubkey>,
     fallback_marginfi: Option<MarginfiFlashloan>,
-    balance_cache: Mutex<HashMap<Pubkey, BalanceCacheEntry>>,
+    balance_cache: Cache<InMemoryBackend<Pubkey, u64>>,
     compute_unit_overhead: u32,
 }
 
@@ -76,7 +68,7 @@ impl MarginfiFlashloanManager {
             prefer_wallet_balance: cfg.prefer_wallet_balance,
             configured_default,
             fallback_marginfi,
-            balance_cache: Mutex::new(HashMap::new()),
+            balance_cache: Cache::new(InMemoryBackend::default()),
             compute_unit_overhead: cfg.compute_unit_overhead,
         }
     }
@@ -168,13 +160,8 @@ impl MarginfiFlashloanManager {
 
     async fn wallet_balance(&self, owner: &Pubkey, mint: &Pubkey) -> FlashloanResult<u64> {
         let ata = compute_associated_token_address(owner, mint);
-        {
-            let cache = self.balance_cache.lock().await;
-            if let Some(entry) = cache.get(&ata) {
-                if entry.fetched_at.elapsed() < entry.ttl {
-                    return Ok(entry.amount);
-                }
-            }
+        if let Some(entry) = self.balance_cache.get(&ata).await {
+            return Ok(*entry);
         }
 
         let amount = match self.rpc.get_token_account_balance(&ata).await {
@@ -188,15 +175,9 @@ impl MarginfiFlashloanManager {
             }
         };
 
-        let mut cache = self.balance_cache.lock().await;
-        cache.insert(
-            ata,
-            BalanceCacheEntry {
-                amount,
-                fetched_at: Instant::now(),
-                ttl: BALANCE_STATIC_TTL,
-            },
-        );
+        self.balance_cache
+            .insert(ata, amount, Some(BALANCE_STATIC_TTL))
+            .await;
 
         Ok(amount)
     }

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -13,10 +12,10 @@ use solana_sdk::message::{AddressLookupTableAccount, VersionedMessage};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::transaction::VersionedTransaction;
-use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 use yellowstone_grpc_proto::geyser::CommitmentLevel;
 
+use crate::cache::{Cache, InMemoryBackend};
 use crate::rpc::BlockhashSnapshot;
 use crate::rpc::yellowstone::YellowstoneBlockhashClient;
 
@@ -95,7 +94,7 @@ pub struct TransactionBuilder {
     rpc: Arc<RpcClient>,
     config: BuilderConfig,
     yellowstone: Option<YellowstoneBlockhashClient>,
-    lookup_cache: LookupTableCache,
+    lookup_cache: Cache<InMemoryBackend<Pubkey, AddressLookupTableAccount>>,
 }
 
 impl TransactionBuilder {
@@ -133,7 +132,7 @@ impl TransactionBuilder {
             rpc,
             config,
             yellowstone,
-            lookup_cache: LookupTableCache::default(),
+            lookup_cache: Cache::new(InMemoryBackend::default()),
         }
     }
 
@@ -226,7 +225,86 @@ impl TransactionBuilder {
         &self,
         addresses: &[solana_sdk::pubkey::Pubkey],
     ) -> EngineResult<Vec<AddressLookupTableAccount>> {
-        self.lookup_cache.resolve(&self.rpc, addresses).await
+        if addresses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut result = Vec::with_capacity(addresses.len());
+        let mut missing = Vec::new();
+
+        for address in addresses {
+            if let Some(entry) = self.lookup_cache.get(address).await {
+                result.push((*entry).clone());
+            } else {
+                missing.push(*address);
+            }
+        }
+
+        if missing.is_empty() {
+            return Ok(result);
+        }
+
+        let fetched = self.fetch_lookup_tables(&missing).await?;
+        for table in &fetched {
+            self.lookup_cache
+                .insert_arc(table.key, Arc::new(table.clone()), None)
+                .await;
+        }
+        result.extend(fetched);
+        Ok(result)
+    }
+
+    async fn fetch_lookup_tables(
+        &self,
+        addresses: &[Pubkey],
+    ) -> EngineResult<Vec<AddressLookupTableAccount>> {
+        const ALT_BATCH_LIMIT: usize = 100;
+        let mut collected = Vec::new();
+
+        for chunk in addresses.chunks(ALT_BATCH_LIMIT) {
+            match self.rpc.get_multiple_accounts(chunk).await {
+                Ok(accounts) => {
+                    for (address, maybe_account) in chunk.iter().zip(accounts.into_iter()) {
+                        match maybe_account {
+                            Some(account) => {
+                                if let Some(table) = deserialize_lookup_table(address, account) {
+                                    collected.push(table);
+                                }
+                            }
+                            None => warn!(
+                                target: "engine::builder",
+                                address = %address,
+                                "批量拉取 ALT 返回空账户"
+                            ),
+                        }
+                    }
+                }
+                Err(err) => {
+                    warn!(
+                        target: "engine::builder",
+                        error = %err,
+                        "批量拉取 ALT 失败，回退逐条查询"
+                    );
+                    for address in chunk {
+                        match self.rpc.get_account(address).await {
+                            Ok(account) => {
+                                if let Some(table) = deserialize_lookup_table(address, account) {
+                                    collected.push(table);
+                                }
+                            }
+                            Err(err) => warn!(
+                                target: "engine::builder",
+                                address = %address,
+                                error = %err,
+                                "拉取 ALT 账户失败"
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(collected)
     }
 
     fn resolved_tables(
@@ -270,127 +348,6 @@ impl TransactionBuilder {
     }
 }
 
-#[derive(Clone, Default)]
-struct LookupTableCache {
-    inner: Arc<RwLock<HashMap<Pubkey, AddressLookupTableAccount>>>,
-}
-
-impl LookupTableCache {
-    async fn resolve(
-        &self,
-        rpc: &Arc<RpcClient>,
-        addresses: &[Pubkey],
-    ) -> EngineResult<Vec<AddressLookupTableAccount>> {
-        if addresses.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut missing = Vec::new();
-        {
-            let guard = self.inner.read().await;
-            for address in addresses {
-                if !guard.contains_key(address) {
-                    missing.push(*address);
-                }
-            }
-        }
-
-        if !missing.is_empty() {
-            let fetched = Self::fetch_many(rpc, &missing).await?;
-            let mut guard = self.inner.write().await;
-            for account in fetched {
-                guard.insert(account.key, account);
-            }
-        }
-
-        let guard = self.inner.read().await;
-        let mut resolved = Vec::with_capacity(addresses.len());
-        for address in addresses {
-            match guard.get(address) {
-                Some(account) => resolved.push(account.clone()),
-                None => warn!(
-                    target: "engine::builder",
-                    address = %address,
-                    "ALT 缓存缺失，略过该表"
-                ),
-            }
-        }
-
-        Ok(resolved)
-    }
-
-    async fn fetch_many(
-        rpc: &Arc<RpcClient>,
-        addresses: &[Pubkey],
-    ) -> EngineResult<Vec<AddressLookupTableAccount>> {
-        const ALT_BATCH_LIMIT: usize = 100;
-        let mut collected = Vec::new();
-
-        for chunk in addresses.chunks(ALT_BATCH_LIMIT) {
-            match rpc.get_multiple_accounts(chunk).await {
-                Ok(accounts) => {
-                    for (address, maybe_account) in chunk.iter().zip(accounts.into_iter()) {
-                        match maybe_account {
-                            Some(account) => {
-                                if let Some(table) = Self::deserialize(address, account) {
-                                    collected.push(table);
-                                }
-                            }
-                            None => warn!(
-                                target: "engine::builder",
-                                address = %address,
-                                "批量拉取 ALT 返回空账户"
-                            ),
-                        }
-                    }
-                }
-                Err(err) => {
-                    warn!(
-                        target: "engine::builder",
-                        error = %err,
-                        "批量拉取 ALT 失败，回退逐条查询"
-                    );
-                    for address in chunk {
-                        match rpc.get_account(address).await {
-                            Ok(account) => {
-                                if let Some(table) = Self::deserialize(address, account) {
-                                    collected.push(table);
-                                }
-                            }
-                            Err(err) => warn!(
-                                target: "engine::builder",
-                                address = %address,
-                                error = %err,
-                                "拉取 ALT 账户失败"
-                            ),
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(collected)
-    }
-
-    fn deserialize(address: &Pubkey, account: Account) -> Option<AddressLookupTableAccount> {
-        match AddressLookupTable::deserialize(&account.data) {
-            Ok(table) => Some(AddressLookupTableAccount {
-                key: *address,
-                addresses: table.addresses.into_owned(),
-            }),
-            Err(err) => {
-                warn!(
-                    target: "engine::builder",
-                    address = %address,
-                    error = %err,
-                    "反序列化 ALT 失败"
-                );
-                None
-            }
-        }
-    }
-}
-
 fn compile_message(
     payer: &solana_sdk::pubkey::Pubkey,
     instructions: &[Instruction],
@@ -399,6 +356,27 @@ fn compile_message(
 ) -> EngineResult<V0Message> {
     V0Message::try_compile(payer, instructions, tables, blockhash)
         .map_err(|err| EngineError::Transaction(anyhow!(err)))
+}
+
+fn deserialize_lookup_table(
+    address: &Pubkey,
+    account: Account,
+) -> Option<AddressLookupTableAccount> {
+    match AddressLookupTable::deserialize(&account.data) {
+        Ok(table) => Some(AddressLookupTableAccount {
+            key: *address,
+            addresses: table.addresses.into_owned(),
+        }),
+        Err(err) => {
+            warn!(
+                target: "engine::builder",
+                address = %address,
+                error = %err,
+                "反序列化 ALT 失败"
+            );
+            None
+        }
+    }
 }
 
 fn build_memo_instruction(text: &str) -> Instruction {

@@ -62,6 +62,7 @@ core_affinity = "0.8.3"
 bytemuck = { version = "1.15.0", features = ["derive"] }
 uuid = { version = "1.11.0", features = ["v4"] }
 zeroize = "1.8.1"
+dashmap = "5.5.3"
 
 yellowstone-vixen-orca-whirlpool-parser = "0.5.0"
 yellowstone-vixen-raydium-clmm-parser = "0.5.0"

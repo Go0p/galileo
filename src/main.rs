@@ -7,6 +7,7 @@ use clap::Parser;
 use tracing::{debug, info, warn};
 
 mod api;
+mod cache;
 mod cli;
 mod config;
 mod dexes;
