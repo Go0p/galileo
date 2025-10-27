@@ -135,8 +135,8 @@ pub(crate) fn default_compute_unit_price_strategy() -> String {
     "fixed".to_string()
 }
 
-pub(crate) fn default_tip_strategies() -> Vec<cfg::TipStrategyKind> {
-    vec![cfg::TipStrategyKind::Fixed]
+pub(crate) fn default_tip_strategy() -> cfg::TipStrategyKind {
+    cfg::TipStrategyKind::Fixed
 }
 
 pub(crate) fn default_environment() -> BTreeMap<String, String> {

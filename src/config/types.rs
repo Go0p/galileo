@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde::de::{Deserializer, Error as DeError, Unexpected, Visitor};
-use serde_with::{OneOrMany, serde_as};
+use serde_with::serde_as;
 
 use crate::engine::DispatchStrategy;
 
@@ -942,22 +942,20 @@ pub struct LanderSettings {
     pub min_context_slot: Option<u64>,
 }
 
-#[serde_as]
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct LanderJitoConfig {
     #[serde(default)]
     pub endpoints: Vec<String>,
-    #[serde_as(deserialize_as = "OneOrMany<_>")]
-    #[serde(default = "super::default_tip_strategies")]
-    pub tip_strategies: Vec<TipStrategyKind>,
+    #[serde(default = "super::default_tip_strategy")]
+    pub tip_strategy: TipStrategyKind,
     #[serde(default)]
     pub fixed_tip: Option<u64>,
     #[serde(default)]
     pub range_tips: Vec<u64>,
     #[serde(default)]
-    pub floor_tip_level: Option<TipFloorLevel>,
+    pub stream_tip_level: Option<TipStreamLevel>,
     #[serde(default)]
-    pub max_floor_tip_lamports: Option<u64>,
+    pub max_stream_tip_lamports: Option<u64>,
     #[serde(default)]
     pub uuid_config: Vec<LanderJitoUuidConfig>,
 }
@@ -966,7 +964,13 @@ pub struct LanderJitoConfig {
 pub enum TipStrategyKind {
     Fixed,
     Range,
-    Floor,
+    Stream,
+}
+
+impl Default for TipStrategyKind {
+    fn default() -> Self {
+        TipStrategyKind::Fixed
+    }
 }
 
 impl<'de> Deserialize<'de> for TipStrategyKind {
@@ -980,7 +984,7 @@ impl<'de> Deserialize<'de> for TipStrategyKind {
             type Value = TipStrategyKind;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("one of: fixed, range, floor")
+                formatter.write_str("one of: fixed, range, stream")
             }
 
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
@@ -990,10 +994,10 @@ impl<'de> Deserialize<'de> for TipStrategyKind {
                 match value.trim().to_ascii_lowercase().as_str() {
                     "fixed" => Ok(TipStrategyKind::Fixed),
                     "range" => Ok(TipStrategyKind::Range),
-                    "floor" => Ok(TipStrategyKind::Floor),
+                    "stream" => Ok(TipStrategyKind::Stream),
                     other => Err(DeError::unknown_variant(
                         other,
-                        &["fixed", "range", "floor"],
+                        &["fixed", "range", "stream"],
                     )),
                 }
             }
@@ -1004,7 +1008,7 @@ impl<'de> Deserialize<'de> for TipStrategyKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TipFloorLevel {
+pub enum TipStreamLevel {
     Percentile25,
     Percentile50,
     Percentile75,
@@ -1013,31 +1017,31 @@ pub enum TipFloorLevel {
     Ema50,
 }
 
-impl TipFloorLevel {
+impl TipStreamLevel {
     pub fn field_name(self) -> &'static str {
         match self {
-            TipFloorLevel::Percentile25 => "landed_tips_25th_percentile",
-            TipFloorLevel::Percentile50 => "landed_tips_50th_percentile",
-            TipFloorLevel::Percentile75 => "landed_tips_75th_percentile",
-            TipFloorLevel::Percentile95 => "landed_tips_95th_percentile",
-            TipFloorLevel::Percentile99 => "landed_tips_99th_percentile",
-            TipFloorLevel::Ema50 => "ema_landed_tips_50th_percentile",
+            TipStreamLevel::Percentile25 => "landed_tips_25th_percentile",
+            TipStreamLevel::Percentile50 => "landed_tips_50th_percentile",
+            TipStreamLevel::Percentile75 => "landed_tips_75th_percentile",
+            TipStreamLevel::Percentile95 => "landed_tips_95th_percentile",
+            TipStreamLevel::Percentile99 => "landed_tips_99th_percentile",
+            TipStreamLevel::Ema50 => "ema_landed_tips_50th_percentile",
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
-            TipFloorLevel::Percentile25 => "25th",
-            TipFloorLevel::Percentile50 => "50th",
-            TipFloorLevel::Percentile75 => "75th",
-            TipFloorLevel::Percentile95 => "95th",
-            TipFloorLevel::Percentile99 => "99th",
-            TipFloorLevel::Ema50 => "ema50",
+            TipStreamLevel::Percentile25 => "25th",
+            TipStreamLevel::Percentile50 => "50th",
+            TipStreamLevel::Percentile75 => "75th",
+            TipStreamLevel::Percentile95 => "95th",
+            TipStreamLevel::Percentile99 => "99th",
+            TipStreamLevel::Ema50 => "ema50",
         }
     }
 }
 
-impl<'de> Deserialize<'de> for TipFloorLevel {
+impl<'de> Deserialize<'de> for TipStreamLevel {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -1045,7 +1049,7 @@ impl<'de> Deserialize<'de> for TipFloorLevel {
         struct LevelVisitor;
 
         impl<'de> Visitor<'de> for LevelVisitor {
-            type Value = TipFloorLevel;
+            type Value = TipStreamLevel;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("one of: 25th, 50th, 75th, 95th, 99th, ema50")
@@ -1056,12 +1060,12 @@ impl<'de> Deserialize<'de> for TipFloorLevel {
                 E: DeError,
             {
                 match value.trim().to_ascii_lowercase().as_str() {
-                    "25th" => Ok(TipFloorLevel::Percentile25),
-                    "50th" => Ok(TipFloorLevel::Percentile50),
-                    "75th" => Ok(TipFloorLevel::Percentile75),
-                    "95th" => Ok(TipFloorLevel::Percentile95),
-                    "99th" => Ok(TipFloorLevel::Percentile99),
-                    "ema50" => Ok(TipFloorLevel::Ema50),
+                    "25th" => Ok(TipStreamLevel::Percentile25),
+                    "50th" => Ok(TipStreamLevel::Percentile50),
+                    "75th" => Ok(TipStreamLevel::Percentile75),
+                    "95th" => Ok(TipStreamLevel::Percentile95),
+                    "99th" => Ok(TipStreamLevel::Percentile99),
+                    "ema50" => Ok(TipStreamLevel::Ema50),
                     _other => Err(DeError::invalid_value(Unexpected::Str(value), &self)),
                 }
             }
@@ -1090,33 +1094,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tip_strategies_deserialize_from_string() {
+    fn tip_strategy_deserialize_from_string() {
         let yaml = r#"
 endpoints: []
-tip_strategies: fixed
+tip_strategy: stream
 "#;
         let cfg: LanderJitoConfig = serde_yaml::from_str(yaml).expect("parse config");
-        assert_eq!(cfg.tip_strategies, vec![TipStrategyKind::Fixed]);
+        assert_eq!(cfg.tip_strategy, TipStrategyKind::Stream);
     }
 
     #[test]
-    fn tip_strategies_deserialize_from_list() {
-        let yaml = r#"
-endpoints: []
-tip_strategies:
-  - range
-  - floor
-"#;
+    fn tip_strategy_defaults_to_fixed() {
+        let yaml = "endpoints: []";
         let cfg: LanderJitoConfig = serde_yaml::from_str(yaml).expect("parse config");
-        assert_eq!(
-            cfg.tip_strategies,
-            vec![TipStrategyKind::Range, TipStrategyKind::Floor]
-        );
+        assert_eq!(cfg.tip_strategy, TipStrategyKind::Fixed);
     }
 
     #[test]
-    fn tip_floor_level_deserialize() {
-        let level: TipFloorLevel = serde_yaml::from_str("\"95th\"").expect("parse level");
-        assert_eq!(level, TipFloorLevel::Percentile95);
+    fn tip_stream_level_deserialize() {
+        let level: TipStreamLevel = serde_yaml::from_str("\"95th\"").expect("parse level");
+        assert_eq!(level, TipStreamLevel::Percentile95);
     }
 }
