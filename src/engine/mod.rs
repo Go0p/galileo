@@ -14,7 +14,7 @@ pub mod ultra;
 
 pub use aggregator::SwapInstructionsVariant;
 pub use builder::{BuilderConfig, TransactionBuilder};
-pub use context::{Action, StrategyContext, StrategyResources};
+pub use context::{Action, StrategyContext, StrategyDecision, StrategyResources};
 pub use error::{EngineError, EngineResult};
 pub use identity::EngineIdentity;
 pub use planner::{DispatchPlan, DispatchStrategy, TxVariant, TxVariantPlanner, VariantId};
@@ -200,6 +200,12 @@ impl MintSchedule {
         now >= self.next_ready
     }
 
+    fn time_until_ready(&self, now: Instant) -> Duration {
+        self.next_ready
+            .checked_duration_since(now)
+            .unwrap_or(Duration::ZERO)
+    }
+
     fn mark_dispatched(&mut self, now: Instant) {
         self.next_ready = now + self.process_delay;
     }
@@ -211,7 +217,6 @@ pub struct EngineSettings {
     pub quote: QuoteConfig,
     pub dry_run: bool,
     pub dispatch_strategy: DispatchStrategy,
-    pub max_consecutive_failures: Option<usize>,
     pub cu_multiplier: f64,
     compute_unit_price_mode: Option<ComputeUnitPriceMode>,
 }
@@ -223,7 +228,6 @@ impl EngineSettings {
             quote,
             dry_run: false,
             dispatch_strategy: DispatchStrategy::default(),
-            max_consecutive_failures: None,
             cu_multiplier: 1.0,
             compute_unit_price_mode: None,
         }
@@ -241,11 +245,6 @@ impl EngineSettings {
 
     pub fn with_dispatch_strategy(mut self, strategy: DispatchStrategy) -> Self {
         self.dispatch_strategy = strategy;
-        self
-    }
-
-    pub fn with_failure_tolerance(mut self, limit: Option<usize>) -> Self {
-        self.max_consecutive_failures = limit;
         self
     }
 
@@ -272,7 +271,7 @@ where
     S: Strategy,
 {
     strategy: S,
-    landers: LanderStack,
+    landers: Arc<LanderStack>,
     identity: EngineIdentity,
     quote_executor: QuoteExecutor,
     profit_evaluator: ProfitEvaluator,
@@ -284,7 +283,6 @@ where
     trade_pairs: Vec<TradePair>,
     trade_profiles: BTreeMap<Pubkey, MintSchedule>,
     variant_planner: TxVariantPlanner,
-    consecutive_lander_failures: usize,
     multi_leg: Option<MultiLegEngineContext>,
 }
 
@@ -295,7 +293,7 @@ where
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         strategy: S,
-        landers: LanderStack,
+        landers: Arc<LanderStack>,
         identity: EngineIdentity,
         quote_executor: QuoteExecutor,
         profit_evaluator: ProfitEvaluator,
@@ -326,7 +324,6 @@ where
             trade_pairs,
             trade_profiles,
             variant_planner: TxVariantPlanner::new(),
-            consecutive_lander_failures: 0,
             multi_leg,
         }
     }
@@ -348,8 +345,8 @@ where
 
     async fn run_jupiter(&mut self) -> EngineResult<()> {
         loop {
-            self.process_strategy_tick().await?;
-            self.scheduler.wait().await;
+            let next_wait = self.process_strategy_tick().await?;
+            self.scheduler.wait(next_wait).await;
         }
     }
 
@@ -549,9 +546,11 @@ where
 
         let dispatch_strategy = self.settings.dispatch_strategy;
         let variant_layout = self.landers.variant_layout(dispatch_strategy);
-        let plan = self
-            .variant_planner
-            .plan(dispatch_strategy, &prepared, &variant_layout);
+        let plan = Arc::new(self.variant_planner.plan(
+            dispatch_strategy,
+            &prepared,
+            &variant_layout,
+        ));
 
         let deadline = Deadline::from_instant(Instant::now() + self.settings.landing_timeout);
 
@@ -960,7 +959,7 @@ where
             );
         }
 
-        let mut best_opportunity: Option<MultiLegExecution> = None;
+        let mut candidates: Vec<MultiLegExecution> = Vec::new();
 
         for evaluation in successes.into_iter() {
             if evaluation.profit_lamports <= 0 {
@@ -1012,23 +1011,47 @@ where
                 continue;
             }
 
-            let replace = best_opportunity
-                .as_ref()
-                .map(|current| candidate.net_profit() > current.net_profit())
-                .unwrap_or(true);
+            candidates.push(candidate);
+        }
 
-            if replace {
-                best_opportunity = Some(candidate);
+        if candidates.is_empty() {
+            return Ok(());
+        }
+
+        let mut any_executed = false;
+        let mut last_error: Option<EngineError> = None;
+
+        for mut candidate in candidates {
+            if let Err(err) = runtime.populate_pair_plan(&mut candidate.plan).await {
+                warn!(
+                    target: "engine::multi_leg",
+                    input_mint = %candidate.pair.input_mint,
+                    output_mint = %candidate.pair.output_mint,
+                    amount = candidate.trade_size,
+                    error = %err,
+                    "多腿 ALT 填充失败，跳过该组合"
+                );
+                continue;
+            }
+            match self.execute_multi_leg(candidate).await {
+                Ok(_) => {
+                    any_executed = true;
+                }
+                Err(err) => {
+                    warn!(
+                        target: "engine::multi_leg",
+                        error = %err,
+                        "多腿落地失败，继续尝试下一个组合"
+                    );
+                    last_error = Some(err);
+                }
             }
         }
 
-        if let Some(mut candidate) = best_opportunity {
-            if let Err(err) = runtime.populate_pair_plan(&mut candidate.plan).await {
-                return Err(EngineError::Transaction(err.into()));
-            }
-            self.execute_multi_leg(candidate).await
-        } else {
+        if any_executed || last_error.is_none() {
             Ok(())
+        } else {
+            Err(last_error.expect("checked above"))
         }
     }
 
@@ -1138,59 +1161,55 @@ where
 
         let dispatch_strategy = self.settings.dispatch_strategy;
         let variant_layout = self.landers.variant_layout(dispatch_strategy);
-        let plan = self
-            .variant_planner
-            .plan(dispatch_strategy, &prepared, &variant_layout);
+        let plan = Arc::new(self.variant_planner.plan(
+            dispatch_strategy,
+            &prepared,
+            &variant_layout,
+        ));
 
         let deadline = Deadline::from_instant(Instant::now() + self.settings.landing_timeout);
         let tx_signature = plan
             .primary_variant()
             .and_then(|variant| variant.signature());
+        let lander_stack = Arc::clone(&self.landers);
+        let strategy_label = strategy_name.to_string();
+        let tx_signature_for_log = tx_signature.clone();
 
-        match self
-            .landers
-            .submit_plan(&plan, deadline, strategy_name)
-            .await
-        {
-            Ok(_) => {
-                self.consecutive_lander_failures = 0;
-                Ok(())
-            }
-            Err(err) => {
-                debug!(
-                    target: "engine::lander",
-                    error = %err,
-                    tx_signature = tx_signature.as_deref().unwrap_or(""),
-                    "lander submission detail"
-                );
-                let message = tx_signature
-                    .as_ref()
-                    .map(|sig| format!("交易 {sig} 落地失败"))
-                    .unwrap_or_else(|| "交易落地失败".to_string());
-                self.consecutive_lander_failures =
-                    self.consecutive_lander_failures.saturating_add(1);
-                let consecutive = self.consecutive_lander_failures;
-                if let Some(limit) = self.settings.max_consecutive_failures {
-                    if limit != 0 && consecutive >= limit {
-                        warn!(
+        tokio::spawn(async move {
+            match lander_stack
+                .submit_plan(plan.as_ref(), deadline, &strategy_label)
+                .await
+            {
+                Ok(receipt) => {
+                    if let Some(sig) = receipt.signature.as_deref() {
+                        info!(
                             target: "engine::lander",
-                            tx_signature = tx_signature.as_deref().unwrap_or(""),
-                            consecutive = consecutive,
-                            limit = limit,
-                            "落地失败，连续失败达到上限"
+                            strategy = strategy_label.as_str(),
+                            signature = sig,
+                            "lander submission succeeded"
                         );
-                        return Err(EngineError::Landing(message));
+                    } else {
+                        info!(
+                            target: "engine::lander",
+                            strategy = strategy_label.as_str(),
+                            "lander submission succeeded"
+                        );
                     }
                 }
-                warn!(
-                    target: "engine::lander",
-                    tx_signature = tx_signature.as_deref().unwrap_or(""),
-                    consecutive = consecutive,
-                    "落地失败，跳过当前机会"
-                );
-                Ok(())
+                Err(err) => {
+                    let sig = tx_signature_for_log.as_deref().unwrap_or("");
+                    warn!(
+                        target: "engine::lander",
+                        strategy = strategy_label.as_str(),
+                        tx_signature = sig,
+                        error = %err,
+                        "lander submission failed"
+                    );
+                }
             }
-        }
+        });
+
+        Ok(())
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
@@ -1358,62 +1377,58 @@ where
 
         let dispatch_strategy = self.settings.dispatch_strategy;
         let variant_layout = self.landers.variant_layout(dispatch_strategy);
-        let plan = self
-            .variant_planner
-            .plan(dispatch_strategy, &prepared, &variant_layout);
+        let plan = Arc::new(self.variant_planner.plan(
+            dispatch_strategy,
+            &prepared,
+            &variant_layout,
+        ));
 
         let deadline = Deadline::from_instant(deadline);
         let tx_signature = plan
             .primary_variant()
             .and_then(|variant| variant.signature());
+        let lander_stack = Arc::clone(&self.landers);
+        let strategy_label = strategy_name.to_string();
+        let tx_signature_for_log = tx_signature.clone();
 
-        match self
-            .landers
-            .submit_plan(&plan, deadline, strategy_name)
-            .await
-        {
-            Ok(_) => {
-                self.consecutive_lander_failures = 0;
-                Ok(())
-            }
-            Err(err) => {
-                debug!(
-                    target: "engine::lander",
-                    error = %err,
-                    tx_signature = tx_signature.as_deref().unwrap_or(""),
-                    "lander submission detail"
-                );
-                let message = tx_signature
-                    .as_ref()
-                    .map(|sig| format!("交易 {sig} 落地失败"))
-                    .unwrap_or_else(|| "交易落地失败".to_string());
-                self.consecutive_lander_failures =
-                    self.consecutive_lander_failures.saturating_add(1);
-                let consecutive = self.consecutive_lander_failures;
-                if let Some(limit) = self.settings.max_consecutive_failures {
-                    if limit != 0 && consecutive >= limit {
-                        warn!(
+        tokio::spawn(async move {
+            match lander_stack
+                .submit_plan(plan.as_ref(), deadline, &strategy_label)
+                .await
+            {
+                Ok(receipt) => {
+                    if let Some(sig) = receipt.signature.as_deref() {
+                        info!(
                             target: "engine::lander",
-                            tx_signature = tx_signature.as_deref().unwrap_or(""),
-                            consecutive = consecutive,
-                            limit = limit,
-                            "落地失败，连续失败达到上限"
+                            strategy = strategy_label.as_str(),
+                            signature = sig,
+                            "lander submission succeeded"
                         );
-                        return Err(EngineError::Landing(message));
+                    } else {
+                        info!(
+                            target: "engine::lander",
+                            strategy = strategy_label.as_str(),
+                            "lander submission succeeded"
+                        );
                     }
                 }
-                warn!(
-                    target: "engine::lander",
-                    tx_signature = tx_signature.as_deref().unwrap_or(""),
-                    consecutive = consecutive,
-                    "落地失败，跳过当前机会"
-                );
-                Ok(())
+                Err(err) => {
+                    let sig = tx_signature_for_log.as_deref().unwrap_or("");
+                    warn!(
+                        target: "engine::lander",
+                        strategy = strategy_label.as_str(),
+                        tx_signature = sig,
+                        error = %err,
+                        "lander submission failed"
+                    );
+                }
             }
-        }
+        });
+
+        Ok(())
     }
 
-    async fn process_strategy_tick(&mut self) -> EngineResult<()> {
+    async fn process_strategy_tick(&mut self) -> EngineResult<Duration> {
         let tick = StrategyTick::now();
         trace!(target: "engine::tick", started_at = ?tick.at);
         let event = StrategyEvent::Tick(tick);
@@ -1422,8 +1437,27 @@ where
             trade_profiles: &mut self.trade_profiles,
         };
         let ctx = StrategyContext::new(resources);
-        let action = self.strategy.on_market_event(&event, ctx);
-        self.handle_action(action).await
+        let decision = self.strategy.on_market_event(&event, ctx);
+        let StrategyDecision {
+            action,
+            next_ready_in,
+        } = decision;
+        self.handle_action(action).await?;
+        Ok(next_ready_in.unwrap_or_else(|| self.earliest_schedule_delay()))
+    }
+}
+
+impl<S> StrategyEngine<S>
+where
+    S: Strategy<Event = StrategyEvent>,
+{
+    fn earliest_schedule_delay(&self) -> Duration {
+        let now = Instant::now();
+        self.trade_profiles
+            .values()
+            .map(|schedule| schedule.time_until_ready(now))
+            .min()
+            .unwrap_or(Duration::ZERO)
     }
 }
 

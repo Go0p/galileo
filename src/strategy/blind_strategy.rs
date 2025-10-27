@@ -1,4 +1,4 @@
-use crate::engine::{Action, StrategyContext};
+use crate::engine::{StrategyContext, StrategyDecision};
 
 use super::{Strategy, StrategyEvent};
 pub struct BlindStrategy {
@@ -18,13 +18,17 @@ impl Strategy for BlindStrategy {
         "blind"
     }
 
-    fn on_market_event(&mut self, event: &Self::Event, mut ctx: StrategyContext<'_>) -> Action {
+    fn on_market_event(
+        &mut self,
+        event: &Self::Event,
+        mut ctx: StrategyContext<'_>,
+    ) -> StrategyDecision {
         match event {
             StrategyEvent::Tick(tick) => {
                 let _started_at = tick.at;
                 let pairs = ctx.trade_pairs();
                 if pairs.is_empty() {
-                    return Action::Idle;
+                    return ctx.into_decision();
                 }
 
                 let idx = if self.next_pair_index >= pairs.len() {
@@ -41,7 +45,7 @@ impl Strategy for BlindStrategy {
                     self.next_pair_index = (idx + 1) % pairs.len();
                 }
 
-                ctx.into_action()
+                ctx.into_decision()
             }
         }
     }

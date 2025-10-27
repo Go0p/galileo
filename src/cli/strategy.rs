@@ -178,7 +178,6 @@ async fn run_blind_engine(
         &config.lander.lander,
         &compute_unit_price_mode,
     );
-    let scheduler_delay = resolve_blind_scheduler_delay(&trade_profiles);
     let quote_config =
         build_blind_quote_config(blind_config, only_direct_default, restrict_default);
     tracing::info!(
@@ -266,42 +265,33 @@ async fn run_blind_engine(
     let lander_factory = LanderFactory::new(rpc_client.clone(), submission_client.clone());
     let default_landers = ["rpc"];
 
-    let lander_stack = lander_factory
-        .build_stack(
-            &config.lander.lander,
-            &blind_config.enable_landers,
-            &default_landers,
-            0,
-        )
-        .map_err(|err| anyhow!(err))?;
-
-    let failure_limit = if matches!(
-        config.galileo.engine.backend,
-        crate::config::EngineBackend::Dflow
-    ) {
-        let raw = config.galileo.engine.dflow.max_consecutive_failures as usize;
-        if raw == 0 { None } else { Some(raw) }
-    } else {
-        None
-    };
+    let lander_stack = Arc::new(
+        lander_factory
+            .build_stack(
+                &config.lander.lander,
+                &blind_config.enable_landers,
+                &default_landers,
+                0,
+            )
+            .map_err(|err| anyhow!(err))?,
+    );
 
     let engine_settings = EngineSettings::new(quote_config)
         .with_dispatch_strategy(config.lander.lander.sending_strategy)
         .with_landing_timeout(landing_timeout)
         .with_dry_run(dry_run)
-        .with_failure_tolerance(failure_limit)
         .with_cu_multiplier(1.0)
         .with_compute_unit_price_mode(compute_unit_price_mode.clone());
 
     let strategy_engine = StrategyEngine::new(
         BlindStrategy::new(),
-        lander_stack,
+        lander_stack.clone(),
         identity,
         quote_executor,
         ProfitEvaluator::new(profit_config),
         swap_preparer,
         TransactionBuilder::new(rpc_client.clone(), builder_config),
-        Scheduler::new(scheduler_delay),
+        Scheduler::new(),
         flashloan,
         engine_settings,
         trade_pairs,
@@ -622,7 +612,6 @@ async fn run_pure_blind_engine(
     let trade_pairs = build_pure_trade_pairs(pure_config)?;
     let trade_profiles = build_pure_trade_profiles(pure_config)?;
     let profit_config = build_pure_profit_config(&config.lander.lander, &compute_unit_price_mode);
-    let scheduler_delay = resolve_blind_scheduler_delay(&trade_profiles);
     let quote_config = build_pure_quote_config();
     let landing_timeout = resolve_landing_timeout(&config.galileo.bot);
 
@@ -721,30 +710,21 @@ async fn run_pure_blind_engine(
     let lander_factory = LanderFactory::new(rpc_client.clone(), submission_client.clone());
     let default_landers = ["rpc"];
 
-    let lander_stack = lander_factory
-        .build_stack(
-            &config.lander.lander,
-            &pure_config.enable_landers,
-            &default_landers,
-            0,
-        )
-        .map_err(|err| anyhow!(err))?;
-
-    let failure_limit = if matches!(
-        config.galileo.engine.backend,
-        crate::config::EngineBackend::Dflow
-    ) {
-        let raw = config.galileo.engine.dflow.max_consecutive_failures as usize;
-        if raw == 0 { None } else { Some(raw) }
-    } else {
-        None
-    };
+    let lander_stack = Arc::new(
+        lander_factory
+            .build_stack(
+                &config.lander.lander,
+                &pure_config.enable_landers,
+                &default_landers,
+                0,
+            )
+            .map_err(|err| anyhow!(err))?,
+    );
 
     let engine_settings = EngineSettings::new(quote_config)
         .with_dispatch_strategy(config.lander.lander.sending_strategy)
         .with_landing_timeout(landing_timeout)
         .with_dry_run(dry_run)
-        .with_failure_tolerance(failure_limit)
         .with_cu_multiplier(pure_config.cu_multiplier)
         .with_compute_unit_price_mode(compute_unit_price_mode.clone());
 
@@ -755,13 +735,13 @@ async fn run_pure_blind_engine(
 
     let strategy_engine = StrategyEngine::new(
         PureBlindStrategy::new(routes).map_err(|err| anyhow!(err))?,
-        lander_stack,
+        lander_stack.clone(),
         identity,
         quote_executor,
         ProfitEvaluator::new(profit_config),
         swap_preparer,
         TransactionBuilder::new(rpc_client.clone(), builder_config),
-        Scheduler::new(scheduler_delay),
+        Scheduler::new(),
         flashloan,
         engine_settings,
         trade_pairs,
@@ -1284,14 +1264,6 @@ fn compute_unit_fee_lamports(price_micro_lamports: u64) -> u64 {
     let limit = FALLBACK_CU_LIMIT as u128;
     let numerator = (price_micro_lamports as u128).saturating_mul(limit);
     ((numerator + 999_999) / 1_000_000).min(u128::from(u64::MAX)) as u64
-}
-
-fn resolve_blind_scheduler_delay(profiles: &BTreeMap<Pubkey, TradeProfile>) -> Duration {
-    profiles
-        .values()
-        .map(|profile| profile.process_delay)
-        .min()
-        .unwrap_or_else(|| Duration::from_millis(DEFAULT_PROCESS_DELAY_MS))
 }
 
 fn build_blind_quote_config(

@@ -19,7 +19,7 @@ use crate::dexes::{
     whirlpool::{ORCA_WHIRLPOOL_PROGRAM_ID, WhirlpoolAdapter},
     zerofi::{ZEROFI_PROGRAM_ID, ZeroFiAdapter},
 };
-use crate::engine::{Action, EngineError, EngineResult, StrategyContext};
+use crate::engine::{Action, EngineError, EngineResult, StrategyContext, StrategyDecision};
 use crate::monitoring::events;
 use crate::pure_blind::market_cache::{MarketCacheHandle, MarketRecord};
 
@@ -1376,7 +1376,11 @@ impl Strategy for PureBlindStrategy {
         "pure_blind"
     }
 
-    fn on_market_event(&mut self, event: &Self::Event, mut ctx: StrategyContext<'_>) -> Action {
+    fn on_market_event(
+        &mut self,
+        event: &Self::Event,
+        mut ctx: StrategyContext<'_>,
+    ) -> StrategyDecision {
         match event {
             StrategyEvent::Tick(_) => {
                 let mut batch: Vec<BlindOrder> = Vec::new();
@@ -1420,13 +1424,16 @@ impl Strategy for PureBlindStrategy {
                 }
 
                 if batch.is_empty() {
-                    return Action::Idle;
+                    return ctx.into_decision();
                 }
 
                 let mut rng = rand::rng();
                 batch.shuffle(&mut rng);
 
-                Action::DispatchBlind(batch)
+                StrategyDecision {
+                    action: Action::DispatchBlind(batch),
+                    next_ready_in: ctx.next_ready_delay(),
+                }
             }
         }
     }
