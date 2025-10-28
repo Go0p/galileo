@@ -111,12 +111,15 @@ pub async fn run_strategy(
         crate::config::EngineBackend::None => {
             if config.galileo.blind_strategy.enable {
                 return Err(anyhow!(
-                    "engine.backend=none 仅支持纯盲发策略，请关闭 blind_strategy.enable"
+                    "engine.backend=none 仅支持纯盲发或 copy 策略，请关闭 blind_strategy.enable"
                 ));
             }
             let pure_config = &config.galileo.pure_blind_strategy;
             if !pure_config.enable {
-                warn!(target: "strategy", "纯盲发策略未启用，直接退出");
+                warn!(
+                    target: "strategy",
+                    "纯盲发策略未启用，且 copy_strategy 也为关闭状态，直接退出"
+                );
                 return Ok(());
             }
             run_pure_blind_engine(config, backend, dry_run).await

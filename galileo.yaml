@@ -47,7 +47,8 @@ global:
 
 engine:
   # 可选值：jupiter / dflow / ultra / multi-legs /none
-  backend: "ultra"
+  backend: "none"
+  # backend: "ultra"
   # backend: "multi-legs"
   # backend: "dflow"
   jupiter:
@@ -272,7 +273,7 @@ flashloan:
 
 # 盲发策略
 blind_strategy:
-  enable: true
+  enable: false
   memo: ""
   # 只允许交易这些 dex
   enable_dexs: [
@@ -420,14 +421,14 @@ pure_blind_strategy:
     route_labels: true         # 指标上打 route 名称标签
 
 copy_strategy:
-  enable: false
+  enable: true
   
   wallets:
     - address: "AAAAA4WQFj5MByDDxmraSAtumvWk8eNTAL5421SAdLRA"
       # accounts 来源
       source:
         # 来源类型 rpc 或者 grpc
-        type: "rpc"
+        type: "grpc"
         rpc:
           # 拉取交易的间隔 分钟
           pull_interval_minutes: 10
@@ -437,7 +438,7 @@ copy_strategy:
           pull_endpoints:
             - "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
         grpc:
-          yellowstone_grpc_url: ""
+          yellowstone_grpc_url: "http://185.26.10.237:10000"
           # yellowstone grpc token
           yellowstone_grpc_token: ""
           # 包含的 program id
@@ -447,11 +448,11 @@ copy_strategy:
           exclude_program_ids: 
             - ""
           # 发现一次交易的 fanout 数量
-          fanout_count: 10
+          fanout_count: 3
         # 发送间隔，每个交易发送的间隔
         replay_interval_ms: 100
         enable_landers:
-          - "jito"
+          # - "jito"
 
 # 后跑策略
 # Backrun 策略的工作原理如下：

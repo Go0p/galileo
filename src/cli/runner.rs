@@ -301,13 +301,13 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         crate::config::EngineBackend::None => {
             if config.galileo.blind_strategy.enable {
                 return Err(anyhow!(
-                    "engine.backend=none 仅支持纯盲发策略，请关闭 blind_strategy.enable"
+                    "engine.backend=none 仅支持纯盲发或 copy 策略，请关闭 blind_strategy.enable"
                 ));
             }
-            if !config.galileo.pure_blind_strategy.enable {
+            if !config.galileo.pure_blind_strategy.enable && !config.galileo.copy_strategy.enable {
                 warn!(
                     target: "runner",
-                    "engine.backend=none 生效，但 pure_blind_strategy 未启用"
+                    "engine.backend=none 生效，但 pure_blind_strategy 与 copy_strategy 均未启用"
                 );
             }
             AggregatorContext::None
