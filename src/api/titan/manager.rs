@@ -1,11 +1,11 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
+use serde_json;
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use url::Url;
-use serde_json;
 
 use crate::strategy::types::TradePair;
 

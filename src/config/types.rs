@@ -328,6 +328,8 @@ pub struct TitanEngineConfig {
     #[serde(default)]
     pub num_quotes: Option<u32>,
     #[serde(default)]
+    pub first_quote_timeout_ms: Option<u64>,
+    #[serde(default)]
     pub swap_config: TitanSwapConfig,
     #[serde(default)]
     pub tx_config: TitanTxConfig,

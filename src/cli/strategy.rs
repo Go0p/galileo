@@ -657,7 +657,11 @@ fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
         create_output_token_account: titan_cfg.tx_config.create_output_token_account,
     };
 
-    let quote_source = TitanWsQuoteSource::new(subscription_cfg);
+    let first_quote_timeout = titan_cfg
+        .first_quote_timeout_ms
+        .and_then(|ms| (ms > 0).then_some(Duration::from_millis(ms)));
+
+    let quote_source = TitanWsQuoteSource::new(subscription_cfg, first_quote_timeout);
     let provider = TitanLegProvider::new(
         quote_source,
         LegSide::Buy,

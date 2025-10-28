@@ -3,6 +3,7 @@ use std::fmt::Debug;
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use solana_compute_budget_interface as compute_budget;
@@ -10,7 +11,8 @@ use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::pubkey::Pubkey;
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
-use tracing::{debug, info};
+use tokio::time::timeout;
+use tracing::{debug, info, warn};
 
 use crate::api::titan::{
     Instruction as TitanInstruction, SwapRoute, TitanError,
@@ -61,12 +63,7 @@ impl<S> TitanLegProvider<S> {
         }
     }
 
-    fn rewrite_placeholder_accounts(
-        &self,
-        plan: &mut LegPlan,
-        payer: Pubkey,
-        route: &SwapRoute,
-    ) {
+    fn rewrite_placeholder_accounts(&self, plan: &mut LegPlan, payer: Pubkey, route: &SwapRoute) {
         if payer == self.placeholder_signer {
             return;
         }
@@ -76,12 +73,8 @@ impl<S> TitanLegProvider<S> {
             replacement: payer,
         });
 
-        let rewrites = collect_placeholder_ata_rewrites(
-            self.placeholder_signer,
-            payer,
-            route,
-            plan,
-        );
+        let rewrites =
+            collect_placeholder_ata_rewrites(self.placeholder_signer, payer, route, plan);
 
         for (from, to) in rewrites {
             if plan
@@ -101,13 +94,15 @@ impl<S> TitanLegProvider<S> {
 pub struct TitanWsQuoteSource {
     config: Arc<TitanSubscriptionConfig>,
     streams: Arc<Mutex<HashMap<StreamKey, Arc<TitanStreamState>>>>,
+    first_quote_timeout: Option<Duration>,
 }
 
 impl TitanWsQuoteSource {
-    pub fn new(config: TitanSubscriptionConfig) -> Self {
+    pub fn new(config: TitanSubscriptionConfig, first_quote_timeout: Option<Duration>) -> Self {
         Self {
             config: Arc::new(config),
             streams: Arc::new(Mutex::new(HashMap::new())),
+            first_quote_timeout,
         }
     }
 
@@ -226,20 +221,52 @@ impl TitanQuoteSource for TitanWsQuoteSource {
         }
 
         let trade_pair = TradePair::from_pubkeys(intent.input_mint, intent.output_mint);
-        let state = self
-            .stream_state(trade_pair, intent.amount, local_ip)
-            .await?;
+        let amount = intent.amount;
+        let key = StreamKey::new(trade_pair.clone(), amount);
+        let state = self.stream_state(trade_pair, amount, local_ip).await?;
         let mut receiver = state.subscribe();
         if let Some(quote) = receiver.borrow().clone() {
             return Ok(quote);
         }
 
-        while receiver.changed().await.is_ok() {
-            if let Some(quote) = receiver.borrow().clone() {
-                return Ok(quote);
+        loop {
+            if let Some(wait) = self.first_quote_timeout {
+                match timeout(wait, receiver.changed()).await {
+                    Ok(Ok(())) => {
+                        if let Some(quote) = receiver.borrow().clone() {
+                            return Ok(quote);
+                        }
+                        continue;
+                    }
+                    Ok(Err(_)) => break,
+                    Err(_) => {
+                        let timeout_ms = wait.as_millis() as u64;
+                        warn!(
+                            target: "multi_leg::titan",
+                            amount,
+                            input = %intent.input_mint,
+                            output = %intent.output_mint,
+                            timeout_ms,
+                            "Titan 首次报价超时"
+                        );
+                        self.streams.lock().await.remove(&key);
+                        return Err(TitanLegError::Source(format!(
+                            "Titan 推流首次报价超时 {}ms",
+                            timeout_ms
+                        )));
+                    }
+                }
+            } else {
+                if receiver.changed().await.is_err() {
+                    break;
+                }
+                if let Some(quote) = receiver.borrow().clone() {
+                    return Ok(quote);
+                }
             }
         }
 
+        self.streams.lock().await.remove(&key);
         Err(TitanLegError::Source(
             "Titan 推流结束但未获得有效路线".to_string(),
         ))
@@ -421,13 +448,11 @@ fn collect_placeholder_ata_rewrites(
 
     for mint in mints {
         for token_program in &token_programs {
-            let original =
-                derive_associated_token_address(&placeholder, &mint, token_program);
+            let original = derive_associated_token_address(&placeholder, &mint, token_program);
             if !plan_uses_account(plan, &original) {
                 continue;
             }
-            let replacement =
-                derive_associated_token_address(&actual, &mint, token_program);
+            let replacement = derive_associated_token_address(&actual, &mint, token_program);
             rewrites.push((original, replacement));
         }
     }
@@ -442,11 +467,11 @@ fn strip_wsol_wrapping_instructions(plan: &mut LegPlan, payer: Pubkey) {
         Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").expect("token program");
     let system_program_id =
         Pubkey::from_str("11111111111111111111111111111111").expect("system program");
-    let wsol_ata =
-        derive_associated_token_address(&payer, &wsol_mint, &spl_token_program_id);
+    let wsol_ata = derive_associated_token_address(&payer, &wsol_mint, &spl_token_program_id);
 
-    plan.instructions
-        .retain(|ix| !is_wsol_wrap_or_sync(ix, payer, wsol_ata, system_program_id, spl_token_program_id));
+    plan.instructions.retain(|ix| {
+        !is_wsol_wrap_or_sync(ix, payer, wsol_ata, system_program_id, spl_token_program_id)
+    });
 }
 
 fn is_sync_native_instruction(data: &[u8]) -> bool {
@@ -473,7 +498,9 @@ fn is_wsol_wrap_or_sync(
         return true;
     }
 
-    ix.accounts.iter().any(|meta| meta.pubkey == payer && meta.is_signer)
+    ix.accounts
+        .iter()
+        .any(|meta| meta.pubkey == payer && meta.is_signer)
         && ix.accounts.iter().any(|meta| meta.pubkey == wsol_ata)
         && ix.data.get(0).copied().unwrap_or_default() == 12
 }
@@ -528,8 +555,7 @@ fn derive_associated_token_address(
     token_program: &Pubkey,
 ) -> Pubkey {
     let seeds: [&[u8]; 3] = [owner.as_ref(), token_program.as_ref(), mint.as_ref()];
-    let associated_program =
-        Pubkey::new_from_array(spl_associated_token_account::id().to_bytes());
+    let associated_program = Pubkey::new_from_array(spl_associated_token_account::id().to_bytes());
     Pubkey::find_program_address(&seeds, &associated_program).0
 }
 

@@ -21,7 +21,7 @@ pub struct Cli {
 pub enum Command {
     /// Jupiter 二进制管理相关命令
     #[command(subcommand)]
-   Jupiter(JupiterCmd),
+    Jupiter(JupiterCmd),
     /// Lander 工具
     #[command(subcommand)]
     Lander(LanderCmd),

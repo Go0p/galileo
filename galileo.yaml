@@ -6,6 +6,10 @@ global:
   #   - "https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
   #   - "https://mainnet.solana.validationcloud.io/v1/4YlOowpz6fTe6Jl31oWxYGSusOS12UzTxXkpdoC1I5A"
   #   - "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
+  # pump
+  #   - "https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
+  #   - "https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b"
+
   rpc_urls:
     - "http://127.0.0.1:8899"
   # yellowstone grpc url
@@ -43,8 +47,8 @@ global:
 
 engine:
   # 可选值：jupiter / dflow / ultra / multi-legs /none
-  # backend: "ultra"
-  backend: "multi-legs"
+  backend: "ultra"
+  # backend: "multi-legs"
   # backend: "dflow"
   jupiter:
     enable: false
@@ -81,7 +85,7 @@ engine:
       dynamic_compute_unit_limit: true
       wrap_and_unwrap_sol: false
   ultra:
-    enable: false
+    enable: true
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
     leg: "sell"
     api_quote_base: "https://ultra-api.jup.ag"
@@ -124,6 +128,8 @@ engine:
     enable: true
     # 腿方向：Titan 仅支持 buy 腿
     leg: "buy"
+    # Titan 推流首条报价超时时间（毫秒），超过后视为异常并重新调度
+    first_quote_timeout_ms: 2000
     # 开启 loopback 后仅订阅 base→base 的单条 Titan 流，根据 out>in 判断套利
     ws_url: "wss://api.titan.exchange/api/v1/ws"
     # 可选：通过 WebSocket 代理抓包/调试 Titan 数据
@@ -131,11 +137,11 @@ engine:
     ws_proxy: ""
     # Titan 目前要求使用内置账户发起报价，如需自定义可在拿到白名单后修改
     default_pubkey: 
-    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjE2NjI0NDAsImV4cCI6MTc2MTY2MzM0MCwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.04Tqgohzc2M83svFlT3ZAVB5YwRsmC1YQdSD2IOLFDw"
+    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjE2NjYyMDksImV4cCI6MTc2MTY2NzEwOSwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.FQ0GjAUfJRM52Ea2NfIYeSENozov0gOfHbVX7AsFRfY"
     # Titan , Okx , Metis , Pyth
     swap_config:
-      dexes:
-      exclude_dexes:
+      # dexes: 
+      # exclude_dexes:
       only_direct_routes: false
       providers:
         - "Titan"
@@ -144,7 +150,7 @@ engine:
       user_public_key: "Titan11111111111111111111111111111111111111"
       # user_public_key: "goopNoaJhhrzxi6oq2j4chcyHKGucAeVZSk4QBA7Gu1"
       create_output_token_account: false
-      use_wsol: false
+      use_wsol: true
     # 服务端推送报价更新的间隔，单位毫秒。
     interval_ms: 800
     # 每次更新最多返回的报价数量。
