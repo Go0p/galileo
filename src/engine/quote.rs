@@ -1,16 +1,22 @@
 use std::convert::TryFrom;
 use std::str::FromStr;
 
+use reqwest::StatusCode;
 use tracing::{debug, warn};
 
-use super::aggregator::QuoteResponseVariant;
+use super::aggregator::{KaminoQuote, QuoteResponseVariant};
 use crate::api::dflow::{
     DflowApiClient, DflowError, QuoteRequest as DflowQuoteRequest, SlippageBps, SlippagePreset,
 };
 use crate::api::jupiter::{JupiterApiClient, QuoteRequest};
-use crate::api::ultra::{OrderRequest as UltraOrderRequest, Router as UltraRouter, UltraApiClient};
-use crate::config::{DflowQuoteConfig, JupiterQuoteConfig, UltraQuoteConfig};
-use crate::network::IpLeaseHandle;
+use crate::api::kamino::{KaminoApiClient, KaminoError, QuoteRequest as KaminoQuoteRequest};
+use crate::api::ultra::{
+    OrderRequest as UltraOrderRequest, Router as UltraRouter, UltraApiClient, UltraError,
+};
+use crate::config::{DflowQuoteConfig, JupiterQuoteConfig, KaminoQuoteConfig, UltraQuoteConfig};
+use crate::engine::quote_dispatcher;
+use crate::jupiter::error::JupiterError;
+use crate::network::{IpLeaseHandle, IpLeaseOutcome};
 use crate::strategy::types::TradePair;
 use solana_sdk::pubkey::Pubkey;
 
@@ -38,6 +44,10 @@ pub enum QuoteBackend {
     Dflow {
         client: DflowApiClient,
         defaults: DflowQuoteConfig,
+    },
+    Kamino {
+        client: KaminoApiClient,
+        defaults: KaminoQuoteConfig,
     },
     Ultra {
         client: UltraApiClient,
@@ -112,6 +122,12 @@ impl QuoteExecutor {
         }
     }
 
+    pub fn for_kamino(client: KaminoApiClient, defaults: KaminoQuoteConfig) -> Self {
+        Self {
+            backend: QuoteBackend::Kamino { client, defaults },
+        }
+    }
+
     pub fn for_ultra(client: UltraApiClient, defaults: UltraQuoteConfig) -> Self {
         Self {
             backend: QuoteBackend::Ultra {
@@ -132,7 +148,7 @@ impl QuoteExecutor {
         &self,
         task: &QuoteTask,
         config: &QuoteConfig,
-        lease: Option<&IpLeaseHandle>,
+        lease: &IpLeaseHandle,
     ) -> EngineResult<Option<DoubleQuote>> {
         let forward = match self
             .quote_once(&task.pair, task.amount, config, lease)
@@ -194,9 +210,9 @@ impl QuoteExecutor {
         pair: &TradePair,
         amount: u64,
         config: &QuoteConfig,
-        lease: Option<&IpLeaseHandle>,
+        lease: &IpLeaseHandle,
     ) -> EngineResult<Option<QuoteResponseVariant>> {
-        let local_ip = lease.map(|handle| handle.ip());
+        let local_ip = Some(lease.ip());
         match &self.backend {
             QuoteBackend::Jupiter { client, defaults } => {
                 let mut request = QuoteRequest::new(
@@ -221,8 +237,28 @@ impl QuoteExecutor {
                 }
 
                 apply_jupiter_defaults(defaults, &mut request);
-                let response = client.quote_with_ip(&request, local_ip).await?;
-                Ok(Some(QuoteResponseVariant::Jupiter(response)))
+                match client.quote_with_ip(&request, local_ip).await {
+                    Ok(response) => Ok(Some(QuoteResponseVariant::Jupiter(response))),
+                    Err(JupiterError::ApiStatus { status, body, .. })
+                        if status == StatusCode::TOO_MANY_REQUESTS =>
+                    {
+                        lease.mark_outcome(IpLeaseOutcome::RateLimited);
+                        warn!(
+                            target: "engine::quote",
+                            status = status.as_u16(),
+                            input_mint = %pair.input_mint,
+                            output_mint = %pair.output_mint,
+                            "Jupiter 报价命中限流，跳过本轮: {body}"
+                        );
+                        Ok(None)
+                    }
+                    Err(err) => {
+                        if let Some(outcome) = quote_dispatcher::classify_jupiter(&err) {
+                            lease.mark_outcome(outcome);
+                        }
+                        Err(EngineError::from(err))
+                    }
+                }
             }
             QuoteBackend::Dflow { client, defaults } => {
                 let mut request =
@@ -248,6 +284,7 @@ impl QuoteExecutor {
                 match client.quote_with_ip(&request, local_ip).await {
                     Ok(response) => Ok(Some(QuoteResponseVariant::Dflow(response))),
                     Err(DflowError::RateLimited { status, body, .. }) => {
+                        lease.mark_outcome(IpLeaseOutcome::RateLimited);
                         warn!(
                             target: "engine::quote",
                             status = status.as_u16(),
@@ -257,10 +294,10 @@ impl QuoteExecutor {
                         );
                         Ok(None)
                     }
-                    Err(err @ DflowError::ConsecutiveFailureLimit { .. }) => {
-                        Err(EngineError::from(err))
-                    }
                     Err(err) => {
+                        if let Some(outcome) = quote_dispatcher::classify_dflow(&err) {
+                            lease.mark_outcome(outcome);
+                        }
                         let detail = err.describe();
                         warn!(
                             target: "engine::quote",
@@ -271,6 +308,68 @@ impl QuoteExecutor {
                             "DFlow 报价失败，跳过当前路线"
                         );
                         Ok(None)
+                    }
+                }
+            }
+            QuoteBackend::Kamino { client, defaults } => {
+                let mut request = KaminoQuoteRequest::new(
+                    pair.input_pubkey,
+                    pair.output_pubkey,
+                    amount,
+                    if defaults.max_slippage_bps > 0 {
+                        defaults.max_slippage_bps
+                    } else {
+                        config.slippage_bps
+                    },
+                );
+                request.include_setup_ixs = defaults.include_setup_ixs;
+                request.wrap_and_unwrap_sol = defaults.wrap_and_unwrap_sol;
+                if !defaults.executor.trim().is_empty() {
+                    request.executor = Some(defaults.executor.trim().to_string());
+                }
+                if !defaults.referrer_pda.trim().is_empty() {
+                    request.referrer_pda = Some(defaults.referrer_pda.trim().to_string());
+                }
+                if !defaults.routes.is_empty() {
+                    request.routes = defaults.routes.clone();
+                }
+
+                match client.quote_with_ip(&request, local_ip).await {
+                    Ok(response) => {
+                        if let Some(route) = response.best_route() {
+                            let quote = KaminoQuote {
+                                input_mint: pair.input_pubkey,
+                                output_mint: pair.output_pubkey,
+                                route: route.clone(),
+                            };
+                            Ok(Some(QuoteResponseVariant::Kamino(quote)))
+                        } else {
+                            debug!(
+                                target: "engine::quote",
+                                input_mint = %pair.input_mint,
+                                output_mint = %pair.output_mint,
+                                amount,
+                                "Kamino 返回空路线，跳过"
+                            );
+                            Ok(None)
+                        }
+                    }
+                    Err(KaminoError::RateLimited { status, body, .. }) => {
+                        lease.mark_outcome(IpLeaseOutcome::RateLimited);
+                        warn!(
+                            target: "engine::quote",
+                            status = status.as_u16(),
+                            input_mint = %pair.input_mint,
+                            output_mint = %pair.output_mint,
+                            "Kamino 报价命中限流，跳过本轮: {body}"
+                        );
+                        Ok(None)
+                    }
+                    Err(err) => {
+                        if let Some(outcome) = quote_dispatcher::classify_kamino(&err) {
+                            lease.mark_outcome(outcome);
+                        }
+                        Err(EngineError::from(err))
                     }
                 }
             }
@@ -315,8 +414,28 @@ impl QuoteExecutor {
                 if !config.dex_blacklist.is_empty() {
                     request.exclude_dexes = Some(config.dex_blacklist.join(","));
                 }
-                let response = client.order_with_ip(&request, local_ip).await?;
-                Ok(Some(QuoteResponseVariant::Ultra(response)))
+                match client.order_with_ip(&request, local_ip).await {
+                    Ok(response) => Ok(Some(QuoteResponseVariant::Ultra(response))),
+                    Err(UltraError::ApiStatus { status, body, .. })
+                        if status == StatusCode::TOO_MANY_REQUESTS =>
+                    {
+                        lease.mark_outcome(IpLeaseOutcome::RateLimited);
+                        warn!(
+                            target: "engine::quote",
+                            status = status.as_u16(),
+                            input_mint = %pair.input_mint,
+                            output_mint = %pair.output_mint,
+                            "Ultra 报价命中限流，跳过本轮: {body}"
+                        );
+                        Ok(None)
+                    }
+                    Err(err) => {
+                        if let Some(outcome) = quote_dispatcher::classify_ultra(&err) {
+                            lease.mark_outcome(outcome);
+                        }
+                        Err(EngineError::from(err))
+                    }
+                }
             }
             QuoteBackend::Disabled => {
                 warn!(

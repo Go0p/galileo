@@ -10,6 +10,7 @@ use std::{
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use futures::{StreamExt, sink::SinkExt};
 use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpSocket, TcpStream, lookup_host},
     sync::{Mutex, mpsc, oneshot},
     task::JoinHandle,
@@ -114,11 +115,19 @@ type ConnectorStream = tokio_tungstenite::MaybeTlsStream<TcpStream>;
 
 impl TitanWsClient {
     pub async fn connect(endpoint: Url) -> Result<Self, TitanError> {
-        Self::connect_with_local_ip(endpoint, None).await
+        Self::connect_with_options(endpoint, None, None).await
     }
 
     pub async fn connect_with_local_ip(
         endpoint: Url,
+        local_ip: Option<IpAddr>,
+    ) -> Result<Self, TitanError> {
+        Self::connect_with_options(endpoint, None, local_ip).await
+    }
+
+    pub async fn connect_with_options(
+        endpoint: Url,
+        ws_proxy: Option<Url>,
         local_ip: Option<IpAddr>,
     ) -> Result<Self, TitanError> {
         let mut request = endpoint
@@ -149,39 +158,11 @@ impl TitanWsClient {
                 Some("wss") | Some("https") => 443,
                 _ => 80,
             });
-
-        let targets: Vec<SocketAddr> = lookup_host((host.as_str(), port))
-            .await
-            .map_err(|err| TitanError::Handshake(format!("无法解析 {host}:{port}: {err}")))?
-            .collect();
-
-        if targets.is_empty() {
-            return Err(TitanError::Handshake(format!(
-                "解析 {host}:{port} 未返回任何地址"
-            )));
-        }
-
-        let mut last_err: Option<std::io::Error> = None;
-        let mut stream_opt: Option<TcpStream> = None;
-        for addr in targets {
-            match connect_with_optional_bind(addr, local_ip).await {
-                Ok(stream) => {
-                    stream_opt = Some(stream);
-                    break;
-                }
-                Err(err) => {
-                    last_err = Some(err);
-                    continue;
-                }
-            }
-        }
-
-        let stream = stream_opt.ok_or_else(|| {
-            let message = last_err
-                .map(|err| err.to_string())
-                .unwrap_or_else(|| "未知错误".to_string());
-            TitanError::Handshake(format!("连接 {host}:{port} 失败: {message}"))
-        })?;
+        let stream = if let Some(proxy) = ws_proxy {
+            connect_via_proxy(&proxy, &host, port, local_ip).await?
+        } else {
+            connect_direct(&host, port, local_ip).await?
+        };
 
         let (stream, response) = client_async_tls_with_config(request, stream, None, None)
             .await
@@ -360,6 +341,89 @@ async fn connect_with_optional_bind(
 
     let stream = socket.connect(addr).await?;
     stream.set_nodelay(true)?;
+    Ok(stream)
+}
+
+async fn connect_direct(
+    host: &str,
+    port: u16,
+    local_ip: Option<IpAddr>,
+) -> Result<TcpStream, TitanError> {
+    let targets: Vec<SocketAddr> = lookup_host((host, port))
+        .await
+        .map_err(|err| TitanError::Handshake(format!("无法解析 {host}:{port}: {err}")))?
+        .collect();
+
+    if targets.is_empty() {
+        return Err(TitanError::Handshake(format!(
+            "解析 {host}:{port} 未返回任何地址"
+        )));
+    }
+
+    let mut last_err: Option<std::io::Error> = None;
+    for addr in targets {
+        match connect_with_optional_bind(addr, local_ip).await {
+            Ok(stream) => return Ok(stream),
+            Err(err) => last_err = Some(err),
+        }
+    }
+
+    let message = last_err
+        .map(|err| err.to_string())
+        .unwrap_or_else(|| "未知错误".to_string());
+    Err(TitanError::Handshake(format!(
+        "连接 {host}:{port} 失败: {message}"
+    )))
+}
+
+async fn connect_via_proxy(
+    proxy_url: &Url,
+    target_host: &str,
+    target_port: u16,
+    local_ip: Option<IpAddr>,
+) -> Result<TcpStream, TitanError> {
+    let proxy_host = proxy_url
+        .host_str()
+        .ok_or_else(|| TitanError::Handshake("Titan ws_proxy 缺少 host".into()))?;
+    let proxy_port = proxy_url.port_or_known_default().unwrap_or(80);
+
+    let mut stream = connect_direct(proxy_host, proxy_port, local_ip).await?;
+
+    let connect_req = format!(
+        "CONNECT {target_host}:{target_port} HTTP/1.1\r\nHost: {target_host}:{target_port}\r\n\r\n"
+    );
+    stream
+        .write_all(connect_req.as_bytes())
+        .await
+        .map_err(|err| TitanError::Handshake(format!("proxy CONNECT 写入失败: {err}")))?;
+
+    let mut reader = BufReader::new(stream);
+    let mut response = Vec::new();
+    loop {
+        let bytes = reader
+            .read_until(b'\n', &mut response)
+            .await
+            .map_err(|err| TitanError::Handshake(format!("proxy CONNECT 读取失败: {err}")))?;
+        if bytes == 0 {
+            return Err(TitanError::Handshake("proxy CONNECT 响应意外结束".into()));
+        }
+        if response.ends_with(b"\r\n\r\n") {
+            break;
+        }
+        if response.len() > 8192 {
+            return Err(TitanError::Handshake("proxy CONNECT 响应过长".into()));
+        }
+    }
+
+    let status_line = response.split(|&b| b == b'\n').next().unwrap_or(&response);
+    let status_line = String::from_utf8_lossy(status_line);
+    if !(status_line.starts_with("HTTP/1.1 200") || status_line.starts_with("HTTP/1.0 200")) {
+        return Err(TitanError::Handshake(format!(
+            "proxy CONNECT 失败: {status_line}",
+        )));
+    }
+
+    let stream = reader.into_inner();
     Ok(stream)
 }
 impl TitanInner {

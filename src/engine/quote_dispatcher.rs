@@ -135,9 +135,7 @@ impl QuoteDispatcher {
                 events::quote_start(strategy.as_str(), &task, Some(batch.batch_id), local_ip);
                 let started = Instant::now();
 
-                let result = executor
-                    .round_trip(&task, &config, Some(&lease_handle))
-                    .await;
+                let result = executor.round_trip(&task, &config, &lease_handle).await;
 
                 match &result {
                     Ok(Some(_)) => {
@@ -265,6 +263,7 @@ pub(crate) fn classify_ip_outcome(err: &EngineError) -> Option<IpLeaseOutcome> {
     match err {
         EngineError::Jupiter(inner) => classify_jupiter(inner),
         EngineError::Dflow(inner) => classify_dflow(inner),
+        EngineError::Kamino(inner) => classify_kamino(inner),
         EngineError::Ultra(inner) => classify_ultra(inner),
         EngineError::Network(inner) => classify_reqwest(inner),
         EngineError::Rpc(_) => Some(IpLeaseOutcome::NetworkError),
@@ -273,7 +272,9 @@ pub(crate) fn classify_ip_outcome(err: &EngineError) -> Option<IpLeaseOutcome> {
     }
 }
 
-fn classify_jupiter(err: &crate::jupiter::error::JupiterError) -> Option<IpLeaseOutcome> {
+pub(crate) fn classify_jupiter(
+    err: &crate::jupiter::error::JupiterError,
+) -> Option<IpLeaseOutcome> {
     use crate::jupiter::error::JupiterError;
     match err {
         JupiterError::ApiStatus { status, .. } | JupiterError::DownloadStatus { status, .. } => {
@@ -287,18 +288,27 @@ fn classify_jupiter(err: &crate::jupiter::error::JupiterError) -> Option<IpLease
     }
 }
 
-fn classify_dflow(err: &crate::api::dflow::DflowError) -> Option<IpLeaseOutcome> {
+pub(crate) fn classify_dflow(err: &crate::api::dflow::DflowError) -> Option<IpLeaseOutcome> {
     use crate::api::dflow::DflowError;
     match err {
         DflowError::RateLimited { .. } => Some(IpLeaseOutcome::RateLimited),
         DflowError::ApiStatus { status, .. } => map_status(status),
         DflowError::Http(inner) => classify_reqwest(inner),
-        DflowError::ConsecutiveFailureLimit { .. } => Some(IpLeaseOutcome::NetworkError),
         _ => None,
     }
 }
 
-fn classify_ultra(err: &crate::api::ultra::UltraError) -> Option<IpLeaseOutcome> {
+pub(crate) fn classify_kamino(err: &crate::api::kamino::KaminoError) -> Option<IpLeaseOutcome> {
+    use crate::api::kamino::KaminoError;
+    match err {
+        KaminoError::RateLimited { .. } => Some(IpLeaseOutcome::RateLimited),
+        KaminoError::ApiStatus { status, .. } => map_status(status),
+        KaminoError::Http(inner) => classify_reqwest(inner),
+        _ => None,
+    }
+}
+
+pub(crate) fn classify_ultra(err: &crate::api::ultra::UltraError) -> Option<IpLeaseOutcome> {
     use crate::api::ultra::UltraError;
     match err {
         UltraError::ApiStatus { status, .. } => map_status(status),

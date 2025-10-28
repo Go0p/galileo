@@ -53,6 +53,7 @@ lander:
   staked:
     endpoints:
       - "https://acc.solayer.org"
+      - "https://staked.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
       # - "https://solana-rpc.publicnode.com"
       # go0p
       # - "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"

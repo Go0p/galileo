@@ -1,7 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 use crate::engine::DispatchStrategy;
+
+use serde::Deserialize;
+use serde::de::Deserializer;
 
 pub mod loader;
 pub mod types;
@@ -41,14 +44,6 @@ pub(crate) fn default_timezone_offset_hours() -> i8 {
 
 pub(crate) fn default_max_tokens_limit() -> u32 {
     20
-}
-
-pub(crate) fn default_dflow_max_consecutive_failures() -> u32 {
-    0
-}
-
-pub(crate) fn default_dflow_wait_on_429_ms() -> u64 {
-    0
 }
 
 pub(crate) fn default_quote_timeout_ms() -> u64 {
@@ -159,6 +154,40 @@ pub(crate) fn default_health_check_retry_count() -> u32 {
     3
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RpcUrlField {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+pub(crate) fn deserialize_rpc_urls<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let helper = Option::<RpcUrlField>::deserialize(deserializer)?;
+    let mut seen = HashSet::new();
+    let mut urls = Vec::new();
+
+    let values = match helper {
+        Some(RpcUrlField::Single(url)) => vec![url],
+        Some(RpcUrlField::Multiple(list)) => list,
+        None => Vec::new(),
+    };
+
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.to_string()) {
+            urls.push(trimmed.to_string());
+        }
+    }
+
+    Ok(urls)
+}
+
 impl Default for cfg::GalileoConfig {
     fn default() -> Self {
         Self {
@@ -170,6 +199,7 @@ impl Default for cfg::GalileoConfig {
             blind_strategy: cfg::BlindStrategyConfig::default(),
             pure_blind_strategy: cfg::PureBlindStrategyConfig::default(),
             back_run_strategy: cfg::BackRunStrategyConfig::default(),
+            copy_strategy: cfg::CopyStrategyConfig::default(),
         }
     }
 }
@@ -177,7 +207,7 @@ impl Default for cfg::GalileoConfig {
 impl Default for cfg::GlobalConfig {
     fn default() -> Self {
         Self {
-            rpc_url: None,
+            rpc_urls: Vec::new(),
             proxy: None,
             yellowstone_grpc_url: None,
             yellowstone_grpc_token: None,
@@ -196,6 +226,7 @@ impl Default for cfg::EngineConfig {
             dflow: cfg::DflowEngineConfig::default(),
             ultra: cfg::UltraEngineConfig::default(),
             titan: cfg::TitanEngineConfig::default(),
+            kamino: cfg::KaminoEngineConfig::default(),
         }
     }
 }
@@ -243,8 +274,6 @@ impl Default for cfg::DflowEngineConfig {
             api_proxy: None,
             quote_config: cfg::DflowQuoteConfig::default(),
             swap_config: cfg::DflowSwapConfig::default(),
-            max_consecutive_failures: default_dflow_max_consecutive_failures(),
-            wait_on_429_ms: default_dflow_wait_on_429_ms(),
         }
     }
 }
@@ -255,6 +284,7 @@ impl Default for cfg::TitanEngineConfig {
             enable: false,
             leg: None,
             ws_url: None,
+            ws_proxy: None,
             default_pubkey: None,
             jwt: None,
             providers: Vec::new(),

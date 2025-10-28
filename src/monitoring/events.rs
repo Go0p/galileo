@@ -1,14 +1,15 @@
 use std::net::IpAddr;
 use std::time::Duration;
 
-use tracing::{info, warn};
+use tracing::{info, trace, warn};
 
 use crate::engine::{QuoteTask, SwapOpportunity, VariantId};
 use crate::lander::{LanderError, LanderReceipt};
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Signature;
 
 use super::metrics::prometheus_enabled;
-use metrics::{counter, histogram};
+use metrics::{counter, gauge, histogram};
 
 pub fn accounts_precheck(
     strategy: &str,
@@ -129,6 +130,81 @@ pub fn flashloan_account_precheck(strategy: &str, account: &Pubkey, created: boo
 fn ip_label(ip: Option<IpAddr>) -> String {
     ip.map(|value| value.to_string())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+pub fn ip_inventory(ip: IpAddr, slot_kind: &str) {
+    let ip_str = ip.to_string();
+    trace!(
+        target: "monitoring::ip",
+        event = "inventory",
+        ip = %ip_str,
+        slot_kind,
+        "registered ip slot"
+    );
+    if prometheus_enabled() {
+        let slot_kind_label = slot_kind.to_string();
+        let inventory_gauge = gauge!(
+            "galileo_ip_inventory_total",
+            "ip" => ip_str.clone(),
+            "slot_kind" => slot_kind_label.clone()
+        );
+        inventory_gauge.set(1.0);
+
+        let inflight_gauge = gauge!(
+            "galileo_ip_inflight",
+            "ip" => ip_str,
+            "slot_kind" => slot_kind_label
+        );
+        inflight_gauge.set(0.0);
+    }
+}
+
+pub fn ip_inflight(ip: IpAddr, slot_kind: &str, inflight: usize) {
+    let ip_str = ip.to_string();
+    trace!(
+        target: "monitoring::ip",
+        event = "inflight",
+        ip = %ip_str,
+        slot_kind,
+        inflight,
+        "ip inflight updated"
+    );
+    if prometheus_enabled() {
+        let slot_kind_label = slot_kind.to_string();
+        let inflight_gauge = gauge!(
+            "galileo_ip_inflight",
+            "ip" => ip_str,
+            "slot_kind" => slot_kind_label
+        );
+        inflight_gauge.set(inflight as f64);
+    }
+}
+
+pub fn ip_cooldown(ip: IpAddr, reason: &str, duration: Duration) {
+    let millis = duration.as_millis() as f64;
+    let ip_str = ip.to_string();
+    trace!(
+        target: "monitoring::ip",
+        event = "cooldown",
+        ip = %ip_str,
+        reason,
+        cooldown_ms = millis,
+        "ip cooldown triggered"
+    );
+    if prometheus_enabled() {
+        counter!(
+            "galileo_ip_cooldown_total",
+            "ip" => ip_str.clone(),
+            "reason" => reason.to_string()
+        )
+        .increment(1);
+        histogram!(
+            "galileo_ip_cooldown_ms",
+            "ip" => ip_str,
+            "reason" => reason.to_string()
+        )
+        .record(millis);
+    }
 }
 
 fn batch_label(batch_id: Option<u64>) -> String {
@@ -510,6 +586,44 @@ pub fn lander_failure(
             "variant" => variant.to_string(),
             "local_ip" => ip_value,
             "result" => "failure".to_string()
+        )
+        .increment(1);
+    }
+}
+
+pub fn copy_transaction_captured(wallet: &Pubkey, signature: &Signature, fanout: u32) {
+    info!(
+        target: "monitoring::copy",
+        event = "captured",
+        wallet = %wallet,
+        signature = %signature,
+        fanout,
+        "copy candidate captured"
+    );
+
+    if prometheus_enabled() {
+        counter!(
+            "galileo_copy_captured_total",
+            "wallet" => wallet.to_string()
+        )
+        .increment(1);
+    }
+}
+
+pub fn copy_transaction_dispatched(wallet: &Pubkey, signature: &Signature, attempt: u32) {
+    info!(
+        target: "monitoring::copy",
+        event = "dispatched",
+        wallet = %wallet,
+        signature = %signature,
+        attempt,
+        "copy transaction dispatched"
+    );
+
+    if prometheus_enabled() {
+        counter!(
+            "galileo_copy_dispatched_total",
+            "wallet" => wallet.to_string()
         )
         .increment(1);
     }

@@ -13,7 +13,7 @@ mod swap_preparer;
 mod types;
 pub mod ultra;
 
-pub use aggregator::SwapInstructionsVariant;
+pub use aggregator::{MultiLegInstructions, SwapInstructionsVariant};
 pub use builder::{BuilderConfig, TransactionBuilder};
 pub use context::{Action, QuoteBatchPlan, StrategyContext, StrategyDecision, StrategyResources};
 pub use error::{EngineError, EngineResult};
@@ -29,7 +29,6 @@ pub use types::{ExecutionPlan, QuoteTask, StrategyTick, SwapOpportunity, TradePr
 
 use self::types::DoubleQuote;
 
-use self::aggregator::MultiLegInstructions;
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
 use std::net::IpAddr;
@@ -882,7 +881,7 @@ where
 
         let task = QuoteTask::new(pair, amount);
         let result = self
-            .process_task(task, Some(&lease_handle), Some(batch_id), local_ip)
+            .process_task(task, &lease_handle, Some(batch_id), local_ip)
             .await;
 
         if let Err(err) = &result {
@@ -983,7 +982,7 @@ where
     async fn process_task(
         &mut self,
         task: QuoteTask,
-        lease: Option<&IpLeaseHandle>,
+        lease: &IpLeaseHandle,
         batch_id: Option<u64>,
         local_ip: Option<IpAddr>,
     ) -> EngineResult<()> {
@@ -1433,7 +1432,7 @@ where
 
         let swap_variant = match self
             .swap_preparer
-            .prepare(&opportunity, &self.identity, Some(&swap_handle))
+            .prepare(&opportunity, &self.identity, &swap_handle)
             .await
         {
             Ok(value) => {
@@ -1474,9 +1473,6 @@ where
                         "DFlow 指令命中限流，放弃当前机会: {body}"
                     );
                     return Ok(());
-                }
-                if let EngineError::Dflow(DflowError::ConsecutiveFailureLimit { .. }) = &err {
-                    return Err(err);
                 }
                 if let EngineError::Dflow(other) = &err {
                     let detail = other.describe();
@@ -1654,8 +1650,15 @@ where
             action,
             next_ready_in,
         } = decision;
-        self.handle_action(action).await?;
-        Ok(next_ready_in.unwrap_or_else(|| self.earliest_schedule_delay()))
+        let next_wait = next_ready_in.unwrap_or_else(|| self.earliest_schedule_delay());
+        if let Err(err) = self.handle_action(action).await {
+            error!(
+                target: "engine",
+                error = %err,
+                "策略 tick 执行失败，将继续运行"
+            );
+        }
+        Ok(next_wait)
     }
 }
 

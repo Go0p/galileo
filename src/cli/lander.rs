@@ -35,7 +35,8 @@ async fn send_transaction(
     lander_settings: &config::LanderSettings,
     memo: Option<String>,
 ) -> Result<()> {
-    let rpc_client = resolve_rpc_client(&config.galileo.global)?;
+    let resolved_rpc = resolve_rpc_client(&config.galileo.global)?;
+    let rpc_client = resolved_rpc.client.clone();
     let mut identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
     identity.set_skip_user_accounts_rpc_calls(
@@ -53,7 +54,8 @@ async fn send_transaction(
         config.galileo.bot.get_block_hash_by_grpc,
     );
     let global_proxy = resolve_global_http_proxy(&config.galileo.global);
-    let rpc_client_pool = build_rpc_client_pool(rpc_client.url().to_string(), global_proxy.clone());
+    let rpc_client_pool =
+        build_rpc_client_pool(resolved_rpc.endpoints.clone(), global_proxy.clone());
     let ip_allocator = build_ip_allocator(&config.galileo.bot.network)?;
     let builder = TransactionBuilder::new(
         rpc_client.clone(),

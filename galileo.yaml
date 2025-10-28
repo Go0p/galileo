@@ -1,16 +1,13 @@
 global:
-  # rpc url
-
-  # go0p
-  # rpc_url: "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
-  # rpc_url: "https://mainnet.solana.validationcloud.io/v1/4YlOowpz6fTe6Jl31oWxYGSusOS12UzTxXkpdoC1I5A"
-  # rpc_url: "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
-  # sb
-  # rpc_url: "https://rpc.shyft.to?api_key=dEA2ZMnWeFHn62ul"
-  # rpc_url: "https://mainnet.solana.validationcloud.io/v1/DaSF8wCgDzURllPvFmWEyxqLSJ_Fs6blvxTNcmf7iHw"
-  # rpc_url: "https://mainnet.helius-rpc.com/?api-key=7b76aea3-b322-4d3c-9b21-eb293c0cc55a"
-  # rpc_url: "https://solana-rpc.publicnode.com"
-  rpc_url: "http://127.0.0.1:8899"
+  # rpc urls
+  # 示例：配置多个端点用于冗余 / 负载均衡，按顺序轮询。
+  # rpc_urls:
+  #   - "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
+  #   - "https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
+  #   - "https://mainnet.solana.validationcloud.io/v1/4YlOowpz6fTe6Jl31oWxYGSusOS12UzTxXkpdoC1I5A"
+  #   - "https://mainnet.helius-rpc.com/?api-key=39602420-7609-49be-905e-92421ddcb342"
+  rpc_urls:
+    - "http://127.0.0.1:8899"
   # yellowstone grpc url
   # proxy: "http://192.168.124.4:9999"
   yellowstone_grpc_url: ""
@@ -69,9 +66,9 @@ engine:
       # 将中间代币限制为具有稳定流动性的顶级代币集合。这将有助于降低兑换时潜在的高滑点错误率，并将对定价的影响降至最低。
       # 当您将 use_direct_route_only 设置为 false 时，这可以帮助加快 jupiter 的报价时间。不过，正如它所说，它也会限制在您的路线中使用的额外 mint。
       restrict_intermediate_tokens: true
-      # 并发配置："auto" 自动结合 IP 容量估算，也可填写正整数固定并发
+      # QuoteDispatcher 并发配置："auto" 按 trade size + IP 容量自动取最小值，也可填写正整数强制并发
       parallelism: "auto"
-      # 报价批次发送间隔（毫秒），0 表示禁用额外节奏控制
+      # 报价批次发送间隔（毫秒），用于在批次之间加额外退避；0 表示禁用
       batch_interval_ms: 0
     swap_config:
       # 跳过用户账户相关 RPC 调用，以减少重复拉取。
@@ -84,23 +81,21 @@ engine:
       dynamic_compute_unit_limit: true
       wrap_and_unwrap_sol: false
   ultra:
-    enable: true
+    enable: false
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
     leg: "sell"
     api_quote_base: "https://ultra-api.jup.ag"
     api_swap_base: "https://ultra-api.jup.ag"
     api_proxy: "http://192.168.3.3:9999"
-    # 控制 Ultra 报价/指令阶段的连续失败容忍度，达到上限后机器人退出；设为 `0` 表示无限容忍。
-    max_consecutive_failures: 0
-    # 命中 429 限流后等待的毫秒数，避免继续冲击 Ultra 限流
-    wait_on_429_ms: 10000
     quote_config:
       use_wsol: true
       taker: "k1bWgJv1fdVMCqgDM2jkEfhEzKW7XgGpj8vGGKjgSnJ"
       # taker: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
       exclude_routers: []
       priority_fee_lamports: 10
+      # Ultra 报价并发，同 jupiter.quote_config.parallelism 语义
       parallelism: "auto"
+      # Ultra 报价批次间隔（毫秒），0 表示不额外延迟
       batch_interval_ms: 0
     swap_config:
       dynamic_compute_unit_limit: true
@@ -108,34 +103,34 @@ engine:
   dflow:
     enable: true
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
-    leg: "buy"
+    leg: "sell"
 
     # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
     api_quote_base: "https://quote-api.dflow.net"
     api_swap_base: "https://quote-api.dflow.net"
     api_proxy: "http://192.168.3.3:9999"
-    # 控制 DFlow 报价/指令阶段的连续失败容忍度，达到上限后机器人退出；设为 `0` 表示无限容忍。
-    max_consecutive_failures: 0
-    # 命中 429 限流后等待的毫秒数，避免继续冲击 DFlow 限流
-    wait_on_429_ms: 10000
     quote_config:
       use_auto_slippage: false
       only_direct_routes: false
       max_route_length: 3
+      # DFlow 报价并发，同 jupiter.quote_config.parallelism 语义
       parallelism: "auto"
+      # DFlow 报价批次间隔（毫秒），0 表示不额外延迟
       batch_interval_ms: 0
     swap_config:
       dynamic_compute_unit_limit: true
       wrap_and_unwrap_sol: false
   titan:
-    enable: false
+    enable: true
     # 腿方向：Titan 仅支持 buy 腿
     leg: "buy"
     # 开启 loopback 后仅订阅 base→base 的单条 Titan 流，根据 out>in 判断套利
     ws_url: "wss://api.titan.exchange/api/v1/ws"
+    # 可选：通过 WebSocket 代理抓包/调试 Titan 数据
+    ws_proxy: "ws://192.168.3.3:9999"
     # Titan 目前要求使用内置账户发起报价，如需自定义可在拿到白名单后修改
     default_pubkey: "Titan11111111111111111111111111111111111111"
-    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjA2OTAwOTcsImV4cCI6MTc2MDY5MDk5Nywic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.lb2J4rncrBwUMaCW08juVXyNYL0MTCWFKOHnhv7WAHc"
+    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjE2MzUxMTgsImV4cCI6MTc2MTYzNjAxOCwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.OoFNCo2ct7ghV53h-Q_AHnkXdYLGAmE_HWGphfJAKe8"
     # Titan , Okx , Metis , Pyth
     providers:
       - "Titan"
@@ -145,7 +140,32 @@ engine:
     interval_ms: 800
     # 每次更新最多返回的报价数量。
     num_quotes: 2
-
+  kamino:
+    enable: true
+    api_quote_base: "https://api.kamino.finance"
+    api_swap_base: "https://api.kamino.finance"
+    api_proxy: "http://192.168.3.3:9999"
+    quote_config:
+      max_slippage_bps: 0
+      executor: ""
+      referrer_pda: ""
+      include_setup_ixs: true
+      wrap_and_unwrap_sol: false
+      routes:
+        - "dflow"
+        - "jupiter"
+        - "jupiterSelfHosted"
+        - "jupiterEuropa"
+        - "per"
+        - "fluxbeam"
+        - "raydium"
+        - "hashflow"
+        - "okx"
+        - "clover"
+        - "zeroEx"
+        - "spur"
+        - "lifi"
+      
 # 机器人会尝试找到盈利路线，具体方法是：获取给定交易规模的 base_mint 到 intermediate_mints 的报价，
 # 然后再获取 intermediate_mints 到 base_mint 的另一个报价，
 # 并将它们组合起来，形成一条潜在的盈利路线。基本上就是一条从 A -> B -> A 的路线。
@@ -399,7 +419,7 @@ copy_strategy:
           # 拉取交易的数量
           pull_count: 100
           # 节点列表
-          endpoints:
+          pull_endpoints:
             - "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
         grpc:
           yellowstone_grpc_url: ""
@@ -411,9 +431,9 @@ copy_strategy:
           # 排除的 program id
           exclude_program_ids: 
             - ""
-          # 
+          # 发现一次交易的 fanout 数量
           fanout_count: 10
-        # 发送间隔
+        # 发送间隔，每个交易发送的间隔
         replay_interval_ms: 100
         enable_landers:
           - "jito"

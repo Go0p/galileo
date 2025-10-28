@@ -1,4 +1,4 @@
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{str::FromStr, sync::Arc};
 
 use anyhow::{Result, anyhow};
 use tracing::{info, warn};
@@ -7,6 +7,7 @@ use crate::api::dflow::DflowApiClient;
 use crate::api::jupiter::{
     ComputeUnitPriceMicroLamports, JupiterApiClient, QuoteRequest, SwapInstructionsRequest,
 };
+use crate::api::kamino::KaminoApiClient;
 use crate::api::ultra::UltraApiClient;
 use crate::cli::args::{Cli, Command};
 use crate::cli::context::{
@@ -30,6 +31,9 @@ enum AggregatorContext {
     },
     Dflow {
         api_client: DflowApiClient,
+    },
+    Kamino {
+        api_client: KaminoApiClient,
     },
     Ultra {
         api_client: UltraApiClient,
@@ -166,24 +170,75 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             )?;
             let api_client_pool =
                 build_http_client_pool(dflow_proxy.clone(), global_proxy.clone(), false, None);
-            let dflow_engine_cfg = &config.galileo.engine.dflow;
-            let max_failures = if dflow_engine_cfg.max_consecutive_failures == 0 {
-                None
-            } else {
-                Some(dflow_engine_cfg.max_consecutive_failures as usize)
-            };
-            let wait_on_429 = Duration::from_millis(dflow_engine_cfg.wait_on_429_ms);
             let api_client = DflowApiClient::with_ip_pool(
                 api_http_client,
                 quote_base,
                 swap_base,
                 &config.galileo.bot,
                 &config.galileo.global.logging,
-                max_failures,
-                wait_on_429,
                 Some(api_client_pool),
             );
             AggregatorContext::Dflow { api_client }
+        }
+        crate::config::EngineBackend::Kamino => {
+            let kamino_cfg = &config.galileo.engine.kamino;
+            if !kamino_cfg.enable {
+                return Err(anyhow!(
+                    "Kamino backend 已选择，但 engine.kamino.enable = false"
+                ));
+            }
+            let quote_base = kamino_cfg
+                .api_quote_base
+                .as_ref()
+                .ok_or_else(|| anyhow!("kamino.api_quote_base 未配置"))?
+                .trim()
+                .to_string();
+            if quote_base.is_empty() {
+                return Err(anyhow!("kamino.api_quote_base 不能为空"));
+            }
+            let swap_base = kamino_cfg
+                .api_swap_base
+                .clone()
+                .unwrap_or_else(|| quote_base.clone());
+            let kamino_proxy = kamino_cfg
+                .api_proxy
+                .as_ref()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            let global_proxy = resolve_global_http_proxy(&config.galileo.global)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            if let Some(proxy_url) = kamino_proxy.clone() {
+                info!(
+                    target: "kamino",
+                    proxy = %proxy_url,
+                    "Kamino API 请求将通过配置的代理发送"
+                );
+            } else if let Some(proxy_url) = global_proxy.clone() {
+                info!(
+                    target: "kamino",
+                    proxy = %proxy_url,
+                    "Kamino API 请求将通过配置的代理发送"
+                );
+            }
+            let api_http_client = build_http_client_with_options(
+                kamino_proxy.as_deref(),
+                global_proxy.clone(),
+                false,
+                None,
+                None,
+            )?;
+            let api_client_pool =
+                build_http_client_pool(kamino_proxy.clone(), global_proxy.clone(), false, None);
+            let api_client = KaminoApiClient::with_ip_pool(
+                api_http_client,
+                quote_base,
+                swap_base,
+                &config.galileo.bot,
+                &config.galileo.global.logging,
+                Some(api_client_pool),
+            );
+            AggregatorContext::Kamino { api_client }
         }
         crate::config::EngineBackend::Ultra => {
             let ultra_cfg = &config.galileo.engine.ultra;
@@ -201,7 +256,8 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             if api_base.is_empty() {
                 return Err(anyhow!("ultra.api_quote_base 不能为空"));
             }
-            let rpc_client = resolve_rpc_client(&config.galileo.global)?;
+            let resolved_rpc = resolve_rpc_client(&config.galileo.global)?;
+            let rpc_client = resolved_rpc.client.clone();
             let ultra_proxy = ultra_cfg
                 .api_proxy
                 .as_ref()
@@ -278,6 +334,9 @@ async fn dispatch(
             AggregatorContext::Dflow { .. } => {
                 return Err(anyhow!("DFlow 后端不支持 Jupiter 子命令"));
             }
+            AggregatorContext::Kamino { .. } => {
+                return Err(anyhow!("Kamino 后端不支持 Jupiter 子命令"));
+            }
             AggregatorContext::Ultra { .. } => {
                 return Err(anyhow!("Ultra 后端不支持 Jupiter 子命令"));
             }
@@ -315,6 +374,9 @@ async fn dispatch(
             }
             AggregatorContext::Dflow { .. } => {
                 return Err(anyhow!("暂未支持 DFlow quote 子命令"));
+            }
+            AggregatorContext::Kamino { .. } => {
+                return Err(anyhow!("暂未支持 Kamino quote 子命令"));
             }
             AggregatorContext::Ultra { .. } => {
                 return Err(anyhow!("暂未支持 Ultra quote 子命令"));
@@ -358,6 +420,9 @@ async fn dispatch(
             AggregatorContext::Dflow { .. } => {
                 return Err(anyhow!("暂未支持 DFlow swap-instructions 子命令"));
             }
+            AggregatorContext::Kamino { .. } => {
+                return Err(anyhow!("暂未支持 Kamino swap-instructions 子命令"));
+            }
             AggregatorContext::Ultra { .. } => {
                 return Err(anyhow!("暂未支持 Ultra swap-instructions 子命令"));
             }
@@ -380,6 +445,10 @@ async fn dispatch(
             }
             AggregatorContext::Dflow { api_client } => {
                 let backend = crate::cli::strategy::StrategyBackend::Dflow { api_client };
+                run_strategy(&config, &backend, StrategyMode::Live).await?;
+            }
+            AggregatorContext::Kamino { api_client } => {
+                let backend = crate::cli::strategy::StrategyBackend::Kamino { api_client };
                 run_strategy(&config, &backend, StrategyMode::Live).await?;
             }
             AggregatorContext::Ultra {
@@ -410,6 +479,10 @@ async fn dispatch(
             }
             AggregatorContext::Dflow { api_client } => {
                 let backend = crate::cli::strategy::StrategyBackend::Dflow { api_client };
+                run_strategy(&config, &backend, StrategyMode::DryRun).await?;
+            }
+            AggregatorContext::Kamino { api_client } => {
+                let backend = crate::cli::strategy::StrategyBackend::Kamino { api_client };
                 run_strategy(&config, &backend, StrategyMode::DryRun).await?;
             }
             AggregatorContext::Ultra {

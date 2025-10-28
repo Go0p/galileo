@@ -7,7 +7,7 @@
 ## 0. 实施进度
 - [x] 阶段 1：网络资源池基础设施（`IpInventory` / `IpAllocator` 骨架落地，配置解析扩展完成）
 - [x] 阶段 2：并发调度重构（`QuoteDispatcher::dispatch` 结合 `Semaphore + FuturesUnordered` 实现批次并发，`QuoteExecutor` 支持复用单次 lease 完成买/卖腿报价）
-- [ ] 阶段 3：退避与观测接入（HTTP 限流/超时已接入 `mark_outcome`，报价事件已输出 `batch_id`/`local_ip` 指标，仍需补全 swap/lander 链路指标与看板说明）
+- [x] 阶段 3：退避与观测接入（Jupiter / Ultra / DFlow 报价均已在限流与网络失败时标记 `mark_outcome`，IP 资源池已产出 `galileo_ip_*` 系列指标并补充冷却打点，swap/lander 链路监控同步到位）
 - [ ] 阶段 4：Multi-leg & Titan（已完成 2/3 项，待补集成测试验证 Titan 双 size 并发）
 - [ ] 阶段 5：Lander & 落地（`SwapPreparer`/`TransactionBuilder`/`LanderStack` 已接入 IP 池，仍需补充分发指标与退避策略）
 
@@ -88,9 +88,10 @@ enum IpLeaseMode {
 ### 3.6 与现有代码的接口改造
 - [x] `src/engine/context.rs`：`take_amounts_if_ready` 返回 `ReadyAmounts`，`push_quote_tasks` 生成带批次 ID 的 `QuoteBatchPlan`。
 - [x] `src/engine/mod.rs`：`StrategyEngine` 通过 `QuoteDispatcher::dispatch` 获取并发报价结果，再顺序评估套利机会与落地；旧的串行路径保留作 Multi-leg 回退。
-- [ ] `src/engine/quote.rs`：`QuoteExecutor::round_trip` 接受 `&IpLeaseHandle` 并复用买卖腿的 lease。
+- [x] `src/engine/quote.rs`：`QuoteExecutor::round_trip` 接受 `&IpLeaseHandle` 并复用买卖腿的 lease，同时在 Jupiter / Ultra / DFlow 报价失败时标记退避。
+- [x] `src/engine/swap_preparer.rs`：`SwapPreparer::prepare` 强制要求 `&IpLeaseHandle`，确保指令生成沿用同一 IP 并补齐本地 IP 传播。
 - [ ] `src/lander/mod.rs` 与各落地器实现感知 `IpAllocator`，统一通过构造函数注入 `Arc<IpAllocator>`，避免跨模块 `Box<dyn>`。
-- [ ] `monitoring::events`：报价事件已输出 `local_ip`、`batch_id` 指标，后续继续扩展 `SwapCompleted`、`LanderSubmission` 事件并补充 `ip_cooldown_ms`。
+- [x] `monitoring::events`：报价事件已输出 `local_ip`、`batch_id` 指标，新增 IP 资源池打点（`galileo_ip_inventory_total` / `galileo_ip_inflight` / `galileo_ip_cooldown_*`）覆盖 swap/lander 链路观测。
 
 ---
 
@@ -188,7 +189,7 @@ dflow:
 - [x] `lander::rpc::RpcLander` 接入 `IpAllocator`。
 
 ### 阶段 3：退避与观测
-1. `IpAllocator::mark_result` 接入所有 HTTP / WS / RPC 调用，完善 cooldown 策略。
+1. `IpAllocator::mark_result` 接入所有 HTTP / WS / RPC 调用，完善 cooldown 策略。✅ Jupiter / Ultra / DFlow 报价、Swap 构建、Lander 提交路径均透传 `mark_outcome` 并暴露 IP 冷却指标。
 2. 补充 metrics、tracing 字段，更新 `monitoring::events`。✅ Lander 路径、新增 swap/transaction 指标包含 `local_ip` 标签，并输出 `galileo_lander_submission_total`。Grafana 建议新增 “Quote / Swap / Lander 成功率” 看板，并给 `galileo_lander_submission_total{result="failure"}` 配置阈值告警。
 
 ### 阶段 4：Multi-leg & Titan

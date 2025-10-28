@@ -6,6 +6,7 @@ use solana_client::client_error::ClientError;
 use thiserror::Error;
 
 use crate::api::dflow::DflowError;
+use crate::api::kamino::KaminoError;
 use crate::api::ultra::UltraError;
 use crate::jupiter::error::JupiterError;
 use crate::network::NetworkError;
@@ -20,6 +21,8 @@ pub enum EngineError {
     Jupiter(#[from] JupiterError),
     #[error("DFlow API 错误: {0}")]
     Dflow(#[from] DflowError),
+    #[error("Kamino API 错误: {0}")]
+    Kamino(#[from] KaminoError),
     #[error("Ultra API 错误: {0}")]
     Ultra(#[from] UltraError),
     #[error("JSON 处理失败: {0}")]

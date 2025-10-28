@@ -33,7 +33,7 @@ use tracing::{debug, warn};
 use url::Url;
 
 use crate::config::{LanderJitoConfig, LanderJitoUuidConfig, TipStrategyKind, TipStreamLevel};
-use crate::engine::{TxVariant, VariantId};
+use crate::engine::TxVariant;
 use crate::network::{IpBoundClientPool, ReqwestClientFactoryFn};
 
 use super::error::LanderError;
@@ -145,7 +145,6 @@ impl JitoLander {
             variant
                 .tip_override()
                 .and_then(|override_tip| override_tip.recipient())
-                .or_else(|| tip_wallet_for_variant(variant.id()))
                 .or_else(random_tip_wallet)
         } else {
             None
@@ -388,14 +387,6 @@ fn random_tip_wallet() -> Option<Pubkey> {
     }
     let mut rng = rand::rng();
     TIP_WALLETS.as_slice().choose(&mut rng).copied()
-}
-
-fn tip_wallet_for_variant(variant_id: VariantId) -> Option<Pubkey> {
-    if TIP_WALLETS.is_empty() {
-        return None;
-    }
-    let index = (variant_id as usize) % TIP_WALLETS.len();
-    TIP_WALLETS.get(index).copied()
 }
 
 fn prepare_endpoint_url(endpoint: &str, ticket: Option<&UuidTicket>) -> Option<Url> {

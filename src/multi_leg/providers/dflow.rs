@@ -209,7 +209,6 @@ fn classify_dflow_error(err: &DflowError) -> Option<IpLeaseOutcome> {
         DflowError::RateLimited { .. } => Some(IpLeaseOutcome::RateLimited),
         DflowError::ApiStatus { status, .. } => map_status(status),
         DflowError::Http(inner) => classify_reqwest(inner),
-        DflowError::ConsecutiveFailureLimit { .. } => Some(IpLeaseOutcome::NetworkError),
         DflowError::ClientPool(_) => Some(IpLeaseOutcome::NetworkError),
         DflowError::Header(_) | DflowError::Schema(_) | DflowError::Json(_) => {
             Some(IpLeaseOutcome::NetworkError)

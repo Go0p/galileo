@@ -61,10 +61,10 @@ fn filter_v0_instructions(message: &mut V0Message, deny: &BTreeSet<Pubkey>) {
 #[cfg(test)]
 mod tests {
     use solana_compute_budget_interface::ComputeBudgetInstruction;
+    use solana_message::VersionedMessage;
     use solana_sdk::instruction::Instruction;
     use solana_sdk::message::Message;
     use solana_sdk::pubkey::Pubkey;
-    use solana_sdk::transaction::VersionedMessage;
 
     use super::*;
 

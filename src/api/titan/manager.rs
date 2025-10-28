@@ -24,6 +24,7 @@ pub enum TitanLeg {
 #[derive(Clone, Debug)]
 pub struct TitanSubscriptionConfig {
     pub ws_url: Url,
+    pub ws_proxy: Option<Url>,
     pub jwt: String,
     pub default_pubkey: Pubkey,
     pub providers: Vec<String>,
@@ -66,7 +67,9 @@ pub async fn subscribe_quote_stream(
     }
 
     let endpoint = build_authenticated_endpoint(&config)?;
-    let client = Arc::new(TitanWsClient::connect_with_local_ip(endpoint, local_ip).await?);
+    let client = Arc::new(
+        TitanWsClient::connect_with_options(endpoint, config.ws_proxy.clone(), local_ip).await?,
+    );
 
     let request = build_subscription_request(&config, pair, leg, amount);
     let session = client.subscribe_swap_quotes(request).await.map_err(|err| {

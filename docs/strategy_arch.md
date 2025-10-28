@@ -51,6 +51,7 @@ src/
 - 输入/输出 mint 均固定为 `base_mint`，通过两次 Quote（正向、反向）确认利润，Quote 请求参数应直接来自配置（`request_params`）。
 - Quote 频率极高，不启用缓存；失败快速回退，使用 `try_send` + 降级通道防止积压。
 - `QuoteExecutor` 负责构造请求、执行 HTTP/gRPC 调用、解析响应，并同步写入监控。
+- 当前引擎内置 Jupiter / DFlow / Kamino / Ultra 四类聚合器，通过 `galileo.engine.backend` 切换。Kamino 直接复用 `/kswap/all-routes` 响应内的指令集，不再额外调用 swap-instructions API。
 
 ### 3.2 盈利判定
 - `ProfitEvaluator` 接收双向 Quote 结果，执行手续费、滑点、tip 开销评估。

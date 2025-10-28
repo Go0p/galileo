@@ -167,6 +167,15 @@ fn discover_interfaces(
 ) -> NetworkResult<Vec<IpAddr>> {
     let mut results = Vec::new();
     for iface in get_if_addrs().map_err(NetworkError::InterfaceDiscovery)? {
+        if !allow_loopback {
+            if iface.is_loopback() {
+                continue;
+            }
+            if iface.name.starts_with("lo") {
+                continue;
+            }
+        }
+
         let ip = match iface.addr {
             IfAddr::V4(v4) => IpAddr::V4(v4.ip),
             IfAddr::V6(v6) => IpAddr::V6(v6.ip),

@@ -1,0 +1,8 @@
+GET /kswap/all-routes?tokenIn=So11111111111111111111111111111111111111112&tokenOut=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v&amount=1000000000&swapType=exactIn&executor=goopNoaJhhrzxi6oq2j4chcyHKGucAeVZSk4QBA7Gu1&referrerPda=LiMoM9rMhrdYrfzUCxQppvxCSG1FcrUK9G8uLq4A1GF&maxSlippageBps=50&includeSetupIxs=true&wrapAndUnwrapSol=true&routerTypes%5B%5D=jupiter&routerTypes%5B%5D=jupiterSelfHosted&routerTypes%5B%5D=jupiterEuropa&routerTypes%5B%5D=per&routerTypes%5B%5D=dflow&routerTypes%5B%5D=fluxbeam&routerTypes%5B%5D=raydium&routerTypes%5B%5D=hashflow&routerTypes%5B%5D=okx&routerTypes%5B%5D=clover&routerTypes%5B%5D=zeroEx&routerTypes%5B%5D=spur&routerTypes%5B%5D=lifi&includeLimoLogs=true&includeRfq=true&timeoutMs=700&atLeastOneNoMoreThanTimeoutMS=2000&withSimulation=true&filterFailedSimulations=false&requestPriceImpact=false&perMinimumQuoteLifetimeSeconds=15&assertSwapBalances=false&simulateWithMockInputAmount=false HTTP/2
+Host: api.kamino.finance
+Accept-Encoding: gzip, deflate, br
+Accept: */*
+Accept-Language: en-US;q=0.9,en;q=0.8
+User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36
+Cache-Control: max-age=0
+

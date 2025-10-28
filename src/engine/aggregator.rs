@@ -8,6 +8,7 @@ use solana_sdk::pubkey::Pubkey;
 
 use crate::api::dflow;
 use crate::api::jupiter;
+use crate::api::kamino;
 use crate::api::ultra::{OrderResponse, OrderResponsePayload, RoutePlanStep};
 use crate::engine::ultra::UltraFinalizedSwap;
 
@@ -16,6 +17,7 @@ pub enum AggregatorKind {
     Jupiter,
     Dflow,
     Ultra,
+    Kamino,
 }
 
 #[derive(Debug, Clone)]
@@ -23,6 +25,23 @@ pub enum QuoteResponseVariant {
     Jupiter(jupiter::QuoteResponse),
     Dflow(dflow::QuoteResponse),
     Ultra(OrderResponse),
+    Kamino(KaminoQuote),
+}
+
+#[derive(Debug, Clone)]
+pub struct KaminoQuote {
+    pub input_mint: Pubkey,
+    pub output_mint: Pubkey,
+    pub route: kamino::Route,
+}
+
+#[derive(Debug, Clone)]
+pub struct KaminoQuotePayload {
+    pub route: kamino::Route,
+    pub input_mint: Pubkey,
+    pub output_mint: Pubkey,
+    pub context_slot: u64,
+    pub time_taken_ms: f64,
 }
 
 impl QuoteResponseVariant {
@@ -31,6 +50,7 @@ impl QuoteResponseVariant {
             QuoteResponseVariant::Jupiter(_) => AggregatorKind::Jupiter,
             QuoteResponseVariant::Dflow(_) => AggregatorKind::Dflow,
             QuoteResponseVariant::Ultra(_) => AggregatorKind::Ultra,
+            QuoteResponseVariant::Kamino(_) => AggregatorKind::Kamino,
         }
     }
 
@@ -40,6 +60,7 @@ impl QuoteResponseVariant {
             QuoteResponseVariant::Jupiter(resp) => resp.input_mint,
             QuoteResponseVariant::Dflow(resp) => resp.payload().input_mint,
             QuoteResponseVariant::Ultra(resp) => ultra_input_mint(&resp),
+            QuoteResponseVariant::Kamino(resp) => resp.input_mint,
         }
     }
 
@@ -49,6 +70,7 @@ impl QuoteResponseVariant {
             QuoteResponseVariant::Jupiter(resp) => resp.output_mint,
             QuoteResponseVariant::Dflow(resp) => resp.payload().output_mint,
             QuoteResponseVariant::Ultra(resp) => ultra_output_mint(&resp),
+            QuoteResponseVariant::Kamino(resp) => resp.output_mint,
         }
     }
 
@@ -58,6 +80,7 @@ impl QuoteResponseVariant {
             QuoteResponseVariant::Jupiter(resp) => resp.in_amount,
             QuoteResponseVariant::Dflow(resp) => resp.payload().in_amount,
             QuoteResponseVariant::Ultra(resp) => ultra_in_amount(&resp),
+            QuoteResponseVariant::Kamino(resp) => resp.route.amount_in(),
         }
     }
 
@@ -66,6 +89,7 @@ impl QuoteResponseVariant {
             QuoteResponseVariant::Jupiter(resp) => resp.out_amount,
             QuoteResponseVariant::Dflow(resp) => resp.payload().out_amount,
             QuoteResponseVariant::Ultra(resp) => ultra_out_amount(&resp),
+            QuoteResponseVariant::Kamino(resp) => resp.route.amount_out(),
         }
     }
 
@@ -81,6 +105,17 @@ impl QuoteResponseVariant {
                     payload,
                 })
             }
+            QuoteResponseVariant::Kamino(resp) => {
+                let route = resp.route.clone();
+                let time_taken_ms = route.response_time_get_quote_ms as f64;
+                QuotePayloadVariant::Kamino(KaminoQuotePayload {
+                    route,
+                    input_mint: resp.input_mint,
+                    output_mint: resp.output_mint,
+                    context_slot: 0,
+                    time_taken_ms,
+                })
+            }
         }
     }
 }
@@ -90,6 +125,7 @@ pub enum QuotePayloadVariant {
     Jupiter(jupiter::QuoteResponsePayload),
     Dflow(dflow::QuoteResponsePayload),
     Ultra(UltraQuotePayload),
+    Kamino(KaminoQuotePayload),
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +142,7 @@ impl QuotePayloadVariant {
             QuotePayloadVariant::Jupiter(_) => AggregatorKind::Jupiter,
             QuotePayloadVariant::Dflow(_) => AggregatorKind::Dflow,
             QuotePayloadVariant::Ultra(_) => AggregatorKind::Ultra,
+            QuotePayloadVariant::Kamino(_) => AggregatorKind::Kamino,
         }
     }
 
@@ -115,6 +152,7 @@ impl QuotePayloadVariant {
             QuotePayloadVariant::Jupiter(payload) => payload.input_mint,
             QuotePayloadVariant::Dflow(payload) => payload.input_mint,
             QuotePayloadVariant::Ultra(payload) => ultra_input_mint_from_payload(&payload.payload),
+            QuotePayloadVariant::Kamino(payload) => payload.input_mint,
         }
     }
 
@@ -123,6 +161,7 @@ impl QuotePayloadVariant {
             QuotePayloadVariant::Jupiter(payload) => payload.output_mint,
             QuotePayloadVariant::Dflow(payload) => payload.output_mint,
             QuotePayloadVariant::Ultra(payload) => ultra_output_mint_from_payload(&payload.payload),
+            QuotePayloadVariant::Kamino(payload) => payload.output_mint,
         }
     }
 
@@ -132,6 +171,7 @@ impl QuotePayloadVariant {
             QuotePayloadVariant::Jupiter(payload) => payload.out_amount,
             QuotePayloadVariant::Dflow(payload) => payload.out_amount,
             QuotePayloadVariant::Ultra(payload) => ultra_out_amount_from_payload(&payload.payload),
+            QuotePayloadVariant::Kamino(payload) => payload.route.amount_out(),
         }
     }
 
@@ -144,6 +184,9 @@ impl QuotePayloadVariant {
                 .payload
                 .other_amount_threshold
                 .unwrap_or_else(|| ultra_out_amount_from_payload(&payload.payload)),
+            QuotePayloadVariant::Kamino(payload) => {
+                payload.route.amounts_exact_in.amount_out_guaranteed
+            }
         }
     }
 
@@ -162,6 +205,13 @@ impl QuotePayloadVariant {
                 payload.payload.out_amount = Some(value);
                 payload.payload.other_amount_threshold = Some(value);
             }
+            QuotePayloadVariant::Kamino(payload) => {
+                payload.route.amounts_exact_in.amount_out = value;
+                payload.route.amounts_exact_in.amount_out_guaranteed = value;
+                payload.route.amounts_exact_out.amount_out = value;
+                payload.route.amounts_exact_out.amount_in = value;
+                payload.route.amounts_exact_out.amount_in_guaranteed = value;
+            }
         }
     }
 
@@ -170,6 +220,7 @@ impl QuotePayloadVariant {
             QuotePayloadVariant::Jupiter(payload) => payload.context_slot = slot,
             QuotePayloadVariant::Dflow(payload) => payload.context_slot = slot,
             QuotePayloadVariant::Ultra(payload) => payload.context_slot = slot,
+            QuotePayloadVariant::Kamino(payload) => payload.context_slot = slot,
         }
     }
 
@@ -178,6 +229,7 @@ impl QuotePayloadVariant {
             QuotePayloadVariant::Jupiter(payload) => payload.context_slot,
             QuotePayloadVariant::Dflow(payload) => payload.context_slot,
             QuotePayloadVariant::Ultra(payload) => payload.context_slot,
+            QuotePayloadVariant::Kamino(payload) => payload.context_slot,
         }
     }
 
@@ -186,6 +238,7 @@ impl QuotePayloadVariant {
             QuotePayloadVariant::Jupiter(payload) => payload.time_taken,
             QuotePayloadVariant::Dflow(_) => 0.0,
             QuotePayloadVariant::Ultra(payload) => payload.time_taken_ms,
+            QuotePayloadVariant::Kamino(payload) => payload.time_taken_ms,
         }
     }
 
@@ -195,6 +248,8 @@ impl QuotePayloadVariant {
         } else if let QuotePayloadVariant::Ultra(payload) = self {
             payload.time_taken_ms = value;
             payload.payload.total_time = Some(value.max(0.0).round() as u64);
+        } else if let QuotePayloadVariant::Kamino(payload) = self {
+            payload.time_taken_ms = value;
         }
     }
 
@@ -203,6 +258,7 @@ impl QuotePayloadVariant {
             QuotePayloadVariant::Jupiter(payload) => payload.route_plan.len(),
             QuotePayloadVariant::Dflow(payload) => payload.route_plan.len(),
             QuotePayloadVariant::Ultra(payload) => payload.payload.route_plan.len(),
+            QuotePayloadVariant::Kamino(payload) => payload.route.instructions.swap_ixs.len(),
         }
     }
 
@@ -218,6 +274,7 @@ impl QuotePayloadVariant {
                 .payload
                 .route_plan
                 .extend(rhs.payload.route_plan.iter().cloned()),
+            (QuotePayloadVariant::Kamino(_), QuotePayloadVariant::Kamino(_)) => {}
             _ => {}
         }
     }
@@ -228,6 +285,9 @@ impl QuotePayloadVariant {
             QuotePayloadVariant::Dflow(payload) => payload.output_mint = mint,
             QuotePayloadVariant::Ultra(payload) => {
                 payload.payload.output_mint = Some(mint);
+            }
+            QuotePayloadVariant::Kamino(payload) => {
+                payload.output_mint = mint;
             }
         }
     }
@@ -240,6 +300,12 @@ impl QuotePayloadVariant {
                 payload.payload.price_impact = Decimal::ZERO;
                 payload.payload.price_impact_pct = Some("0".to_string());
             }
+            QuotePayloadVariant::Kamino(payload) => {
+                payload.route.price_impact_bps = Some(0);
+                payload.route.guaranteed_price_impact_bps = Some(0);
+                payload.route.price_impact_amount = Some("0".to_string());
+                payload.route.guaranteed_price_impact_amount = Some("0".to_string());
+            }
         }
     }
 }
@@ -250,6 +316,7 @@ pub enum SwapInstructionsVariant {
     Dflow(dflow::SwapInstructionsResponse),
     Ultra(UltraFinalizedSwap),
     MultiLeg(MultiLegInstructions),
+    Kamino(KaminoSwapBundle),
 }
 
 #[derive(Debug, Clone)]
@@ -301,6 +368,42 @@ impl MultiLegInstructions {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct KaminoSwapBundle {
+    pub compute_budget_instructions: Vec<Instruction>,
+    pub main_instructions: Vec<Instruction>,
+    pub lookup_table_addresses: Vec<Pubkey>,
+    pub prioritization_fee_lamports: Option<u64>,
+    pub compute_unit_limit: u32,
+}
+
+impl KaminoSwapBundle {
+    pub fn new(
+        compute_budget_instructions: Vec<Instruction>,
+        main_instructions: Vec<Instruction>,
+        lookup_table_addresses: Vec<Pubkey>,
+        prioritization_fee_lamports: Option<u64>,
+        compute_unit_limit: u32,
+    ) -> Self {
+        Self {
+            compute_budget_instructions,
+            main_instructions,
+            lookup_table_addresses,
+            prioritization_fee_lamports,
+            compute_unit_limit,
+        }
+    }
+
+    pub fn flatten_instructions(&self) -> Vec<Instruction> {
+        let mut combined = Vec::with_capacity(
+            self.compute_budget_instructions.len() + self.main_instructions.len(),
+        );
+        combined.extend(self.compute_budget_instructions.iter().cloned());
+        combined.extend(self.main_instructions.iter().cloned());
+        combined
+    }
+}
+
 impl SwapInstructionsVariant {
     #[allow(dead_code)]
     pub fn kind(&self) -> AggregatorKind {
@@ -309,6 +412,7 @@ impl SwapInstructionsVariant {
             SwapInstructionsVariant::Dflow(_) => AggregatorKind::Dflow,
             SwapInstructionsVariant::Ultra(_) => AggregatorKind::Ultra,
             SwapInstructionsVariant::MultiLeg(_) => AggregatorKind::Jupiter,
+            SwapInstructionsVariant::Kamino(_) => AggregatorKind::Kamino,
         }
     }
 
@@ -318,6 +422,7 @@ impl SwapInstructionsVariant {
             SwapInstructionsVariant::Dflow(response) => response.compute_unit_limit,
             SwapInstructionsVariant::Ultra(bundle) => bundle.compute_unit_limit,
             SwapInstructionsVariant::MultiLeg(bundle) => bundle.compute_unit_limit,
+            SwapInstructionsVariant::Kamino(bundle) => bundle.compute_unit_limit,
         }
     }
 
@@ -329,6 +434,7 @@ impl SwapInstructionsVariant {
             SwapInstructionsVariant::Dflow(response) => response.prioritization_fee_lamports,
             SwapInstructionsVariant::Ultra(bundle) => bundle.prioritization_fee_lamports,
             SwapInstructionsVariant::MultiLeg(bundle) => bundle.prioritization_fee_lamports,
+            SwapInstructionsVariant::Kamino(bundle) => bundle.prioritization_fee_lamports,
         }
     }
 
@@ -342,6 +448,9 @@ impl SwapInstructionsVariant {
             }
             SwapInstructionsVariant::Ultra(bundle) => bundle.compute_budget_instructions.as_slice(),
             SwapInstructionsVariant::MultiLeg(bundle) => {
+                bundle.compute_budget_instructions.as_slice()
+            }
+            SwapInstructionsVariant::Kamino(bundle) => {
                 bundle.compute_budget_instructions.as_slice()
             }
         }
@@ -360,6 +469,7 @@ impl SwapInstructionsVariant {
                 combined
             }
             SwapInstructionsVariant::MultiLeg(bundle) => bundle.flatten_instructions(),
+            SwapInstructionsVariant::Kamino(bundle) => bundle.flatten_instructions(),
         }
     }
 
@@ -371,6 +481,7 @@ impl SwapInstructionsVariant {
             SwapInstructionsVariant::Dflow(_) => &[],
             SwapInstructionsVariant::Ultra(bundle) => bundle.resolved_lookup_tables.as_slice(),
             SwapInstructionsVariant::MultiLeg(bundle) => bundle.resolved_lookup_tables.as_slice(),
+            SwapInstructionsVariant::Kamino(_) => &[],
         }
     }
 
@@ -388,6 +499,7 @@ impl SwapInstructionsVariant {
             SwapInstructionsVariant::MultiLeg(bundle) => {
                 bundle.address_lookup_table_addresses.as_slice()
             }
+            SwapInstructionsVariant::Kamino(bundle) => bundle.lookup_table_addresses.as_slice(),
         }
     }
 
@@ -397,6 +509,7 @@ impl SwapInstructionsVariant {
             SwapInstructionsVariant::Dflow(response) => Some(response.blockhash_with_metadata()),
             SwapInstructionsVariant::Ultra(_) => None,
             SwapInstructionsVariant::MultiLeg(_) => None,
+            SwapInstructionsVariant::Kamino(_) => None,
         }
     }
 }

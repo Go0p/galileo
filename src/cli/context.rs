@@ -3,9 +3,11 @@ use std::fs;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_client::RpcClientConfig;
 use solana_rpc_client::http_sender::HttpSender;
 use time::{UtcOffset, macros::format_description};
@@ -19,6 +21,62 @@ use crate::config::{
     load_config,
 };
 use crate::jupiter::{BinaryStatus, JupiterBinaryManager, JupiterError};
+
+#[derive(Debug)]
+pub struct RpcEndpointRotator {
+    endpoints: Arc<Vec<String>>,
+    cursor: AtomicUsize,
+}
+
+impl RpcEndpointRotator {
+    pub fn new(endpoints: Vec<String>) -> Result<Self> {
+        if endpoints.is_empty() {
+            return Err(anyhow!("global.rpc_urls 至少需要配置一个 RPC 端点"));
+        }
+        Ok(Self {
+            cursor: AtomicUsize::new(0),
+            endpoints: Arc::new(endpoints),
+        })
+    }
+
+    pub fn primary_url(&self) -> &str {
+        &self.endpoints[0]
+    }
+
+    pub fn next(&self) -> (usize, &str) {
+        let len = self.endpoints.len();
+        let index = if len == 1 {
+            0
+        } else {
+            self.cursor.fetch_add(1, Ordering::Relaxed) % len
+        };
+        (index, self.endpoints[index].as_str())
+    }
+
+    pub fn get(&self, index: usize) -> Option<&str> {
+        self.endpoints.get(index).map(|value| value.as_str())
+    }
+
+    pub fn endpoints(&self) -> &[String] {
+        self.endpoints.as_slice()
+    }
+}
+
+#[derive(Clone)]
+pub struct ResolvedRpcClient {
+    pub client: Arc<RpcClient>,
+    pub endpoints: Arc<RpcEndpointRotator>,
+}
+
+impl ResolvedRpcClient {
+    pub fn primary_url(&self) -> &str {
+        self.endpoints.primary_url()
+    }
+
+    pub fn endpoints(&self) -> &[String] {
+        self.endpoints.endpoints()
+    }
+}
 
 /// 初始化 tracing，兼顾 JSON 与文本输出模式。
 pub fn init_tracing(config: &crate::config::LoggingConfig) -> Result<()> {
@@ -194,18 +252,23 @@ pub fn resolve_jupiter_defaults(
     global: &GlobalConfig,
 ) -> Result<JupiterConfig> {
     if jupiter.core.rpc_url.trim().is_empty() {
-        if let Some(global_rpc) = &global.rpc_url {
-            let trimmed = global_rpc.trim();
-            if !trimmed.is_empty() {
-                jupiter.core.rpc_url = trimmed.to_string();
-            }
+        if let Some(primary) = global.primary_rpc_url() {
+            jupiter.core.rpc_url = primary.to_string();
         }
     }
 
     if jupiter.core.rpc_url.trim().is_empty() {
         return Err(anyhow!(
-            "未配置 Jupiter RPC：请在 jupiter.toml 或 galileo.yaml 的 global.rpc_url 中设置 rpc_url"
+            "未配置 Jupiter RPC：请在 jupiter.toml 或 galileo.yaml 的 global.rpc_urls 中设置 RPC 端点"
         ));
+    }
+
+    if jupiter.core.secondary_rpc_urls.is_empty() {
+        for url in global.rpc_urls() {
+            if url != &jupiter.core.rpc_url {
+                jupiter.core.secondary_rpc_urls.push(url.clone());
+            }
+        }
     }
 
     let needs_yellowstone = jupiter
@@ -319,22 +382,22 @@ mod tests {
     }
 }
 
-pub fn resolve_rpc_client(
-    global: &GlobalConfig,
-) -> Result<Arc<solana_client::nonblocking::rpc_client::RpcClient>> {
-    let url = global
-        .rpc_url
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "https://api.mainnet-beta.solana.com".to_string());
+pub fn resolve_rpc_client(global: &GlobalConfig) -> Result<ResolvedRpcClient> {
+    let endpoints = if !global.rpc_urls().is_empty() {
+        global.rpc_urls().to_vec()
+    } else {
+        Vec::new()
+    };
+    let rotator = Arc::new(RpcEndpointRotator::new(endpoints)?);
+    let primary_url = rotator.primary_url().to_string();
 
-    if let Some(proxy_url) = resolve_global_http_proxy(global) {
+    let client = if let Some(proxy_url) = resolve_global_http_proxy(global) {
         let proxy = reqwest::Proxy::all(&proxy_url)
             .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
         info!(
             target: "rpc::client",
             proxy = %proxy_url,
-            url = %url,
+            url = %primary_url,
             "RPC 客户端将通过 global.proxy 访问"
         );
         let client = reqwest::Client::builder()
@@ -345,15 +408,25 @@ pub fn resolve_rpc_client(
             .danger_accept_invalid_certs(true)
             .build()
             .map_err(|err| anyhow!("构建代理 RPC 客户端失败: {err}"))?;
-        let sender = HttpSender::new_with_client(url.clone(), client);
-        let rpc = solana_client::nonblocking::rpc_client::RpcClient::new_sender(
+        let sender = HttpSender::new_with_client(primary_url.clone(), client);
+        RpcClient::new_sender(
             sender,
             RpcClientConfig::with_commitment(solana_commitment_config::CommitmentConfig::default()),
-        );
-        Ok(Arc::new(rpc))
+        )
     } else {
-        Ok(Arc::new(
-            solana_client::nonblocking::rpc_client::RpcClient::new(url),
-        ))
+        RpcClient::new(primary_url.clone())
+    };
+
+    if rotator.endpoints().len() > 1 {
+        info!(
+            target: "rpc::client",
+            urls = ?rotator.endpoints(),
+            "已注册多个 RPC 端点"
+        );
     }
+
+    Ok(ResolvedRpcClient {
+        client: Arc::new(client),
+        endpoints: rotator,
+    })
 }

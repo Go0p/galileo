@@ -18,7 +18,7 @@ proxy= "http://192.168.124.4:2080"
 [jupiter.core]
 # 关键运行参数。实际运行时仍可在 `galileo.yaml` 的 `jupiter.launch` 段覆盖。
 # 主 RPC，用于订阅账户、抓取市场与报价数据。建议配置为低延迟、稳定的节点。
-# 不填时，默认使用 galileo.yaml 中的 global.rpc_url。
+# 不填时，默认使用 galileo.yaml 中的 global.rpc_urls 的首个端点。
 rpc_url = "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
 # 辅助rpc，部分耗时操作可分摊到副本节点。
 secondary_rpc_urls = []

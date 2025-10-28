@@ -6,16 +6,7 @@ pub mod swap_instructions;
 
 mod headers;
 
-use std::{
-    error::Error as StdError,
-    fmt,
-    net::IpAddr,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
-};
+use std::{error::Error as StdError, fmt, net::IpAddr, sync::Arc, time::Duration};
 
 use metrics::{counter, histogram};
 use reqwest::{
@@ -24,7 +15,6 @@ use reqwest::{
 };
 use serde_json::Value;
 use thiserror::Error;
-use tokio::time::sleep;
 use tracing::{debug, info, trace, warn};
 use url::form_urlencoded;
 
@@ -49,27 +39,6 @@ pub use swap_instructions::{
     SwapInstructionsRequest, SwapInstructionsResponse,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DflowStage {
-    Quote,
-    Swap,
-}
-
-impl DflowStage {
-    fn label(self) -> &'static str {
-        match self {
-            DflowStage::Quote => "quote",
-            DflowStage::Swap => "swap",
-        }
-    }
-}
-
-impl fmt::Display for DflowStage {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.label())
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum DflowError {
     #[error("failed to call DFlow API: {0}")]
@@ -92,13 +61,6 @@ pub enum DflowError {
     Schema(String),
     #[error("failed to generate x-client headers: {0}")]
     Header(String),
-    #[error("{stage} 接口连续失败 {count} 次，超过容忍上限 {limit}: {last_error}")]
-    ConsecutiveFailureLimit {
-        stage: DflowStage,
-        count: usize,
-        limit: usize,
-        last_error: String,
-    },
     #[error("failed to construct IP-bound HTTP client: {0}")]
     ClientPool(String),
 }
@@ -130,10 +92,6 @@ pub struct DflowApiClient {
     log_profile: LoggingProfile,
     slow_quote_warn_ms: u64,
     slow_swap_warn_ms: u64,
-    max_consecutive_failures: Option<usize>,
-    wait_on_429: Duration,
-    quote_failures: Arc<AtomicUsize>,
-    swap_failures: Arc<AtomicUsize>,
     client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
 }
 
@@ -147,8 +105,6 @@ impl fmt::Debug for DflowApiClient {
             .field("log_profile", &self.log_profile)
             .field("slow_quote_warn_ms", &self.slow_quote_warn_ms)
             .field("slow_swap_warn_ms", &self.slow_swap_warn_ms)
-            .field("max_consecutive_failures", &self.max_consecutive_failures)
-            .field("wait_on_429_ms", &self.wait_on_429.as_millis())
             .field(
                 "ip_pool_size",
                 &self.client_pool.as_ref().map(|pool| pool.len()),
@@ -165,8 +121,6 @@ impl DflowApiClient {
         swap_base_url: String,
         bot_config: &BotConfig,
         logging: &LoggingConfig,
-        max_consecutive_failures: Option<usize>,
-        wait_on_429: Duration,
     ) -> Self {
         Self::with_ip_pool(
             client,
@@ -174,8 +128,6 @@ impl DflowApiClient {
             swap_base_url,
             bot_config,
             logging,
-            max_consecutive_failures,
-            wait_on_429,
             None,
         )
     }
@@ -186,8 +138,6 @@ impl DflowApiClient {
         swap_base_url: String,
         bot_config: &BotConfig,
         logging: &LoggingConfig,
-        max_consecutive_failures: Option<usize>,
-        wait_on_429: Duration,
         client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
     ) -> Self {
         let quote_timeout = Duration::from_millis(bot_config.quote_ms);
@@ -202,10 +152,6 @@ impl DflowApiClient {
             log_profile: logging.profile,
             slow_quote_warn_ms: logging.slow_quote_warn_ms,
             slow_swap_warn_ms: logging.slow_swap_warn_ms,
-            max_consecutive_failures,
-            wait_on_429,
-            quote_failures: Arc::new(AtomicUsize::new(0)),
-            swap_failures: Arc::new(AtomicUsize::new(0)),
             client_pool,
         }
     }
@@ -224,52 +170,6 @@ impl DflowApiClient {
 
     fn swap_endpoint(&self, path: &str) -> String {
         Self::endpoint(&self.swap_base_url, path)
-    }
-
-    fn stage_counter(&self, stage: DflowStage) -> &AtomicUsize {
-        match stage {
-            DflowStage::Quote => self.quote_failures.as_ref(),
-            DflowStage::Swap => self.swap_failures.as_ref(),
-        }
-    }
-
-    fn register_failure(&self, stage: DflowStage, error: &DflowError) -> Result<(), DflowError> {
-        let counter = self.stage_counter(stage);
-        let current = counter.fetch_add(1, Ordering::SeqCst) + 1;
-        if let Some(limit) = self.max_consecutive_failures {
-            if limit != 0 && current >= limit {
-                match stage {
-                    DflowStage::Quote => {
-                        self.record_quote_metrics("limit_exceeded", None, None);
-                    }
-                    DflowStage::Swap => {
-                        self.record_swap_metrics("limit_exceeded", None, None);
-                    }
-                }
-                warn!(
-                    target: "dflow::tolerance",
-                    stage = stage.label(),
-                    consecutive = current,
-                    limit,
-                    "DFlow {stage} 接口连续失败达到上限"
-                );
-                return Err(DflowError::ConsecutiveFailureLimit {
-                    stage,
-                    count: current,
-                    limit,
-                    last_error: error.to_string(),
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn reset_failures(&self, stage: DflowStage) {
-        self.stage_counter(stage).store(0, Ordering::SeqCst);
-    }
-
-    pub async fn quote(&self, request: &QuoteRequest) -> Result<QuoteResponse, DflowError> {
-        self.quote_with_ip(request, None).await
     }
 
     pub async fn quote_with_ip(
@@ -359,9 +259,6 @@ impl DflowApiClient {
                     "报价请求发送失败"
                 );
                 self.record_quote_metrics("transport_error", None, None);
-                if let Err(limit_err) = self.register_failure(DflowStage::Quote, &error) {
-                    return Err(limit_err);
-                }
                 return Err(error);
             }
         };
@@ -388,16 +285,9 @@ impl DflowApiClient {
                     status = status.as_u16(),
                     endpoint = %log_endpoint,
                     body = %log_body,
-                    wait_ms = self.wait_on_429.as_millis(),
                     error = %detail,
                     "报价请求命中 DFlow 限流，将放弃当前套利"
                 );
-                if !self.wait_on_429.is_zero() {
-                    sleep(self.wait_on_429).await;
-                }
-                if let Err(limit_err) = self.register_failure(DflowStage::Quote, &error) {
-                    return Err(limit_err);
-                }
                 return Err(error);
             } else {
                 let log_endpoint = url.clone();
@@ -417,9 +307,6 @@ impl DflowApiClient {
                     error = %detail,
                     "报价请求返回非 200 状态，将放弃当前套利"
                 );
-                if let Err(limit_err) = self.register_failure(DflowStage::Quote, &error) {
-                    return Err(limit_err);
-                }
                 return Err(error);
             }
         }
@@ -437,9 +324,6 @@ impl DflowApiClient {
                     error = %detail,
                     "报价响应解析失败"
                 );
-                if let Err(limit_err) = self.register_failure(DflowStage::Quote, &error) {
-                    return Err(limit_err);
-                }
                 return Err(error);
             }
         };
@@ -457,14 +341,9 @@ impl DflowApiClient {
                     error = %detail,
                     "报价响应 schema 校验失败"
                 );
-                if let Err(limit_err) = self.register_failure(DflowStage::Quote, &error) {
-                    return Err(limit_err);
-                }
                 return Err(error);
             }
         };
-
-        self.reset_failures(DflowStage::Quote);
 
         let elapsed = guard.finish();
         let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
@@ -573,9 +452,6 @@ impl DflowApiClient {
                     "指令请求发送失败"
                 );
                 self.record_swap_metrics("transport_error", None, None);
-                if let Err(limit_err) = self.register_failure(DflowStage::Swap, &error) {
-                    return Err(limit_err);
-                }
                 return Err(error);
             }
         };
@@ -602,16 +478,9 @@ impl DflowApiClient {
                     status = status.as_u16(),
                     endpoint = %log_endpoint,
                     body = %log_body,
-                    wait_ms = self.wait_on_429.as_millis(),
                     error = %detail,
                     "指令请求命中 DFlow 限流，将放弃当前套利"
                 );
-                if !self.wait_on_429.is_zero() {
-                    sleep(self.wait_on_429).await;
-                }
-                if let Err(limit_err) = self.register_failure(DflowStage::Swap, &error) {
-                    return Err(limit_err);
-                }
                 return Err(error);
             } else {
                 let log_endpoint = url.clone();
@@ -631,9 +500,6 @@ impl DflowApiClient {
                     error = %detail,
                     "指令请求返回非 200 状态，将放弃当前套利"
                 );
-                if let Err(limit_err) = self.register_failure(DflowStage::Swap, &error) {
-                    return Err(limit_err);
-                }
                 return Err(error);
             }
         }
@@ -651,9 +517,6 @@ impl DflowApiClient {
                     error = %detail,
                     "指令响应解析失败"
                 );
-                if let Err(limit_err) = self.register_failure(DflowStage::Swap, &error) {
-                    return Err(limit_err);
-                }
                 return Err(error);
             }
         };
@@ -670,14 +533,9 @@ impl DflowApiClient {
                     error = %detail,
                     "指令响应 schema 校验失败"
                 );
-                if let Err(limit_err) = self.register_failure(DflowStage::Swap, &error) {
-                    return Err(limit_err);
-                }
                 return Err(error);
             }
         };
-
-        self.reset_failures(DflowStage::Swap);
 
         let elapsed = guard.finish();
         let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;

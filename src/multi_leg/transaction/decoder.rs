@@ -46,8 +46,8 @@ mod tests {
     use super::*;
     use solana_sdk::instruction::Instruction;
     use solana_sdk::message::Message;
+    use solana_sdk::message::VersionedMessage;
     use solana_sdk::pubkey::Pubkey;
-    use solana_sdk::transaction::VersionedMessage;
 
     #[test]
     fn roundtrip_legacy_transaction() {

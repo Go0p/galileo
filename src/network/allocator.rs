@@ -11,6 +11,7 @@ use std::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use tokio::time::{Instant as TokioInstant, sleep_until};
 
+use crate::monitoring::events;
 use crate::multi_leg::types::{
     AggregatorKind as MultiLegAggregatorKind, LegSide as MultiLegLegSide,
 };
@@ -80,6 +81,10 @@ impl IpAllocator {
             .into_iter()
             .map(|slot| Arc::new(SlotState::new(slot, per_ip_inflight_limit)))
             .collect::<Vec<_>>();
+
+        for slot in &slot_states {
+            events::ip_inventory(slot.ip(), slot.kind_label());
+        }
 
         Self {
             inner: Arc::new(IpAllocatorInner {
@@ -205,14 +210,17 @@ impl IpAllocatorInner {
             IpLeaseOutcome::RateLimited => {
                 slot.start_cooldown(self.cooldown.rate_limited_start);
                 slot.record_rate_limited();
+                events::ip_cooldown(slot.ip(), "rate_limited", self.cooldown.rate_limited_start);
             }
             IpLeaseOutcome::Timeout => {
                 slot.start_cooldown(self.cooldown.timeout_start);
                 slot.record_timeout();
+                events::ip_cooldown(slot.ip(), "timeout", self.cooldown.timeout_start);
             }
             IpLeaseOutcome::NetworkError => {
                 slot.start_cooldown(self.cooldown.timeout_start);
                 slot.record_network_error();
+                events::ip_cooldown(slot.ip(), "network_error", self.cooldown.timeout_start);
             }
         }
     }
@@ -248,6 +256,17 @@ impl SlotState {
         self.slot.ip()
     }
 
+    fn kind(&self) -> IpSlotKind {
+        self.slot.kind()
+    }
+
+    fn kind_label(&self) -> &'static str {
+        match self.kind() {
+            IpSlotKind::Ephemeral => "ephemeral",
+            IpSlotKind::LongLived => "long_lived",
+        }
+    }
+
     fn cooldown_delay(&self, now: Instant) -> Option<Instant> {
         let mut guard = self.cooldown_until.lock().unwrap();
         if let Some(deadline) = guard.as_ref() {
@@ -273,11 +292,13 @@ impl SlotState {
                     None => None,
                 };
                 self.slot.acquire();
+                self.update_inflight_metrics();
                 Ok(permit)
             }
             IpLeaseMode::SharedLongLived => {
                 self.slot.acquire();
                 self.slot.set_state(IpSlotState::LongLived);
+                self.update_inflight_metrics();
                 Ok(None)
             }
         }
@@ -287,12 +308,14 @@ impl SlotState {
         match mode {
             IpLeaseMode::Ephemeral => {
                 self.slot.release();
+                self.update_inflight_metrics();
             }
             IpLeaseMode::SharedLongLived => {
                 self.slot.release();
                 if self.slot.inflight() == 0 {
                     self.slot.set_state(IpSlotState::Idle);
                 }
+                self.update_inflight_metrics();
             }
         }
     }
@@ -329,6 +352,10 @@ impl SlotState {
 
     fn record_network_error(&self) {
         self.slot.stats().record_network_error();
+    }
+
+    fn update_inflight_metrics(&self) {
+        events::ip_inflight(self.ip(), self.kind_label(), self.slot.inflight());
     }
 }
 

@@ -38,12 +38,14 @@ pub struct GalileoConfig {
     pub pure_blind_strategy: PureBlindStrategyConfig,
     #[serde(default)]
     pub back_run_strategy: BackRunStrategyConfig,
+    #[serde(default)]
+    pub copy_strategy: CopyStrategyConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GlobalConfig {
-    #[serde(default)]
-    pub rpc_url: Option<String>,
+    #[serde(default, deserialize_with = "super::deserialize_rpc_urls")]
+    pub rpc_urls: Vec<String>,
     #[serde(default)]
     pub proxy: Option<String>,
     #[serde(default)]
@@ -56,6 +58,47 @@ pub struct GlobalConfig {
     pub instruction: InstructionConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+}
+
+impl GlobalConfig {
+    pub fn rpc_urls(&self) -> &[String] {
+        &self.rpc_urls
+    }
+
+    pub fn primary_rpc_url(&self) -> Option<&str> {
+        self.rpc_urls.first().map(|s| s.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Deserialize)]
+    struct Wrapper {
+        global: GlobalConfig,
+    }
+
+    #[test]
+    fn deserialize_single_rpc_url_string() {
+        let yaml = "global:\n  rpc_urls: http://localhost:8899\n";
+        let wrapper: Wrapper = serde_yaml::from_str(yaml).expect("parse yaml");
+        assert_eq!(
+            wrapper.global.rpc_urls(),
+            &["http://localhost:8899".to_string()]
+        );
+    }
+
+    #[test]
+    fn deserialize_multiple_rpc_urls_dedup() {
+        let yaml =
+            "global:\n  rpc_urls:\n    - http://a:8899\n    - http://b:8899\n    - http://a:8899\n";
+        let wrapper: Wrapper = serde_yaml::from_str(yaml).expect("parse yaml");
+        assert_eq!(
+            wrapper.global.rpc_urls(),
+            &["http://a:8899".to_string(), "http://b:8899".to_string()]
+        );
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -97,6 +140,8 @@ pub struct EngineConfig {
     pub ultra: UltraEngineConfig,
     #[serde(default)]
     pub titan: TitanEngineConfig,
+    #[serde(default)]
+    pub kamino: KaminoEngineConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -105,6 +150,7 @@ pub enum EngineBackend {
     Jupiter,
     Dflow,
     Ultra,
+    Kamino,
     #[serde(rename = "multi-legs")]
     MultiLegs,
     None,
@@ -261,10 +307,6 @@ pub struct DflowEngineConfig {
     pub quote_config: DflowQuoteConfig,
     #[serde(default)]
     pub swap_config: DflowSwapConfig,
-    #[serde(default = "super::default_dflow_max_consecutive_failures")]
-    pub max_consecutive_failures: u32,
-    #[serde(default = "super::default_dflow_wait_on_429_ms")]
-    pub wait_on_429_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -275,6 +317,8 @@ pub struct TitanEngineConfig {
     pub leg: Option<LegRole>,
     #[serde(default)]
     pub ws_url: Option<String>,
+    #[serde(default)]
+    pub ws_proxy: Option<String>,
     #[serde(default)]
     pub default_pubkey: Option<String>,
     #[serde(default)]
@@ -287,6 +331,36 @@ pub struct TitanEngineConfig {
     pub interval_ms: Option<u64>,
     #[serde(default)]
     pub num_quotes: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct KaminoEngineConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub api_quote_base: Option<String>,
+    #[serde(default)]
+    pub api_swap_base: Option<String>,
+    #[serde(default)]
+    pub api_proxy: Option<String>,
+    #[serde(default)]
+    pub quote_config: KaminoQuoteConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct KaminoQuoteConfig {
+    #[serde(default)]
+    pub max_slippage_bps: u16,
+    #[serde(default)]
+    pub executor: String,
+    #[serde(default)]
+    pub referrer_pda: String,
+    #[serde(default = "super::default_true")]
+    pub include_setup_ixs: bool,
+    #[serde(default)]
+    pub wrap_and_unwrap_sol: bool,
+    #[serde(default)]
+    pub routes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -329,10 +403,6 @@ pub struct UltraEngineConfig {
     pub quote_config: UltraQuoteConfig,
     #[serde(default)]
     pub swap_config: UltraSwapConfig,
-    #[serde(default)]
-    pub max_consecutive_failures: u32,
-    #[serde(default)]
-    pub wait_on_429_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -380,8 +450,6 @@ impl Default for UltraEngineConfig {
             api_proxy: None,
             quote_config: UltraQuoteConfig::default(),
             swap_config: UltraSwapConfig::default(),
-            max_consecutive_failures: 0,
-            wait_on_429_ms: 0,
         }
     }
 }
@@ -806,6 +874,123 @@ pub struct BackRunTradeConfig {
     pub fixed_size: Option<u64>,
     #[serde(default)]
     pub route_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct CopyStrategyConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub wallets: Vec<CopyWalletConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CopyWalletConfig {
+    pub address: String,
+    #[serde(default)]
+    pub source: CopySourceConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CopySourceConfig {
+    #[serde(rename = "type")]
+    #[serde(default)]
+    pub kind: CopySourceKind,
+    #[serde(default)]
+    pub rpc: CopyRpcConfig,
+    #[serde(default)]
+    pub grpc: CopyGrpcConfig,
+    #[serde(default = "default_copy_replay_interval_ms")]
+    pub replay_interval_ms: u64,
+    #[serde(default)]
+    pub enable_landers: Vec<String>,
+}
+
+impl Default for CopySourceConfig {
+    fn default() -> Self {
+        Self {
+            kind: CopySourceKind::Rpc,
+            rpc: CopyRpcConfig::default(),
+            grpc: CopyGrpcConfig::default(),
+            replay_interval_ms: default_copy_replay_interval_ms(),
+            enable_landers: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CopySourceKind {
+    Rpc,
+    Grpc,
+}
+
+impl Default for CopySourceKind {
+    fn default() -> Self {
+        Self::Rpc
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CopyRpcConfig {
+    #[serde(default = "default_copy_pull_interval_minutes")]
+    pub pull_interval_minutes: u64,
+    #[serde(default = "default_copy_pull_count")]
+    pub pull_count: u64,
+    #[serde(default)]
+    pub pull_endpoints: Vec<String>,
+}
+
+impl Default for CopyRpcConfig {
+    fn default() -> Self {
+        Self {
+            pull_interval_minutes: default_copy_pull_interval_minutes(),
+            pull_count: default_copy_pull_count(),
+            pull_endpoints: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CopyGrpcConfig {
+    #[serde(default)]
+    pub yellowstone_grpc_url: String,
+    #[serde(default)]
+    pub yellowstone_grpc_token: String,
+    #[serde(default)]
+    pub include_program_ids: Vec<String>,
+    #[serde(default)]
+    pub exclude_program_ids: Vec<String>,
+    #[serde(default = "default_copy_grpc_fanout_count")]
+    pub fanout_count: u32,
+}
+
+impl Default for CopyGrpcConfig {
+    fn default() -> Self {
+        Self {
+            yellowstone_grpc_url: String::new(),
+            yellowstone_grpc_token: String::new(),
+            include_program_ids: Vec::new(),
+            exclude_program_ids: Vec::new(),
+            fanout_count: default_copy_grpc_fanout_count(),
+        }
+    }
+}
+
+const fn default_copy_replay_interval_ms() -> u64 {
+    100
+}
+
+const fn default_copy_pull_interval_minutes() -> u64 {
+    10
+}
+
+const fn default_copy_pull_count() -> u64 {
+    100
+}
+
+const fn default_copy_grpc_fanout_count() -> u32 {
+    1
 }
 #[derive(Debug, Clone, Deserialize)]
 pub struct PrometheusConfig {

@@ -3,7 +3,7 @@
 本页整理了 `third_party/config.yaml.example` 中常用的 Jupiter 参数，并映射到 `galileo` 的结构化配置，以便快速完成自托管环境的迁移。示例配置可直接参考根目录下的 `galileo.yaml`。
 
 ## 网络与监听
-- `rpc_url` → `[bot].rpc_url`（策略运行时访问主链 RPC）
+- `rpc_url` → `[global].rpc_urls`（策略运行时访问主链 RPC，支持配置多端点自动轮询）
 - `yellowstone_grpc_url`/`yellowstone_grpc_token` → `[bot].yellowstone_grpc_url` / `[bot].yellowstone_grpc_token`
 - Titan WS 相关配置 → `[galileo.engine.titan]`（含 `enable` / `ws_url` / `default_pubkey` / `jwt` / `providers` / `reverse_slippage_bps` / `interval_ms` / `num_quotes`）
   - `interval_ms` / `num_quotes`：控制 Titan WS 推送频率与单次返回的报价数量，未指定时使用服务端默认值。

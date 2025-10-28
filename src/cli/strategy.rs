@@ -9,13 +9,15 @@ use tracing::{info, warn};
 
 use crate::api::dflow::DflowApiClient;
 use crate::api::jupiter::JupiterApiClient;
+use crate::api::kamino::KaminoApiClient;
 use crate::api::titan::TitanSubscriptionConfig;
 use crate::api::ultra::UltraApiClient;
 use crate::cli::context::{
-    resolve_global_http_proxy, resolve_instruction_memo, resolve_rpc_client,
+    RpcEndpointRotator, resolve_global_http_proxy, resolve_instruction_memo, resolve_rpc_client,
 };
 use crate::config;
 use crate::config::{AppConfig, IntermediumConfig, LegRole, QuoteParallelism};
+use crate::copy_strategy;
 use crate::engine::{
     AccountPrechecker, BuilderConfig, ComputeUnitPriceMode, EngineError, EngineIdentity,
     EngineResult, EngineSettings, FALLBACK_CU_LIMIT, MultiLegEngineContext, ProfitConfig,
@@ -45,6 +47,7 @@ use crate::pure_blind::market_cache::init_market_cache;
 use crate::strategy::{
     BlindStrategy, PureBlindRouteBuilder, PureBlindStrategy, Strategy, StrategyEvent,
 };
+use dashmap::DashMap;
 use rand::Rng as _;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_client::RpcClientConfig;
@@ -66,6 +69,9 @@ pub enum StrategyBackend<'a> {
     Dflow {
         api_client: &'a DflowApiClient,
     },
+    Kamino {
+        api_client: &'a KaminoApiClient,
+    },
     Ultra {
         api_client: &'a UltraApiClient,
         rpc_client: Arc<solana_client::nonblocking::rpc_client::RpcClient>,
@@ -82,6 +88,16 @@ pub async fn run_strategy(
     mode: StrategyMode,
 ) -> Result<()> {
     let dry_run = matches!(mode, StrategyMode::DryRun) || config.galileo.bot.dry_run;
+
+    if config.galileo.copy_strategy.enable {
+        if config.galileo.blind_strategy.enable || config.galileo.pure_blind_strategy.enable {
+            warn!(
+                target: "strategy",
+                "copy_strategy 启用，将忽略 blind/pure 配置"
+            );
+        }
+        return copy_strategy::run_copy_strategy(config, backend, mode).await;
+    }
 
     match config.galileo.engine.backend {
         crate::config::EngineBackend::MultiLegs => {
@@ -139,7 +155,9 @@ async fn run_blind_engine(
 
     let compute_unit_price_mode = derive_compute_unit_price_mode(&config.lander.lander);
 
-    let rpc_client = resolve_rpc_client(&config.galileo.global)?;
+    let resolved_rpc = resolve_rpc_client(&config.galileo.global)?;
+    let rpc_client = resolved_rpc.client.clone();
+    let rpc_endpoints = resolved_rpc.endpoints.clone();
     let mut identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
 
@@ -206,7 +224,7 @@ async fn run_blind_engine(
                 config.galileo.bot.get_block_hash_by_grpc,
             );
     let global_proxy = resolve_global_http_proxy(&config.galileo.global);
-    let rpc_client_pool = build_rpc_client_pool(rpc_client.url().to_string(), global_proxy.clone());
+    let rpc_client_pool = build_rpc_client_pool(rpc_endpoints.clone(), global_proxy.clone());
     let mut submission_builder = reqwest::Client::builder();
     if let Some(proxy_url) = global_proxy.as_ref() {
         let proxy = reqwest::Proxy::all(proxy_url.as_str())
@@ -529,21 +547,12 @@ fn register_dflow_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
     let http_pool =
         build_http_client_pool(proxy_override.clone(), global_proxy.clone(), false, None);
 
-    let max_failures = if dflow_cfg.max_consecutive_failures == 0 {
-        None
-    } else {
-        Some(dflow_cfg.max_consecutive_failures as usize)
-    };
-    let wait_on_429 = Duration::from_millis(dflow_cfg.wait_on_429_ms);
-
     let dflow_client = DflowApiClient::with_ip_pool(
         http_client,
         quote_base,
         swap_base,
         &config.galileo.bot,
         &config.galileo.global.logging,
-        max_failures,
-        wait_on_429,
         Some(http_pool),
     );
 
@@ -580,6 +589,17 @@ fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
         return Err(anyhow!("titan.ws_url 不能为空"));
     }
     let ws_url = Url::parse(ws_url).map_err(|err| anyhow!("titan.ws_url 无效: {err}"))?;
+    let ws_proxy = match titan_cfg
+        .ws_proxy
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        Some(proxy) => {
+            Some(Url::parse(proxy).map_err(|err| anyhow!("titan.ws_proxy 无效: {err}"))?)
+        }
+        None => None,
+    };
 
     let jwt = titan_cfg
         .jwt
@@ -601,6 +621,7 @@ fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
 
     let subscription_cfg = TitanSubscriptionConfig {
         ws_url,
+        ws_proxy,
         jwt,
         default_pubkey,
         providers: titan_cfg.providers.clone(),
@@ -690,23 +711,32 @@ pub(crate) fn build_http_client_pool(
 }
 
 pub(crate) fn build_rpc_client_pool(
-    rpc_url: String,
+    endpoints: Arc<RpcEndpointRotator>,
     global_proxy: Option<String>,
 ) -> Arc<IpBoundClientPool<RpcClientFactoryFn>> {
-    let proxy = global_proxy;
+    let cache: Arc<DashMap<(IpAddr, usize), Arc<RpcClient>>> = Arc::new(DashMap::new());
+    let proxy = Arc::new(global_proxy);
+    let rotator = endpoints;
+
     let factory: RpcClientFactoryFn = Box::new(move |ip: IpAddr| {
+        let (index, endpoint) = rotator.next();
+        let key = (ip, index);
+        if let Some(existing) = cache.get(&key) {
+            return Ok(existing.clone());
+        }
+
         let mut builder = reqwest::Client::builder()
             .default_headers(HttpSender::default_headers())
             .timeout(Duration::from_secs(30))
             .pool_idle_timeout(Duration::from_secs(30))
             .local_address(ip);
 
-        if let Some(proxy_url) = proxy.clone() {
-            let trimmed = proxy_url.trim().to_string();
+        if let Some(proxy_url) = proxy.as_ref() {
+            let trimmed = proxy_url.trim();
             if trimmed.is_empty() {
                 builder = builder.no_proxy();
             } else {
-                let proxy = reqwest::Proxy::all(trimmed.as_str()).map_err(|err| {
+                let proxy = reqwest::Proxy::all(trimmed).map_err(|err| {
                     NetworkError::ClientPool(format!("global.proxy 地址无效 {trimmed}: {err}"))
                 })?;
                 builder = builder.proxy(proxy).danger_accept_invalid_certs(true);
@@ -718,12 +748,19 @@ pub(crate) fn build_rpc_client_pool(
         let client = builder.build().map_err(|err| {
             NetworkError::ClientPool(format!("构建绑定 IP 的 RPC 客户端失败: {err}"))
         })?;
+
+        let rpc_url = endpoint.to_string();
         let sender = HttpSender::new_with_client(rpc_url.clone(), client);
-        let rpc = RpcClient::new_sender(
+        let rpc = Arc::new(RpcClient::new_sender(
             sender,
             RpcClientConfig::with_commitment(solana_commitment_config::CommitmentConfig::default()),
-        );
-        Ok(Arc::new(rpc))
+        ));
+
+        if let Some(previous) = cache.insert(key, rpc.clone()) {
+            return Ok(previous);
+        }
+
+        Ok(rpc)
     });
 
     Arc::new(IpBoundClientPool::new(factory))
@@ -742,6 +779,9 @@ fn resolve_quote_dispatch_config(
             parallelism_override(engine.dflow.quote_config.parallelism),
             batch_interval_duration(engine.dflow.quote_config.batch_interval_ms),
         ),
+        StrategyBackend::Kamino { .. } => {
+            (parallelism_override(QuoteParallelism::Auto), Duration::ZERO)
+        }
         StrategyBackend::Ultra { .. } => (
             parallelism_override(engine.ultra.quote_config.parallelism),
             batch_interval_duration(engine.ultra.quote_config.batch_interval_ms),
@@ -774,7 +814,9 @@ async fn run_pure_blind_engine(
 
     let compute_unit_price_mode = derive_compute_unit_price_mode(&config.lander.lander);
 
-    let rpc_client = resolve_rpc_client(&config.galileo.global)?;
+    let resolved_rpc = resolve_rpc_client(&config.galileo.global)?;
+    let rpc_client = resolved_rpc.client.clone();
+    let rpc_endpoints = resolved_rpc.endpoints.clone();
     let mut identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
 
@@ -803,7 +845,7 @@ async fn run_pure_blind_engine(
                 config.galileo.bot.get_block_hash_by_grpc,
             );
     let global_proxy = resolve_global_http_proxy(&config.galileo.global);
-    let rpc_client_pool = build_rpc_client_pool(rpc_client.url().to_string(), global_proxy.clone());
+    let rpc_client_pool = build_rpc_client_pool(rpc_endpoints.clone(), global_proxy.clone());
     let mut submission_builder = reqwest::Client::builder();
     if let Some(proxy_url) = global_proxy.as_ref() {
         let proxy = reqwest::Proxy::all(proxy_url.as_str())
@@ -1052,6 +1094,16 @@ async fn prepare_swap_components(
                 (dflow_quote_cfg.only_direct_routes, true),
                 false,
             ))
+        }
+        StrategyBackend::Kamino { api_client } => {
+            info!(target: "strategy", "使用 Kamino 聚合器");
+            identity.set_skip_user_accounts_rpc_calls(false);
+
+            let kamino_quote_cfg = config.galileo.engine.kamino.quote_config.clone();
+            let quote_executor =
+                QuoteExecutor::for_kamino((*api_client).clone(), kamino_quote_cfg.clone());
+            let swap_preparer = SwapPreparer::for_kamino(compute_unit_price_mode.clone());
+            Ok((quote_executor, swap_preparer, (true, true), false))
         }
         StrategyBackend::Ultra {
             api_client,
