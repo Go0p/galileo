@@ -11,7 +11,7 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_client::RpcClientConfig;
 use solana_rpc_client::http_sender::HttpSender;
 use time::{UtcOffset, macros::format_description};
-use tracing::{error, info};
+use tracing::info;
 use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::{EnvFilter, fmt};
 
@@ -20,7 +20,6 @@ use crate::config::{
     JupiterConfig, JupiterEngineConfig, LaunchOverrides, LoggingProfile, YellowstoneConfig,
     load_config,
 };
-use crate::jupiter::{BinaryStatus, JupiterBinaryManager, JupiterError};
 
 #[derive(Debug)]
 pub struct RpcEndpointRotator {
@@ -53,10 +52,6 @@ impl RpcEndpointRotator {
         (index, self.endpoints[index].as_str())
     }
 
-    pub fn get(&self, index: usize) -> Option<&str> {
-        self.endpoints.get(index).map(|value| value.as_str())
-    }
-
     pub fn endpoints(&self) -> &[String] {
         self.endpoints.as_slice()
     }
@@ -66,16 +61,6 @@ impl RpcEndpointRotator {
 pub struct ResolvedRpcClient {
     pub client: Arc<RpcClient>,
     pub endpoints: Arc<RpcEndpointRotator>,
-}
-
-impl ResolvedRpcClient {
-    pub fn primary_url(&self) -> &str {
-        self.endpoints.primary_url()
-    }
-
-    pub fn endpoints(&self) -> &[String] {
-        self.endpoints.endpoints()
-    }
 }
 
 /// 初始化 tracing，兼顾 JSON 与文本输出模式。
@@ -150,26 +135,6 @@ pub fn init_tracing(config: &crate::config::LoggingConfig) -> Result<()> {
 /// 加载主配置；用于 `galileo --config` 的入口。
 pub fn load_configuration(path: Option<PathBuf>) -> Result<AppConfig, ConfigError> {
     load_config(path)
-}
-
-/// 确保本地 Jupiter 二进制已运行，否则提示用户先执行 `galileo jupiter start`。
-pub async fn ensure_running(manager: &JupiterBinaryManager) -> Result<(), JupiterError> {
-    if manager.disable_local_binary {
-        return Ok(());
-    }
-    match manager.status().await {
-        BinaryStatus::Running => Ok(()),
-        status => {
-            error!(
-                target: "jupiter",
-                ?status,
-                "Jupiter 二进制未运行，请先执行 `galileo jupiter start`"
-            );
-            Err(JupiterError::Schema(format!(
-                "二进制未运行，当前状态: {status:?}"
-            )))
-        }
-    }
 }
 
 pub fn resolve_jupiter_base_url(_bot: &BotConfig, jupiter: &JupiterConfig) -> String {

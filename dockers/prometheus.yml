@@ -1,14 +1,17 @@
 global:
-  scrape_interval: 5s
-  evaluation_interval: 5s
+  scrape_interval: 15s
+  evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: 'galileo-bot'
+  - job_name: galileo-bot
+    metrics_path: /metrics
     static_configs:
       - targets:
-          - "${GALILEO_PROM_TARGET:-host.docker.internal:9898}"
+          - host.docker.internal:9898
 
-  - job_name: 'jupiter'
-    static_configs:
-      - targets:
-          - "${JUPITER_PROM_TARGET:-host.docker.internal:18081}"
+  # 若在 VPS 上自托管 Jupiter，可取消注释以下配置并将监听端口指向本地 Jupiter 指标端点。
+  # - job_name: jupiter
+  #   metrics_path: /metrics
+  #   static_configs:
+  #     - targets:
+  #         - host.docker.internal:18081

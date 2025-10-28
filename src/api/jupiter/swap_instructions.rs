@@ -40,19 +40,6 @@ pub struct SwapInstructionsRequest {
 }
 
 impl SwapInstructionsRequest {
-    pub fn new(quote_response: Value, user_public_key: Pubkey) -> Self {
-        Self::try_from_value(quote_response, user_public_key)
-            .expect("invalid quote response payload")
-    }
-
-    pub fn try_from_value(
-        quote_response: Value,
-        user_public_key: Pubkey,
-    ) -> Result<Self, serde_json::Error> {
-        let payload = QuoteResponsePayload::try_from_value(quote_response)?;
-        Ok(Self::from_payload(payload, user_public_key))
-    }
-
     pub fn from_payload(quote_response: QuoteResponsePayload, user_public_key: Pubkey) -> Self {
         Self {
             quote_response,

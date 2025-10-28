@@ -320,17 +320,39 @@ pub struct TitanEngineConfig {
     #[serde(default)]
     pub ws_proxy: Option<String>,
     #[serde(default)]
-    pub default_pubkey: Option<String>,
-    #[serde(default)]
     pub jwt: Option<String>,
     #[serde(default)]
     pub providers: Vec<String>,
     #[serde(default)]
-    pub reverse_slippage_bps: u16,
-    #[serde(default)]
     pub interval_ms: Option<u64>,
     #[serde(default)]
     pub num_quotes: Option<u32>,
+    #[serde(default)]
+    pub swap_config: TitanSwapConfig,
+    #[serde(default)]
+    pub tx_config: TitanTxConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TitanSwapConfig {
+    #[serde(default)]
+    pub dexes: Vec<String>,
+    #[serde(default)]
+    pub exclude_dexes: Vec<String>,
+    #[serde(default)]
+    pub only_direct_routes: Option<bool>,
+    #[serde(default)]
+    pub providers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TitanTxConfig {
+    #[serde(default)]
+    pub user_public_key: Option<String>,
+    #[serde(default)]
+    pub create_output_token_account: Option<bool>,
+    #[serde(default)]
+    pub use_wsol: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

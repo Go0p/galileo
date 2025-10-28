@@ -611,27 +611,59 @@ fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
         return Err(anyhow!("titan.jwt 不能为空"));
     }
 
-    let default_pubkey = titan_cfg
-        .default_pubkey
-        .as_ref()
-        .ok_or_else(|| anyhow!("titan.default_pubkey 未配置"))?
+    let tx_user_pubkey = titan_cfg
+        .tx_config
+        .user_public_key
+        .as_deref()
+        .ok_or_else(|| anyhow!("titan.tx_config.user_public_key 未配置"))?
         .trim();
-    let default_pubkey = solana_sdk::pubkey::Pubkey::from_str(default_pubkey)
-        .map_err(|err| anyhow!("titan.default_pubkey 无效: {err}"))?;
+    if tx_user_pubkey.is_empty() {
+        return Err(anyhow!("titan.tx_config.user_public_key 不能为空字符串"));
+    }
+    let user_pubkey = solana_sdk::pubkey::Pubkey::from_str(tx_user_pubkey)
+        .map_err(|err| anyhow!("Titan user public key 无效: {err}"))?;
+
+    let sanitize_list = |values: &[String]| -> Vec<String> {
+        values
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+            .collect()
+    };
+    let swap_providers = {
+        let from_swap = sanitize_list(&titan_cfg.swap_config.providers);
+        if !from_swap.is_empty() {
+            from_swap
+        } else {
+            sanitize_list(&titan_cfg.providers)
+        }
+    };
+    let dexes = sanitize_list(&titan_cfg.swap_config.dexes);
+    let exclude_dexes = sanitize_list(&titan_cfg.swap_config.exclude_dexes);
 
     let subscription_cfg = TitanSubscriptionConfig {
         ws_url,
         ws_proxy,
         jwt,
-        default_pubkey,
-        providers: titan_cfg.providers.clone(),
-        reverse_slippage_bps: titan_cfg.reverse_slippage_bps,
+        user_pubkey,
+        providers: swap_providers,
+        dexes,
+        exclude_dexes,
+        only_direct_routes: titan_cfg.swap_config.only_direct_routes,
         update_interval_ms: titan_cfg.interval_ms,
         update_num_quotes: titan_cfg.num_quotes,
+        close_input_token_account: false,
+        create_output_token_account: titan_cfg.tx_config.create_output_token_account,
     };
 
     let quote_source = TitanWsQuoteSource::new(subscription_cfg);
-    let provider = TitanLegProvider::new(quote_source, LegSide::Buy);
+    let provider = TitanLegProvider::new(
+        quote_source,
+        LegSide::Buy,
+        user_pubkey,
+        titan_cfg.tx_config.use_wsol,
+    );
     orchestrator.register_owned_provider(provider);
     Ok(())
 }
@@ -1394,9 +1426,15 @@ fn generate_amounts_for_base(base: &config::BlindBaseMintConfig) -> Vec<u64> {
         }
     }
 
+    // Titan 在单个 IP 上仅需要两档 trade size，保留最大的两档即可。
+    let selected: Vec<u64> = values.iter().rev().take(2).copied().collect();
+    if selected.is_empty() {
+        return Vec::new();
+    }
+
     let mut rng = rand::rng();
     let mut tweaked: BTreeSet<u64> = BTreeSet::new();
-    for amount in values {
+    for amount in selected {
         let basis_points: u16 = rng.random_range(930..=999);
         let adjusted = (((amount as u128) * basis_points as u128) + 999) / 1_000;
         let normalized = adjusted.max(1).min(u128::from(u64::MAX)) as u64;

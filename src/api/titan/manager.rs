@@ -5,6 +5,7 @@ use solana_sdk::pubkey::Pubkey;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use url::Url;
+use serde_json;
 
 use crate::strategy::types::TradePair;
 
@@ -26,11 +27,15 @@ pub struct TitanSubscriptionConfig {
     pub ws_url: Url,
     pub ws_proxy: Option<Url>,
     pub jwt: String,
-    pub default_pubkey: Pubkey,
+    pub user_pubkey: Pubkey,
     pub providers: Vec<String>,
-    pub reverse_slippage_bps: u16,
+    pub dexes: Vec<String>,
+    pub exclude_dexes: Vec<String>,
+    pub only_direct_routes: Option<bool>,
     pub update_interval_ms: Option<u64>,
     pub update_num_quotes: Option<u32>,
+    pub close_input_token_account: bool,
+    pub create_output_token_account: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +77,24 @@ pub async fn subscribe_quote_stream(
     );
 
     let request = build_subscription_request(&config, pair, leg, amount);
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        match serde_json::to_string(&request) {
+            Ok(payload) => {
+                debug!(
+                    target: "titan::manager",
+                    request = payload,
+                    "Titan subscription request"
+                );
+            }
+            Err(err) => {
+                debug!(
+                    target: "titan::manager",
+                    error = %err,
+                    "Titan subscription request serialization failed"
+                );
+            }
+        }
+    }
     let session = client.subscribe_swap_quotes(request).await.map_err(|err| {
         error!(
             target: "titan::manager",
@@ -184,6 +207,17 @@ fn build_subscription_request(
     } else {
         Some(config.providers.clone())
     };
+    let dexes = if config.dexes.is_empty() {
+        None
+    } else {
+        Some(config.dexes.clone())
+    };
+    let exclude_dexes = if config.exclude_dexes.is_empty() {
+        None
+    } else {
+        Some(config.exclude_dexes.clone())
+    };
+    let only_direct_routes = config.only_direct_routes.unwrap_or(false);
 
     let update = match (config.update_interval_ms, config.update_num_quotes) {
         (None, None) => None,
@@ -193,10 +227,7 @@ fn build_subscription_request(
         }),
     };
 
-    let slippage_bps = match leg {
-        TitanLeg::Forward => Some(0),
-        TitanLeg::Reverse => Some(config.reverse_slippage_bps),
-    };
+    let slippage_bps = Some(0);
 
     let swap = SwapParams {
         input_mint,
@@ -207,9 +238,9 @@ fn build_subscription_request(
             TitanLeg::Reverse => SwapMode::ExactOut,
         }),
         slippage_bps,
-        dexes: None,
-        exclude_dexes: None,
-        only_direct_routes: Some(false),
+        dexes,
+        exclude_dexes,
+        only_direct_routes: Some(only_direct_routes),
         add_size_constraint: None,
         size_constraint: None,
         providers,
@@ -218,9 +249,9 @@ fn build_subscription_request(
     };
 
     let transaction = TransactionParams {
-        user_public_key: config.default_pubkey,
-        close_input_token_account: None,
-        create_output_token_account: None,
+        user_public_key: config.user_pubkey,
+        close_input_token_account: Some(config.close_input_token_account),
+        create_output_token_account: config.create_output_token_account,
         fee_account: None,
         fee_bps: None,
         fee_from_input_mint: None,

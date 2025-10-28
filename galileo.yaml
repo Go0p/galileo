@@ -36,7 +36,7 @@ global:
 
   # 日志级别
   logging:
-    level: "info"
+    level: "debug"
     json: false
     # 日志输出的时区偏移（单位：小时）。示例：8 代表 UTC+8。
     timezone_offset_hours: 8
@@ -86,7 +86,7 @@ engine:
     leg: "sell"
     api_quote_base: "https://ultra-api.jup.ag"
     api_swap_base: "https://ultra-api.jup.ag"
-    api_proxy: "http://192.168.3.3:9999"
+    api_proxy: "http://192.168.124.4:9999"
     quote_config:
       use_wsol: true
       taker: "k1bWgJv1fdVMCqgDM2jkEfhEzKW7XgGpj8vGGKjgSnJ"
@@ -108,7 +108,7 @@ engine:
     # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
     api_quote_base: "https://quote-api.dflow.net"
     api_swap_base: "https://quote-api.dflow.net"
-    api_proxy: "http://192.168.3.3:9999"
+    api_proxy: "http://192.168.124.4:9999"
     quote_config:
       use_auto_slippage: false
       only_direct_routes: false
@@ -127,15 +127,24 @@ engine:
     # 开启 loopback 后仅订阅 base→base 的单条 Titan 流，根据 out>in 判断套利
     ws_url: "wss://api.titan.exchange/api/v1/ws"
     # 可选：通过 WebSocket 代理抓包/调试 Titan 数据
-    ws_proxy: "ws://192.168.3.3:9999"
+    # ws_proxy: "ws://192.168.124.4:9999"
+    ws_proxy: ""
     # Titan 目前要求使用内置账户发起报价，如需自定义可在拿到白名单后修改
-    default_pubkey: "Titan11111111111111111111111111111111111111"
-    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjE2MzUxMTgsImV4cCI6MTc2MTYzNjAxOCwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.OoFNCo2ct7ghV53h-Q_AHnkXdYLGAmE_HWGphfJAKe8"
+    default_pubkey: 
+    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjE2NjI0NDAsImV4cCI6MTc2MTY2MzM0MCwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.04Tqgohzc2M83svFlT3ZAVB5YwRsmC1YQdSD2IOLFDw"
     # Titan , Okx , Metis , Pyth
-    providers:
-      - "Titan"
-      # - "Metis"
-    reverse_slippage_bps: 0
+    swap_config:
+      dexes:
+      exclude_dexes:
+      only_direct_routes: false
+      providers:
+        - "Titan"
+        # - "Metis"
+    tx_config:
+      user_public_key: "Titan11111111111111111111111111111111111111"
+      # user_public_key: "goopNoaJhhrzxi6oq2j4chcyHKGucAeVZSk4QBA7Gu1"
+      create_output_token_account: false
+      use_wsol: false
     # 服务端推送报价更新的间隔，单位毫秒。
     interval_ms: 800
     # 每次更新最多返回的报价数量。
@@ -144,7 +153,7 @@ engine:
     enable: true
     api_quote_base: "https://api.kamino.finance"
     api_swap_base: "https://api.kamino.finance"
-    api_proxy: "http://192.168.3.3:9999"
+    api_proxy: "http://192.168.124.4:9999"
     quote_config:
       max_slippage_bps: 0
       executor: ""
@@ -225,7 +234,7 @@ bot:
   # 是否启用 prometheus
   prometheus:
     enable: true
-    listen: "0.0.0.0:9898"
+    listen: "127.0.0.1:9898"
   # 设置为 true 时，不会在本地启动 Jupiter API。当你想在同一台机器上运行多个机器人时，这很有用。
   disable_local_binary: false
   # 是否禁止启动机器人

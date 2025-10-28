@@ -6,13 +6,13 @@
 
 - `docker-compose.yml`：Prometheus 与 Grafana 的编排配置
 - `prometheus.yml`：Prometheus 抓取配置，默认抓取
-  - `galileo` 服务 (`host.docker.internal:9898`)
-  - `jupiter` 服务 (`host.docker.internal:18081`)
+  - `galileo` bot (`host.docker.internal:9898`)
+  - `jupiter` 自托管二进制 (`host.docker.internal:18081`)
 - Prometheus / Grafana 数据默认持久化到 Docker volume（`prometheus-data` / `grafana-data`）
 
 ## 前置条件
 
-1. `galileo.yaml` 中开启 Prometheus：
+1. `galileo.yaml` 中开启 Prometheus，并监听在容器可访问的地址（VPS 上建议 `0.0.0.0`，再配合安全组/防火墙限制来源）：
    ```yaml
    bot:
      prometheus:
@@ -20,25 +20,17 @@
        listen: "0.0.0.0:9898"
    ```
 2. Jupiter 二进制以默认 `metrics_port` 暴露指标（18081，可在 `jupiter.core.metrics_port` 调整）。
-3. 如在 Linux 上运行，请确认 Docker 支持 `host.docker.internal`；若不支持，可在 `prometheus.yml` 或环境变量中改成宿主机实际 IP。
+3. `docker-compose.yml` 已将 `host.docker.internal` 映射到宿主机（`host-gateway`），若遇到无法访问，可在 `prometheus.yml` 中改为宿主机实际内网 IP。
 
 ## 启动
 
 ```bash
 cd dockers
-# 如需自定义抓取目标，可导出：
-# export GALILEO_PROM_TARGET=10.0.0.5:9898
-# export JUPITER_PROM_TARGET=10.0.0.6:18081
-# 自定义 Grafana 管理员账号：
-# export GRAFANA_ADMIN_USER=alice
-# export GRAFANA_ADMIN_PASSWORD=secret
-
-# 启动 Prometheus 与 Grafana
 docker compose up -d
 ```
 
 服务启动后：
-- Prometheus：<http://localhost:9090>
+- Prometheus：<http://localhost:9090>（容器映射到 `127.0.0.1:9090`，默认仅宿主可访问）
 - Grafana：<http://localhost:3000>（默认账号 admin/admin）
 
 Grafana 添加 Prometheus 数据源时使用 `http://prometheus:9090`。
@@ -52,15 +44,6 @@ Grafana 添加 Prometheus 数据源时使用 `http://prometheus:9090`。
 - Jupiter 自带指标位于 `jupiter_*`、`service_requests_total` 等命名空间
 
 可基于上述指标构建“机会发现/成功率、Quote 延迟、落地成功率”等 Grafana 面板。
-
-## 环境变量说明
-
-- `GALILEO_PROM_TARGET`：Prometheus 抓取 galileo 指标的地址，默认为 `host.docker.internal:9898`
-- `JUPITER_PROM_TARGET`：Prometheus 抓取 Jupiter 指标的地址
-- `PROMETHEUS_UID`/`PROMETHEUS_GID`：Prometheus 运行用户 UID/GID（默认 65534）
-- `GRAFANA_UID`/`GRAFANA_GID`：Grafana 运行用户 UID/GID（默认 472/0）
-- `GRAFANA_ADMIN_USER`/`GRAFANA_ADMIN_PASSWORD`：Grafana 初始管理员账号
-- `GRAFANA_DOMAIN`：Grafana 对外域名（影响登录回调）
 
 ## 停止与清理
 

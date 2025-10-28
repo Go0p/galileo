@@ -285,12 +285,12 @@ impl Default for cfg::TitanEngineConfig {
             leg: None,
             ws_url: None,
             ws_proxy: None,
-            default_pubkey: None,
             jwt: None,
             providers: Vec::new(),
-            reverse_slippage_bps: 0,
             interval_ms: None,
             num_quotes: None,
+            swap_config: cfg::TitanSwapConfig::default(),
+            tx_config: cfg::TitanTxConfig::default(),
         }
     }
 }

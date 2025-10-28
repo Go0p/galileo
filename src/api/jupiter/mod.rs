@@ -84,10 +84,6 @@ impl JupiterApiClient {
         }
     }
 
-    pub async fn quote(&self, request: &QuoteRequest) -> Result<QuoteResponse, JupiterError> {
-        self.quote_with_ip(request, None).await
-    }
-
     pub async fn quote_with_ip(
         &self,
         request: &QuoteRequest,

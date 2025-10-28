@@ -7,6 +7,4 @@ pub mod context;
 pub mod jupiter;
 pub mod lander;
 pub mod strategy;
-pub mod utils;
-
 pub use runner::run;

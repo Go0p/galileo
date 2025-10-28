@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, builder::BoolishValueParser};
-
-use crate::cli::utils::parse_key_val;
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(name = "galileo", version, about = "Jupiter 自托管调度机器人")]
@@ -23,15 +21,10 @@ pub struct Cli {
 pub enum Command {
     /// Jupiter 二进制管理相关命令
     #[command(subcommand)]
-    Jupiter(JupiterCmd),
+   Jupiter(JupiterCmd),
     /// Lander 工具
     #[command(subcommand)]
     Lander(LanderCmd),
-    /// 请求 Jupiter API 报价
-    Quote(QuoteCmd),
-    #[command(name = "swap-instructions")]
-    /// 请求 Jupiter API Swap 指令
-    SwapInstructions(SwapInstructionsCmd),
     /// 运行已配置的套利策略循环
     #[command(name = "run", alias = "strategy")]
     Run,
@@ -40,52 +33,6 @@ pub enum Command {
     StrategyDryRun,
     /// 初始化配置模版文件
     Init(InitCmd),
-}
-
-#[derive(Args, Debug)]
-pub struct QuoteCmd {
-    #[arg(long, help = "输入代币的 Mint 地址")]
-    pub input: String,
-    #[arg(long, help = "输出代币的 Mint 地址")]
-    pub output: String,
-    #[arg(long, help = "交易数量（原始单位，lamports/atoms）")]
-    pub amount: u64,
-    #[arg(long, default_value_t = 50, help = "允许滑点（基点）")]
-    pub slippage_bps: u16,
-    #[arg(long, help = "仅限一跳直连路线")]
-    pub direct_only: bool,
-    #[arg(long, help = "允许中间代币（对应关闭 restrictIntermediateTokens）")]
-    pub allow_intermediate: bool,
-    #[arg(
-        long = "extra",
-        value_parser = parse_key_val,
-        help = "附加查询参数，格式为 key=value",
-        value_name = "KEY=VALUE"
-    )]
-    pub extra: Vec<(String, String)>,
-}
-
-#[derive(Args, Debug)]
-pub struct SwapInstructionsCmd {
-    #[arg(long, help = "包含 quoteResponse 的 JSON 文件路径")]
-    pub quote_path: PathBuf,
-    #[arg(long, help = "发起 Swap 的用户公钥")]
-    pub user: String,
-    #[arg(long, help = "是否自动 wrap/unwrap SOL")]
-    #[arg(
-        long,
-        value_name = "BOOL",
-        value_parser = BoolishValueParser::new(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    pub wrap_sol: Option<bool>,
-    #[arg(long, help = "是否使用 Jupiter 共享账户")]
-    pub shared_accounts: bool,
-    #[arg(long, help = "可选的手续费账户")]
-    pub fee_account: Option<String>,
-    #[arg(long, help = "优先费（微 lamports）")]
-    pub compute_unit_price: Option<u64>,
 }
 
 #[derive(Args, Debug)]

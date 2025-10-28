@@ -140,22 +140,13 @@ pub struct QuoteResponsePayload {
     pub time_taken: f64,
 }
 
-impl QuoteResponsePayload {
-    pub fn try_from_value(value: Value) -> Result<Self, serde_json::Error> {
-        serde_json::from_value(value)
-    }
-}
-
 #[derive(Clone, Debug)]
-pub struct QuoteResponse {
-    pub raw: Value,
-    data: QuoteResponsePayload,
-}
+pub struct QuoteResponse(QuoteResponsePayload);
 
 impl QuoteResponse {
     pub fn try_from_value(value: Value) -> Result<Self, Error> {
-        let data: QuoteResponsePayload = serde_json::from_value(value.clone())?;
-        Ok(Self { raw: value, data })
+        let data: QuoteResponsePayload = serde_json::from_value(value)?;
+        Ok(Self(data))
     }
 }
 
@@ -163,6 +154,6 @@ impl Deref for QuoteResponse {
     type Target = QuoteResponsePayload;
 
     fn deref(&self) -> &Self::Target {
-        &self.data
+        &self.0
     }
 }
