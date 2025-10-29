@@ -42,6 +42,19 @@ pub(crate) struct RouteContext {
     pub destination_mint: Pubkey,
     pub source_token_program: Pubkey,
     pub destination_token_program: Pubkey,
+    pub params: RouteParams,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RouteParams {
+    pub route_id: Option<u8>,
+    pub in_amount: Option<u64>,
+    pub out_amount: Option<u64>,
+    pub quoted_in_amount: Option<u64>,
+    pub quoted_out_amount: Option<u64>,
+    pub slippage_bps: Option<u16>,
+    pub platform_fee_bps: Option<u16>,
+    pub positive_slippage_bps: Option<u16>,
 }
 
 impl RouteContext {
@@ -53,7 +66,9 @@ impl RouteContext {
         if instruction.program_id != JUPITER_V6_PROGRAM_ID {
             return None;
         }
-        match crate::jupiter_parser::classify(&instruction.data) {
+        let kind = crate::jupiter_parser::classify(&instruction.data);
+        let params = RouteParams::parse(kind, &instruction.data);
+        match kind {
             RouteKind::RouteV2 | RouteKind::SharedRouteV2 | RouteKind::ExactRouteV2 => {
                 let parsed = RouteV2Accounts::parse(instruction)?;
                 Some(Self {
@@ -64,6 +79,7 @@ impl RouteContext {
                     destination_mint: parsed.destination_mint,
                     source_token_program: parsed.source_token_program,
                     destination_token_program: parsed.destination_token_program,
+                    params,
                 })
             }
             RouteKind::Route => {
@@ -79,6 +95,7 @@ impl RouteContext {
                     destination_mint: accounts[5].pubkey,
                     source_token_program: accounts[0].pubkey,
                     destination_token_program: accounts[0].pubkey,
+                    params,
                 })
             }
             RouteKind::Other => None,
@@ -145,6 +162,131 @@ impl RouteContext {
             return Err(anyhow!("缺少 destination mint"));
         }
         Ok(())
+    }
+}
+
+impl RouteParams {
+    fn parse(kind: RouteKind, data: &[u8]) -> Self {
+        match kind {
+            RouteKind::RouteV2 => parse_route_v2(data).unwrap_or_default(),
+            RouteKind::ExactRouteV2 => parse_exact_route_v2(data).unwrap_or_default(),
+            RouteKind::SharedRouteV2 => parse_shared_route_v2(data).unwrap_or_default(),
+            RouteKind::Route => parse_route_legacy(data).unwrap_or_default(),
+            RouteKind::Other => RouteParams::default(),
+        }
+    }
+}
+
+fn parse_route_v2(data: &[u8]) -> Option<RouteParams> {
+    let mut rest = data.get(8..)?;
+    let in_amount = read_u64(&mut rest)?;
+    let quoted_out_amount = read_u64(&mut rest)?;
+    let slippage_bps = read_u16(&mut rest)?;
+    let platform_fee_bps = read_u16(&mut rest)?;
+    let positive_slippage_bps = read_u16(&mut rest)?;
+    Some(RouteParams {
+        in_amount: Some(in_amount),
+        quoted_out_amount: Some(quoted_out_amount),
+        slippage_bps: Some(slippage_bps),
+        platform_fee_bps: Some(platform_fee_bps),
+        positive_slippage_bps: Some(positive_slippage_bps),
+        ..RouteParams::default()
+    })
+}
+
+fn parse_exact_route_v2(data: &[u8]) -> Option<RouteParams> {
+    let mut rest = data.get(8..)?;
+    let out_amount = read_u64(&mut rest)?;
+    let quoted_in_amount = read_u64(&mut rest)?;
+    let slippage_bps = read_u16(&mut rest)?;
+    let platform_fee_bps = read_u16(&mut rest)?;
+    let positive_slippage_bps = read_u16(&mut rest)?;
+    Some(RouteParams {
+        out_amount: Some(out_amount),
+        quoted_in_amount: Some(quoted_in_amount),
+        slippage_bps: Some(slippage_bps),
+        platform_fee_bps: Some(platform_fee_bps),
+        positive_slippage_bps: Some(positive_slippage_bps),
+        ..RouteParams::default()
+    })
+}
+
+fn parse_shared_route_v2(data: &[u8]) -> Option<RouteParams> {
+    let mut rest = data.get(8..)?;
+    let route_id = read_u8(&mut rest)?;
+    let first_amount = read_u64(&mut rest)?;
+    let second_amount = read_u64(&mut rest)?;
+    let slippage_bps = read_u16(&mut rest)?;
+    let platform_fee_bps = read_u16(&mut rest)?;
+    let positive_slippage_bps = read_u16(&mut rest)?;
+    Some(RouteParams {
+        route_id: Some(route_id),
+        in_amount: Some(first_amount),
+        quoted_out_amount: Some(second_amount),
+        slippage_bps: Some(slippage_bps),
+        platform_fee_bps: Some(platform_fee_bps),
+        positive_slippage_bps: Some(positive_slippage_bps),
+        ..RouteParams::default()
+    })
+}
+
+fn parse_route_legacy(data: &[u8]) -> Option<RouteParams> {
+    let mut rest = data.get(8..)?;
+    // Skip route_plan vec<RoutePlanStep>. We only handle empty plans; otherwise parsing is complex.
+    let len = read_u32(&mut rest)? as usize;
+    if len != 0 {
+        return Some(RouteParams::default());
+    }
+    let in_amount = read_u64(&mut rest)?;
+    let quoted_out_amount = read_u64(&mut rest)?;
+    let slippage_bps = read_u16(&mut rest)?;
+    let platform_fee_bps = read_u8(&mut rest)? as u16;
+    Some(RouteParams {
+        in_amount: Some(in_amount),
+        quoted_out_amount: Some(quoted_out_amount),
+        slippage_bps: Some(slippage_bps),
+        platform_fee_bps: Some(platform_fee_bps),
+        ..RouteParams::default()
+    })
+}
+
+fn read_u8(input: &mut &[u8]) -> Option<u8> {
+    if input.len() < 1 {
+        None
+    } else {
+        let (value, rest) = input.split_at(1);
+        *input = rest;
+        Some(value[0])
+    }
+}
+
+fn read_u16(input: &mut &[u8]) -> Option<u16> {
+    if input.len() < 2 {
+        None
+    } else {
+        let (value, rest) = input.split_at(2);
+        *input = rest;
+        Some(u16::from_le_bytes(value.try_into().ok()?))
+    }
+}
+
+fn read_u32(input: &mut &[u8]) -> Option<u32> {
+    if input.len() < 4 {
+        None
+    } else {
+        let (value, rest) = input.split_at(4);
+        *input = rest;
+        Some(u32::from_le_bytes(value.try_into().ok()?))
+    }
+}
+
+fn read_u64(input: &mut &[u8]) -> Option<u64> {
+    if input.len() < 8 {
+        None
+    } else {
+        let (value, rest) = input.split_at(8);
+        *input = rest;
+        Some(u64::from_le_bytes(value.try_into().ok()?))
     }
 }
 
@@ -641,7 +783,9 @@ pub(crate) fn split_compute_budget(
 
     for ix in instructions {
         if ix.program_id == COMPUTE_BUDGET_PROGRAM_ID {
-            compute_budget.push(ix.clone());
+            if is_compute_unit_limit(ix) {
+                compute_budget.push(ix.clone());
+            }
         } else {
             main.push(ix.clone());
         }
@@ -674,6 +818,10 @@ pub(crate) fn extract_compute_unit_limit(instructions: &[Instruction]) -> Option
         }
     }
     None
+}
+
+fn is_compute_unit_limit(ix: &Instruction) -> bool {
+    ix.data.first() == Some(&2)
 }
 
 pub(crate) fn lookup_addresses(message: &VersionedMessage) -> Vec<Pubkey> {
@@ -753,6 +901,7 @@ mod tests {
             destination_mint,
             source_token_program: token_program,
             destination_token_program: token_program,
+            params: RouteParams::default(),
         };
 
         let account_keys = vec![
@@ -797,6 +946,7 @@ mod tests {
             destination_mint: pk(13),
             source_token_program: token_program,
             destination_token_program: token_program,
+            params: RouteParams::default(),
         };
         let account_keys = vec![token_program, authority, source_ata, destination_ata];
         let result = route.populate_from_balances(&account_keys, None);
@@ -854,5 +1004,103 @@ mod tests {
         assert_eq!(accounts[2].pubkey, loaded_readonly);
         assert!(!accounts[2].is_signer);
         assert!(!accounts[2].is_writable);
+    }
+
+    fn build_route_accounts() -> Vec<AccountMeta> {
+        let authority = pk(31);
+        let source = pk(32);
+        let destination = pk(33);
+        let source_mint = pk(34);
+        let destination_mint = pk(35);
+        let token_program = pk(36);
+        vec![
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(source, false),
+            AccountMeta::new(destination, false),
+            AccountMeta::new_readonly(source_mint, false),
+            AccountMeta::new_readonly(destination_mint, false),
+            AccountMeta::new_readonly(token_program, false),
+            AccountMeta::new_readonly(token_program, false),
+            AccountMeta::new(destination, false),
+            AccountMeta::new_readonly(pk(37), false),
+            AccountMeta::new_readonly(pk(38), false),
+        ]
+    }
+
+    fn route_v2_data(in_amount: u64, quoted_out: u64, slippage: u16) -> Vec<u8> {
+        let mut data = crate::jupiter_parser::discriminator::ROUTE_V2.to_vec();
+        data.extend_from_slice(&in_amount.to_le_bytes());
+        data.extend_from_slice(&quoted_out.to_le_bytes());
+        data.extend_from_slice(&slippage.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data
+    }
+
+    fn exact_route_v2_data(out_amount: u64, quoted_in: u64, slippage: u16) -> Vec<u8> {
+        let mut data = crate::jupiter_parser::discriminator::EXACT_ROUTE_V2.to_vec();
+        data.extend_from_slice(&out_amount.to_le_bytes());
+        data.extend_from_slice(&quoted_in.to_le_bytes());
+        data.extend_from_slice(&slippage.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data
+    }
+
+    fn shared_route_v2_data(id: u8, in_amount: u64, quoted_out: u64, slippage: u16) -> Vec<u8> {
+        let mut data = crate::jupiter_parser::discriminator::SHARED_ROUTE_V2.to_vec();
+        data.push(id);
+        data.extend_from_slice(&in_amount.to_le_bytes());
+        data.extend_from_slice(&quoted_out.to_le_bytes());
+        data.extend_from_slice(&slippage.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn route_v2_params_are_parsed() {
+        let data = route_v2_data(100, 120, 50);
+        let instruction = Instruction {
+            program_id: JUPITER_V6_PROGRAM_ID,
+            accounts: build_route_accounts(),
+            data,
+        };
+        let ctx = RouteContext::from_instruction(&instruction).expect("route context");
+        assert_eq!(ctx.params.in_amount, Some(100));
+        assert_eq!(ctx.params.quoted_out_amount, Some(120));
+        assert_eq!(ctx.params.slippage_bps, Some(50));
+    }
+
+    #[test]
+    fn exact_route_v2_params_are_parsed() {
+        let data = exact_route_v2_data(200, 180, 25);
+        let instruction = Instruction {
+            program_id: JUPITER_V6_PROGRAM_ID,
+            accounts: build_route_accounts(),
+            data,
+        };
+        let ctx = RouteContext::from_instruction(&instruction).expect("route context");
+        assert_eq!(ctx.params.out_amount, Some(200));
+        assert_eq!(ctx.params.quoted_in_amount, Some(180));
+        assert_eq!(ctx.params.slippage_bps, Some(25));
+    }
+
+    #[test]
+    fn shared_route_v2_params_are_parsed() {
+        let data = shared_route_v2_data(7, 300, 330, 15);
+        let instruction = Instruction {
+            program_id: JUPITER_V6_PROGRAM_ID,
+            accounts: build_route_accounts(),
+            data,
+        };
+        let ctx = RouteContext::from_instruction(&instruction).expect("route context");
+        assert_eq!(ctx.params.route_id, Some(7));
+        assert_eq!(ctx.params.in_amount, Some(300));
+        assert_eq!(ctx.params.quoted_out_amount, Some(330));
+        assert_eq!(ctx.params.slippage_bps, Some(15));
     }
 }

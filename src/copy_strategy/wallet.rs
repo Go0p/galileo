@@ -302,15 +302,15 @@ impl CopyWalletRunner {
         mint: &Pubkey,
         token_program: &Pubkey,
     ) -> Result<(Pubkey, bool)> {
+        let ata = derive_associated_token_address(&self.identity.pubkey, mint, token_program)?;
         {
             let cache = self.owned_token_accounts.read().await;
             if let Some(entry) = cache.get(mint) {
-                if &entry.token_program == token_program {
-                    return Ok((entry.account, true));
+                if entry.account == ata && entry.token_program == *token_program {
+                    return Ok((ata, true));
                 }
             }
         }
-        let ata = derive_associated_token_address(&self.identity.pubkey, mint, token_program)?;
         let mut cache = self.owned_token_accounts.write().await;
         cache.insert(
             *mint,
@@ -384,6 +384,17 @@ impl CopyWalletRunner {
                 &route_ctx.destination_token_program,
             )
             .await?;
+
+        debug!(
+            target: "strategy::copy",
+            wallet = %self.wallet_pubkey,
+            signature = %signature,
+            source_mint = %route_ctx.source_mint,
+            dest_mint = %route_ctx.destination_mint,
+            new_source_ata = %new_source_ata,
+            new_dest_ata = %new_destination_ata,
+            "已解析 Source/Destination ATA"
+        );
 
         let plan = self
             .build_replacement_plan(
@@ -516,10 +527,11 @@ impl CopyWalletRunner {
         );
         bundle.dedup_lookup_tables();
 
+        let final_sequence = bundle.flatten_instructions();
         let variant = SwapInstructionsVariant::MultiLeg(bundle);
         let prepared = self
             .tx_builder
-            .build_with_sequence(&self.identity, &variant, patched_instructions.clone(), 0)
+            .build_with_sequence(&self.identity, &variant, final_sequence, 0)
             .await
             .map_err(|err| anyhow!("构建复制交易失败: {err}"))?;
 
@@ -615,6 +627,14 @@ impl CopyWalletRunner {
                     );
                     continue;
                 };
+                if *old_account == route.source_ata {
+                    mapping.insert(route.source_ata, new_source_ata);
+                    continue;
+                }
+                if *old_account == route.destination_ata {
+                    mapping.insert(route.destination_ata, new_destination_ata);
+                    continue;
+                }
                 let (replacement, _) = self
                     .resolve_user_token_account(&entry.mint, &token_program)
                     .await?;

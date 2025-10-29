@@ -265,13 +265,14 @@ impl TxVariantPlanner {
         for &count in layout {
             let needed = count.max(1);
             let mut variants = Vec::with_capacity(needed);
-            for _ in 0..needed {
+            for variant_index in 0..needed {
                 let mut variant_tx = prepared.transaction.clone();
                 let mut variant_instructions = prepared.instructions.clone();
 
-                let is_primary = variants.is_empty();
-                if !is_primary && (matches!(strategy, DispatchStrategy::OneByOne) || needed > 1) {
-                    let bump = next_id.saturating_add(1) as u32;
+                if variant_index > 0
+                    && (matches!(strategy, DispatchStrategy::OneByOne) || needed > 1)
+                {
+                    let bump = variant_index as u32;
                     apply_variation(
                         &mut variant_tx,
                         &mut variant_instructions,
