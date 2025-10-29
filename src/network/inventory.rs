@@ -144,6 +144,9 @@ fn sanitize_manual_ips(
     let mut seen = HashSet::new();
     let mut unique = Vec::new();
     for ip in manual {
+        if !matches!(ip, IpAddr::V4(_)) {
+            continue;
+        }
         if blacklist.contains(ip) {
             continue;
         }
@@ -178,7 +181,7 @@ fn discover_interfaces(
 
         let ip = match iface.addr {
             IfAddr::V4(v4) => IpAddr::V4(v4.ip),
-            IfAddr::V6(v6) => IpAddr::V6(v6.ip),
+            IfAddr::V6(_) => continue,
         };
 
         if !allow_loopback && ip.is_loopback() {

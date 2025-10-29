@@ -889,17 +889,22 @@ impl CopyWalletRunner {
             if adjusted_in == 0 {
                 return Ok(AmountAdjustment::Skip);
             }
+            let adjusted_out = target_out.unwrap_or(adjusted_in);
             let mut cache = self.owned_token_accounts.write().await;
             if let Some(entry) = cache.get_mut(&base.mint) {
                 if entry.account == base_ata {
-                    entry.balance = entry.balance.map(|bal| bal.saturating_sub(adjusted_in));
+                    let current = entry.balance.unwrap_or(available);
+                    let updated = current
+                        .saturating_sub(adjusted_in)
+                        .saturating_add(adjusted_out);
+                    entry.balance = Some(updated);
                 }
             }
             return Ok(AmountAdjustment::Applied {
                 original_in: original_in.unwrap_or(adjusted_in),
                 adjusted_in,
-                original_out: original_out.unwrap_or(target_out.unwrap_or(adjusted_in)),
-                adjusted_out: target_out.unwrap_or(adjusted_in),
+                original_out: original_out.unwrap_or(adjusted_out),
+                adjusted_out,
                 mint: base.mint,
                 available,
             });
