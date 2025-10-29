@@ -311,14 +311,6 @@ impl CopyWalletRunner {
                 }
             }
         }
-        let mut cache = self.owned_token_accounts.write().await;
-        cache.insert(
-            *mint,
-            CachedTokenAccount {
-                account: ata,
-                token_program: *token_program,
-            },
-        );
         Ok((ata, false))
     }
 
@@ -466,15 +458,6 @@ impl CopyWalletRunner {
                 &assignment.token_program,
             )?;
             patched_instructions.push(ix);
-
-            let mut cache = self.owned_token_accounts.write().await;
-            cache.insert(
-                assignment.mint,
-                CachedTokenAccount {
-                    account: assignment.account,
-                    token_program: assignment.token_program,
-                },
-            );
         }
 
         patched_instructions.extend(jupiter_instructions);
@@ -707,10 +690,8 @@ impl CopyWalletRunner {
                         cached
                             .entry(mint)
                             .and_modify(|entry: &mut CachedTokenAccount| {
-                                if entry.token_program != token_program {
-                                    entry.token_program = token_program;
-                                }
                                 entry.account = account_pubkey;
+                                entry.token_program = token_program;
                             })
                             .or_insert(CachedTokenAccount {
                                 account: account_pubkey,

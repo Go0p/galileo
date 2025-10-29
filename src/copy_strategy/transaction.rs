@@ -304,7 +304,7 @@ impl TryFrom<&confirmed_block::TransactionStatusMeta> for TransactionTokenBalanc
         }
         for balance in &meta.post_token_balances {
             if let Some(entry) = TokenBalanceEntry::parse(balance) {
-                balances.insert(entry.account_index, entry);
+                balances.entry(entry.account_index).or_insert(entry);
             }
         }
 
