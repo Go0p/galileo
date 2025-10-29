@@ -375,36 +375,8 @@ impl CopyWalletRunner {
             .populate_from_balances(&account_keys, token_balances)
             .context("填充 route token 信息失败")?;
 
-        let (new_source_ata, _source_exists) = self
-            .resolve_user_token_account(&route_ctx.source_mint, &route_ctx.source_token_program)
-            .await?;
-        let (new_destination_ata, destination_exists) = self
-            .resolve_user_token_account(
-                &route_ctx.destination_mint,
-                &route_ctx.destination_token_program,
-            )
-            .await?;
-
-        debug!(
-            target: "strategy::copy",
-            wallet = %self.wallet_pubkey,
-            signature = %signature,
-            source_mint = %route_ctx.source_mint,
-            dest_mint = %route_ctx.destination_mint,
-            new_source_ata = %new_source_ata,
-            new_dest_ata = %new_destination_ata,
-            "已解析 Source/Destination ATA"
-        );
-
         let plan = self
-            .build_replacement_plan(
-                &route_ctx,
-                &account_keys,
-                token_balances,
-                new_source_ata,
-                new_destination_ata,
-                destination_exists,
-            )
+            .build_replacement_plan(&route_ctx, &account_keys, token_balances)
             .await?;
 
         let mut compute_budget_instructions = Vec::new();
@@ -594,12 +566,11 @@ impl CopyWalletRunner {
         route: &RouteContext,
         account_keys: &[Pubkey],
         balances: Option<&TransactionTokenBalances>,
-        new_source_ata: Pubkey,
-        new_destination_ata: Pubkey,
-        destination_existed: bool,
     ) -> Result<ReplacementPlan> {
         let mut mapping = HashMap::new();
         mapping.insert(route.authority, self.identity.pubkey);
+
+        let mut destination_assignment: Option<AtaAssignment> = None;
 
         if let Some(balances) = balances {
             for entry in balances.entries() {
@@ -627,31 +598,51 @@ impl CopyWalletRunner {
                     );
                     continue;
                 };
-                if *old_account == route.source_ata {
-                    mapping.insert(route.source_ata, new_source_ata);
+                let expected = match derive_associated_token_address(
+                    &route.authority,
+                    &entry.mint,
+                    &token_program,
+                ) {
+                    Ok(ata) => ata,
+                    Err(err) => {
+                        warn!(
+                            target: "strategy::copy",
+                            wallet = %self.wallet_pubkey,
+                            mint = %entry.mint,
+                            token_program = %token_program,
+                            error = %err,
+                            "派生 copy 钱包 ATA 失败，跳过匹配"
+                        );
+                        continue;
+                    }
+                };
+
+                if expected != *old_account {
                     continue;
                 }
-                if *old_account == route.destination_ata {
-                    mapping.insert(route.destination_ata, new_destination_ata);
-                    continue;
-                }
-                let (replacement, _) = self
+
+                let (replacement, existed) = self
                     .resolve_user_token_account(&entry.mint, &token_program)
                     .await?;
                 mapping.entry(*old_account).or_insert(replacement);
+
+                if *old_account == route.destination_ata {
+                    destination_assignment.get_or_insert(AtaAssignment {
+                        mint: entry.mint,
+                        token_program,
+                        account: replacement,
+                        existed,
+                    });
+                }
             }
         }
 
-        mapping.insert(route.source_ata, new_source_ata);
-        mapping.insert(route.destination_ata, new_destination_ata);
-        mapping.insert(route.authority, self.identity.pubkey);
-
-        let destination = AtaAssignment {
-            mint: route.destination_mint,
-            token_program: route.destination_token_program,
-            account: new_destination_ata,
-            existed: destination_existed,
-        };
+        let destination = destination_assignment.unwrap_or(AtaAssignment {
+            mint: Pubkey::default(),
+            token_program: Pubkey::default(),
+            account: Pubkey::default(),
+            existed: true,
+        });
 
         Ok(ReplacementPlan {
             mapping,
