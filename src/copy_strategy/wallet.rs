@@ -374,7 +374,7 @@ impl CopyWalletRunner {
             "解析原始指令完成"
         );
 
-        let mut route_ctx = match instructions.iter().find_map(RouteContext::from_instruction) {
+        let route_ctx = match instructions.iter().find_map(RouteContext::from_instruction) {
             Some(ctx) => ctx,
             None => {
                 debug!(
@@ -422,7 +422,11 @@ impl CopyWalletRunner {
         }
 
         match self
-            .adjust_route_amounts(&mut route_ctx, token_balances, &mut jupiter_instructions)
+            .adjust_route_amounts(
+                &route_ctx.authority,
+                token_balances,
+                &mut jupiter_instructions,
+            )
             .await?
         {
             AmountAdjustment::Skip => {
@@ -735,11 +739,11 @@ impl CopyWalletRunner {
 
     async fn adjust_route_amounts(
         &self,
-        route_ctx: &mut RouteContext,
+        authority: &Pubkey,
         token_balances: &TransactionTokenBalances,
         instructions: &mut [Instruction],
     ) -> Result<AmountAdjustment> {
-        let Some(base) = self.detect_base_mint(&route_ctx.authority, token_balances) else {
+        let Some(base) = self.detect_base_mint(authority, token_balances) else {
             return Ok(AmountAdjustment::NotNeeded);
         };
 
@@ -830,7 +834,6 @@ impl CopyWalletRunner {
             if adjusted == 0 {
                 return Ok(AmountAdjustment::Skip);
             }
-            route_ctx.params.in_amount = Some(adjusted);
             let mut cache = self.owned_token_accounts.write().await;
             if let Some(entry) = cache.get_mut(&base.mint) {
                 if entry.account == base_ata {

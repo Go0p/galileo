@@ -45,6 +45,7 @@ pub fn classify(data: &[u8]) -> RouteKind {
 
 /// Route v2 系列指令的账户布局。
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct RouteV2Accounts {
     pub user_transfer_authority: Pubkey,
     pub user_source_token_account: Pubkey,
