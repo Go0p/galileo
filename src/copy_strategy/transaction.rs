@@ -31,6 +31,7 @@ use super::constants::{ASSOCIATED_TOKEN_PROGRAM_ID, COMPUTE_BUDGET_PROGRAM_ID, S
 pub(crate) struct CachedTokenAccount {
     pub account: Pubkey,
     pub token_program: Pubkey,
+    pub balance: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -220,6 +221,54 @@ pub(crate) fn find_account_index(account_keys: &[Pubkey], target: &Pubkey) -> Op
     account_keys.iter().position(|key| key == target)
 }
 
+fn read_u64_at(data: &[u8], offset: usize) -> Option<u64> {
+    let bytes = data.get(offset..offset + 8)?;
+    Some(u64::from_le_bytes(bytes.try_into().ok()?))
+}
+
+fn write_u64_at(data: &mut [u8], offset: usize, value: u64) -> Result<()> {
+    let target = data
+        .get_mut(offset..offset + 8)
+        .ok_or_else(|| anyhow!("Route data 长度不足，无法写入 in_amount"))?;
+    target.copy_from_slice(&value.to_le_bytes());
+    Ok(())
+}
+
+fn route_legacy_in_amount_offset(data: &[u8]) -> Option<usize> {
+    let mut rest = data.get(8..)?;
+    let len = read_u32(&mut rest)? as usize;
+    if len != 0 {
+        return None;
+    }
+    Some(data.len().saturating_sub(rest.len()))
+}
+
+pub(crate) fn read_route_in_amount(kind: RouteKind, data: &[u8]) -> Option<u64> {
+    match kind {
+        RouteKind::RouteV2 => read_u64_at(data, 8),
+        RouteKind::SharedRouteV2 => read_u64_at(data, 9),
+        RouteKind::Route => {
+            let offset = route_legacy_in_amount_offset(data)?;
+            read_u64_at(data, offset)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn update_route_in_amount(kind: RouteKind, data: &mut [u8], value: u64) -> Result<()> {
+    match kind {
+        RouteKind::RouteV2 => write_u64_at(data, 8, value),
+        RouteKind::SharedRouteV2 => write_u64_at(data, 9, value),
+        RouteKind::Route => {
+            let offset = route_legacy_in_amount_offset(data).ok_or_else(|| {
+                anyhow!("Route 指令 route_plan 非空或数据无效，无法写入 in_amount")
+            })?;
+            write_u64_at(data, offset, value)
+        }
+        _ => Err(anyhow!("当前 route 指令类型不支持 in_amount 调整")),
+    }
+}
+
 pub(crate) fn filter_transaction(
     transaction: &VersionedTransaction,
     include: &HashSet<Pubkey>,
@@ -298,13 +347,18 @@ impl TryFrom<&confirmed_block::TransactionStatusMeta> for TransactionTokenBalanc
     fn try_from(meta: &confirmed_block::TransactionStatusMeta) -> Result<Self> {
         let mut balances = HashMap::new();
         for balance in &meta.pre_token_balances {
-            if let Some(entry) = TokenBalanceEntry::parse(balance) {
+            if let Some(entry) = TokenBalanceEntry::from_balance(balance, BalanceSnapshot::Pre) {
                 balances.entry(entry.account_index).or_insert(entry);
             }
         }
         for balance in &meta.post_token_balances {
-            if let Some(entry) = TokenBalanceEntry::parse(balance) {
-                balances.entry(entry.account_index).or_insert(entry);
+            if let Some(entry) = TokenBalanceEntry::from_balance(balance, BalanceSnapshot::Post) {
+                balances
+                    .entry(entry.account_index)
+                    .and_modify(|existing| {
+                        existing.update_from_balance(balance, BalanceSnapshot::Post);
+                    })
+                    .or_insert(entry);
             }
         }
 
@@ -318,10 +372,20 @@ pub(crate) struct TokenBalanceEntry {
     pub mint: Pubkey,
     pub token_program: Option<Pubkey>,
     pub owner: Option<Pubkey>,
+    pub pre_amount: Option<u64>,
+    pub post_amount: Option<u64>,
+}
+
+enum BalanceSnapshot {
+    Pre,
+    Post,
 }
 
 impl TokenBalanceEntry {
-    fn parse(balance: &confirmed_block::TokenBalance) -> Option<Self> {
+    fn from_balance(
+        balance: &confirmed_block::TokenBalance,
+        snapshot: BalanceSnapshot,
+    ) -> Option<Self> {
         if balance.mint.is_empty() {
             return None;
         }
@@ -337,12 +401,49 @@ impl TokenBalanceEntry {
             Pubkey::from_str(balance.owner.as_str()).ok()
         };
 
-        Some(Self {
+        let mut entry = Self {
             account_index: balance.account_index as usize,
             mint,
             token_program,
             owner,
-        })
+            pre_amount: None,
+            post_amount: None,
+        };
+        entry.update_amount(balance, snapshot);
+        Some(entry)
+    }
+
+    fn update_from_balance(
+        &mut self,
+        balance: &confirmed_block::TokenBalance,
+        snapshot: BalanceSnapshot,
+    ) {
+        if self.token_program.is_none() && !balance.program_id.is_empty() {
+            if let Ok(program) = Pubkey::from_str(balance.program_id.as_str()) {
+                self.token_program = Some(program);
+            }
+        }
+        if self.owner.is_none() && !balance.owner.is_empty() {
+            if let Ok(owner) = Pubkey::from_str(balance.owner.as_str()) {
+                self.owner = Some(owner);
+            }
+        }
+        self.update_amount(balance, snapshot);
+    }
+
+    fn update_amount(
+        &mut self,
+        balance: &confirmed_block::TokenBalance,
+        snapshot: BalanceSnapshot,
+    ) {
+        if let Some(ui_amount) = balance.ui_token_amount.as_ref() {
+            if let Ok(amount) = ui_amount.amount.parse::<u64>() {
+                match snapshot {
+                    BalanceSnapshot::Pre => self.pre_amount = Some(amount),
+                    BalanceSnapshot::Post => self.post_amount = Some(amount),
+                }
+            }
+        }
     }
 }
 

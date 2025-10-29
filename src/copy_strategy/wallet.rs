@@ -36,10 +36,9 @@ use super::transaction::{
     CachedTokenAccount, RouteContext, TransactionLoadedAddresses, TransactionTokenBalances,
     apply_replacements, build_create_ata_instruction, collect_instruction_signers,
     decode_versioned_transaction, derive_associated_token_address, extract_compute_unit_limit,
-    instructions_from_message, lookup_addresses, message_required_signatures,
-    resolve_lookup_accounts, split_compute_budget,
+    instructions_from_message, lookup_addresses, message_required_signatures, read_route_in_amount,
+    resolve_lookup_accounts, split_compute_budget, update_route_in_amount,
 };
-
 pub(crate) struct CopyWalletRunner {
     wallet: CopyWalletConfig,
     wallet_pubkey: Pubkey,
@@ -68,6 +67,31 @@ struct AtaAssignment {
     token_program: Pubkey,
     account: Pubkey,
     existed: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BaseMintInfo {
+    mint: Pubkey,
+    token_program: Pubkey,
+    pre_amount: u64,
+    post_amount: u64,
+}
+
+impl BaseMintInfo {
+    fn delta(&self) -> i128 {
+        self.post_amount as i128 - self.pre_amount as i128
+    }
+}
+
+enum AmountAdjustment {
+    NotNeeded,
+    Applied {
+        original: u64,
+        adjusted: u64,
+        mint: Pubkey,
+        available: u64,
+    },
+    Skip,
 }
 
 impl CopyWalletRunner {
@@ -350,7 +374,7 @@ impl CopyWalletRunner {
             "解析原始指令完成"
         );
 
-        let route_ctx = match instructions.iter().find_map(RouteContext::from_instruction) {
+        let mut route_ctx = match instructions.iter().find_map(RouteContext::from_instruction) {
             Some(ctx) => ctx,
             None => {
                 debug!(
@@ -395,6 +419,39 @@ impl CopyWalletRunner {
                 "Jupiter 指令为空，跳过复制"
             );
             return Ok(());
+        }
+
+        match self
+            .adjust_route_amounts(&mut route_ctx, token_balances, &mut jupiter_instructions)
+            .await?
+        {
+            AmountAdjustment::Skip => {
+                debug!(
+                    target: "strategy::copy",
+                    wallet = %self.wallet_pubkey,
+                    signature = %signature,
+                    "base mint 余额不足，已跳过复制"
+                );
+                return Ok(());
+            }
+            AmountAdjustment::Applied {
+                original,
+                adjusted,
+                mint,
+                available,
+            } => {
+                debug!(
+                    target: "strategy::copy",
+                    wallet = %self.wallet_pubkey,
+                    signature = %signature,
+                    mint = %mint,
+                    original_in = original,
+                    adjusted_in = adjusted,
+                    available,
+                    "已根据身份余额调整 route in_amount"
+                );
+            }
+            AmountAdjustment::NotNeeded => {}
         }
 
         let original_accounts_snapshot = describe_jupiter_accounts(&jupiter_instructions);
@@ -458,6 +515,12 @@ impl CopyWalletRunner {
                 &assignment.token_program,
             )?;
             patched_instructions.push(ix);
+            let mut cache = self.owned_token_accounts.write().await;
+            cache.entry(assignment.mint).or_insert(CachedTokenAccount {
+                account: assignment.account,
+                token_program: assignment.token_program,
+                balance: None,
+            });
         }
 
         patched_instructions.extend(jupiter_instructions);
@@ -644,6 +707,147 @@ impl CopyWalletRunner {
         })
     }
 
+    fn detect_base_mint(
+        &self,
+        authority: &Pubkey,
+        balances: &TransactionTokenBalances,
+    ) -> Option<BaseMintInfo> {
+        balances
+            .entries()
+            .filter(|entry| entry.owner == Some(*authority))
+            .filter_map(|entry| {
+                let pre = entry.pre_amount.unwrap_or(0);
+                let post = entry.post_amount.unwrap_or(0);
+                if post > pre {
+                    let token_program = entry.token_program.unwrap_or_else(|| spl_token::id());
+                    Some(BaseMintInfo {
+                        mint: entry.mint,
+                        token_program,
+                        pre_amount: pre,
+                        post_amount: post,
+                    })
+                } else {
+                    None
+                }
+            })
+            .max_by_key(|info| info.delta())
+    }
+
+    async fn adjust_route_amounts(
+        &self,
+        route_ctx: &mut RouteContext,
+        token_balances: &TransactionTokenBalances,
+        instructions: &mut [Instruction],
+    ) -> Result<AmountAdjustment> {
+        let Some(base) = self.detect_base_mint(&route_ctx.authority, token_balances) else {
+            return Ok(AmountAdjustment::NotNeeded);
+        };
+
+        let (base_ata, existed) = self
+            .resolve_user_token_account(&base.mint, &base.token_program)
+            .await?;
+        if !existed {
+            debug!(
+                target: "strategy::copy",
+                mint = %base.mint,
+                "身份缺少 base mint ATA，跳过复制"
+            );
+            return Ok(AmountAdjustment::Skip);
+        }
+
+        let available = {
+            let cache = self.owned_token_accounts.read().await;
+            cache
+                .get(&base.mint)
+                .and_then(|entry| {
+                    if entry.account == base_ata {
+                        entry.balance
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0)
+        };
+
+        if available == 0 {
+            debug!(
+                target: "strategy::copy",
+                mint = %base.mint,
+                "base mint 可用余额为 0，跳过复制"
+            );
+            return Ok(AmountAdjustment::Skip);
+        }
+
+        let mut target_amount: Option<u64> = None;
+        let mut original_amount: Option<u64> = None;
+        let mut updated = false;
+        let mut encountered = false;
+
+        for instruction in instructions.iter_mut() {
+            if instruction.program_id != JUPITER_V6_PROGRAM_ID {
+                continue;
+            }
+
+            let kind = crate::jupiter_parser::classify(&instruction.data);
+            let current = match read_route_in_amount(kind, &instruction.data) {
+                Some(value) => value,
+                None => continue,
+            };
+
+            encountered = true;
+            if target_amount.is_none() {
+                let capped = current.min(available);
+                if capped == 0 {
+                    return Ok(AmountAdjustment::Skip);
+                }
+                target_amount = Some(capped);
+                original_amount = Some(current);
+            }
+
+            let desired = target_amount.expect("target amount must exist");
+            if desired != current {
+                if let Err(err) = update_route_in_amount(kind, &mut instruction.data, desired) {
+                    warn!(
+                        target: "strategy::copy",
+                        mint = %base.mint,
+                        error = %err,
+                        "调整 route 指令金额失败，跳过此次复制"
+                    );
+                    return Ok(AmountAdjustment::Skip);
+                }
+                updated = true;
+            }
+        }
+
+        if !encountered {
+            return Ok(AmountAdjustment::NotNeeded);
+        }
+        if !updated {
+            return Ok(AmountAdjustment::NotNeeded);
+        }
+
+        if let Some(adjusted) = target_amount {
+            if adjusted == 0 {
+                return Ok(AmountAdjustment::Skip);
+            }
+            route_ctx.params.in_amount = Some(adjusted);
+            let mut cache = self.owned_token_accounts.write().await;
+            if let Some(entry) = cache.get_mut(&base.mint) {
+                if entry.account == base_ata {
+                    entry.balance = entry.balance.map(|bal| bal.saturating_sub(adjusted));
+                }
+            }
+            return Ok(AmountAdjustment::Applied {
+                original: original_amount.unwrap_or(adjusted),
+                adjusted,
+                mint: base.mint,
+                available,
+            });
+        }
+
+        Ok(AmountAdjustment::NotNeeded)
+    }
+
     async fn load_existing_token_mints(
         rpc_client: &Arc<RpcClient>,
         owner: &Pubkey,
@@ -687,15 +891,26 @@ impl CopyWalletRunner {
                         let mint = Pubkey::from_str(mint_str).map_err(|err| anyhow!(err))?;
                         let token_program = Pubkey::from_str(keyed.account.owner.as_str())
                             .map_err(|err| anyhow!(err))?;
+                        let balance = parsed
+                            .parsed
+                            .get("info")
+                            .and_then(|info| info.get("tokenAmount"))
+                            .and_then(|ta| ta.get("amount"))
+                            .and_then(|amount| amount.as_str())
+                            .and_then(|amount| amount.parse::<u64>().ok());
                         cached
                             .entry(mint)
                             .and_modify(|entry: &mut CachedTokenAccount| {
                                 entry.account = account_pubkey;
                                 entry.token_program = token_program;
+                                if balance.is_some() {
+                                    entry.balance = balance;
+                                }
                             })
                             .or_insert(CachedTokenAccount {
                                 account: account_pubkey,
                                 token_program,
+                                balance,
                             });
                     }
                 }
