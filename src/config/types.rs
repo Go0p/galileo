@@ -907,6 +907,8 @@ pub struct CopyStrategyConfig {
     #[serde(default)]
     pub enable: bool,
     #[serde(default)]
+    pub copy_dispatch: CopyDispatchConfig,
+    #[serde(default)]
     pub wallets: Vec<CopyWalletConfig>,
 }
 
@@ -926,8 +928,6 @@ pub struct CopySourceConfig {
     pub rpc: CopyRpcConfig,
     #[serde(default)]
     pub grpc: CopyGrpcConfig,
-    #[serde(default = "default_copy_replay_interval_ms")]
-    pub replay_interval_ms: u64,
     #[serde(default)]
     pub enable_landers: Vec<String>,
 }
@@ -938,7 +938,6 @@ impl Default for CopySourceConfig {
             kind: CopySourceKind::Rpc,
             rpc: CopyRpcConfig::default(),
             grpc: CopyGrpcConfig::default(),
-            replay_interval_ms: default_copy_replay_interval_ms(),
             enable_landers: Vec::new(),
         }
     }
@@ -987,8 +986,6 @@ pub struct CopyGrpcConfig {
     pub include_program_ids: Vec<String>,
     #[serde(default)]
     pub exclude_program_ids: Vec<String>,
-    #[serde(default = "default_copy_grpc_fanout_count")]
-    pub fanout_count: u32,
 }
 
 impl Default for CopyGrpcConfig {
@@ -998,13 +995,75 @@ impl Default for CopyGrpcConfig {
             yellowstone_grpc_token: String::new(),
             include_program_ids: Vec::new(),
             exclude_program_ids: Vec::new(),
-            fanout_count: default_copy_grpc_fanout_count(),
         }
     }
 }
 
-const fn default_copy_replay_interval_ms() -> u64 {
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CopyDispatchConfig {
+    #[serde(default = "default_copy_dispatch_mode")]
+    pub mode: CopyDispatchMode,
+    #[serde(default = "default_copy_dispatch_max_inflight")]
+    pub max_inflight: u32,
+    #[serde(default = "default_copy_dispatch_queue_capacity")]
+    pub queue_capacity: u32,
+    #[serde(default = "default_copy_dispatch_replay_interval_ms")]
+    pub replay_interval_ms: u64,
+    #[serde(default = "default_copy_dispatch_queue_send_interval_ms")]
+    pub queue_send_interval_ms: u64,
+    #[serde(default = "default_copy_dispatch_fanout_count")]
+    pub fanout_count: u32,
+}
+
+impl Default for CopyDispatchConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_copy_dispatch_mode(),
+            max_inflight: default_copy_dispatch_max_inflight(),
+            queue_capacity: default_copy_dispatch_queue_capacity(),
+            replay_interval_ms: default_copy_dispatch_replay_interval_ms(),
+            queue_send_interval_ms: default_copy_dispatch_queue_send_interval_ms(),
+            fanout_count: default_copy_dispatch_fanout_count(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CopyDispatchMode {
+    Parallel,
+    Queued,
+}
+
+impl Default for CopyDispatchMode {
+    fn default() -> Self {
+        Self::Parallel
+    }
+}
+
+const fn default_copy_dispatch_mode() -> CopyDispatchMode {
+    CopyDispatchMode::Parallel
+}
+
+const fn default_copy_dispatch_max_inflight() -> u32 {
+    32
+}
+
+const fn default_copy_dispatch_queue_capacity() -> u32 {
+    256
+}
+
+const fn default_copy_dispatch_replay_interval_ms() -> u64 {
     100
+}
+
+const fn default_copy_dispatch_queue_send_interval_ms() -> u64 {
+    0
+}
+
+const fn default_copy_dispatch_fanout_count() -> u32 {
+    1
 }
 
 const fn default_copy_pull_interval_minutes() -> u64 {
@@ -1013,10 +1072,6 @@ const fn default_copy_pull_interval_minutes() -> u64 {
 
 const fn default_copy_pull_count() -> u64 {
     100
-}
-
-const fn default_copy_grpc_fanout_count() -> u32 {
-    1
 }
 #[derive(Debug, Clone, Deserialize)]
 pub struct PrometheusConfig {

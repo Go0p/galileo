@@ -19,7 +19,9 @@ use solana_sdk::transaction::VersionedTransaction;
 use tracing::{debug, error, info, warn};
 use yellowstone_grpc_proto::tonic::metadata::AsciiMetadataValue;
 
-use crate::config::{CopySourceKind, CopyWalletConfig, LanderSettings};
+use crate::config::{
+    CopyDispatchConfig, CopyDispatchMode, CopySourceKind, CopyWalletConfig, LanderSettings,
+};
 use crate::engine::{
     ComputeUnitPriceMode, DispatchStrategy, EngineIdentity, MultiLegInstructions,
     SwapInstructionsVariant, TransactionBuilder, TxVariantPlanner,
@@ -42,6 +44,7 @@ use super::transaction::{
 };
 pub(crate) struct CopyWalletRunner {
     wallet: CopyWalletConfig,
+    dispatch: CopyDispatchConfig,
     wallet_pubkey: Pubkey,
     rpc_client: Arc<RpcClient>,
     tx_builder: TransactionBuilder,
@@ -55,6 +58,13 @@ pub(crate) struct CopyWalletRunner {
     seen_signatures: tokio::sync::Mutex<SeenSignatures>,
     intermediate_mints: Arc<HashSet<Pubkey>>,
     owned_token_accounts: tokio::sync::RwLock<HashMap<Pubkey, CachedTokenAccount>>,
+}
+
+struct CopyTask {
+    signature: Signature,
+    transaction: VersionedTransaction,
+    token_balances: Option<TransactionTokenBalances>,
+    loaded_addresses: Option<TransactionLoadedAddresses>,
 }
 
 struct ReplacementPlan {
@@ -100,6 +110,7 @@ enum AmountAdjustment {
 impl CopyWalletRunner {
     pub async fn new(
         wallet: CopyWalletConfig,
+        dispatch: CopyDispatchConfig,
         rpc_client: Arc<RpcClient>,
         tx_builder: TransactionBuilder,
         identity: EngineIdentity,
@@ -144,6 +155,7 @@ impl CopyWalletRunner {
 
         Ok(Self {
             wallet,
+            dispatch,
             wallet_pubkey,
             rpc_client,
             tx_builder,
@@ -168,6 +180,11 @@ impl CopyWalletRunner {
     }
 
     async fn run_grpc(self) -> Result<()> {
+        let runner = Arc::new(self);
+        CopyWalletRunner::run_grpc_internal(runner).await
+    }
+
+    async fn run_grpc_internal(self: Arc<Self>) -> Result<()> {
         let grpc = &self.wallet.source.grpc;
         let endpoint = if !grpc.yellowstone_grpc_url.trim().is_empty() {
             grpc.yellowstone_grpc_url.trim().to_string()
@@ -218,6 +235,49 @@ impl CopyWalletRunner {
             .subscribe_transactions(self.wallet_pubkey)
             .await
             .context("订阅 Yellowstone gRPC 失败")?;
+
+        let fanout_count = self.dispatch.fanout_count.max(1);
+        let replay_interval = Duration::from_millis(self.dispatch.replay_interval_ms);
+        let max_inflight = usize::try_from(self.dispatch.max_inflight.max(1)).unwrap_or(1);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_inflight));
+
+        let mut last_replay_at: Option<Instant> = None;
+
+        let queue_resources = if matches!(self.dispatch.mode, CopyDispatchMode::Queued) {
+            let capacity = usize::try_from(self.dispatch.queue_capacity.max(1))
+                .unwrap_or(1)
+                .max(1);
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<CopyTask>(capacity);
+            let runner = Arc::clone(&self);
+            let semaphore = Arc::clone(&semaphore);
+            let queue_interval = Duration::from_millis(self.dispatch.queue_send_interval_ms);
+            let handle = tokio::spawn(async move {
+                let mut last_sent_at: Option<Instant> = None;
+                while let Some(task) = rx.recv().await {
+                    if queue_interval != Duration::ZERO {
+                        let now = Instant::now();
+                        if let Some(prev) = last_sent_at {
+                            let target = prev + queue_interval;
+                            if now < target {
+                                tokio::time::sleep(target - now).await;
+                            }
+                        }
+                    }
+                    last_sent_at = Some(Instant::now());
+                    CopyWalletRunner::spawn_replay_task(
+                        Arc::clone(&runner),
+                        Arc::clone(&semaphore),
+                        task,
+                        fanout_count,
+                    );
+                }
+            });
+            Some((tx, handle))
+        } else {
+            None
+        };
+
+        let queue_sender = queue_resources.as_ref().map(|(sender, _)| sender.clone());
 
         while let Some(update) = stream.next().await.transpose()? {
             if let Some(info) = parse_transaction_update(&update) {
@@ -285,29 +345,101 @@ impl CopyWalletRunner {
                     ) {
                         continue;
                     }
-                    if let Err(err) = self
-                        .replay_transaction(
-                            &signature,
-                            versioned,
-                            Some(&token_balances),
-                            Some(&loaded_addresses),
-                            grpc.fanout_count.max(1),
-                        )
-                        .await
-                    {
-                        error!(
-                            target: "strategy::copy",
-                            wallet = %self.wallet_pubkey,
-                            signature = %signature,
-                            error = %err,
-                            "复制交易失败"
+                    if replay_interval != Duration::ZERO {
+                        let now = Instant::now();
+                        if let Some(prev) = last_replay_at {
+                            let target = prev + replay_interval;
+                            if now < target {
+                                tokio::time::sleep(target - now).await;
+                            }
+                        }
+                        last_replay_at = Some(Instant::now());
+                    }
+
+                    let task = CopyTask {
+                        signature,
+                        transaction: versioned,
+                        token_balances: Some(token_balances),
+                        loaded_addresses: Some(loaded_addresses),
+                    };
+
+                    if let Some(sender) = queue_sender.as_ref() {
+                        if let Err(err) = sender.send(task).await {
+                            error!(
+                                target: "strategy::copy",
+                                wallet = %self.wallet_pubkey,
+                                error = %err,
+                                "copy 队列发送失败，提前退出"
+                            );
+                            break;
+                        }
+                    } else {
+                        CopyWalletRunner::spawn_replay_task(
+                            Arc::clone(&self),
+                            Arc::clone(&semaphore),
+                            task,
+                            fanout_count,
                         );
                     }
                 }
             }
         }
 
+        drop(queue_sender);
+        if let Some((_, handle)) = queue_resources {
+            let _ = handle.await;
+        }
+
         Ok(())
+    }
+
+    fn spawn_replay_task(
+        runner: Arc<Self>,
+        semaphore: Arc<tokio::sync::Semaphore>,
+        task: CopyTask,
+        fanout_count: u32,
+    ) {
+        tokio::spawn(async move {
+            let permit = match semaphore.acquire_owned().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    error!(
+                        target: "strategy::copy",
+                        wallet = %runner.wallet_pubkey,
+                        error = %err,
+                        "获取 copy 并发信号量失败"
+                    );
+                    return;
+                }
+            };
+            let _permit = permit;
+
+            let CopyTask {
+                signature,
+                transaction,
+                token_balances,
+                loaded_addresses,
+            } = task;
+
+            if let Err(err) = runner
+                .replay_transaction(
+                    &signature,
+                    transaction,
+                    token_balances.as_ref(),
+                    loaded_addresses.as_ref(),
+                    fanout_count.max(1),
+                )
+                .await
+            {
+                error!(
+                    target: "strategy::copy",
+                    wallet = %runner.wallet_pubkey,
+                    signature = %signature,
+                    error = %err,
+                    "复制交易失败"
+                );
+            }
+        });
     }
 
     async fn run_rpc(self) -> Result<()> {

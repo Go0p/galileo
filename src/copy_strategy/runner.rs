@@ -41,6 +41,7 @@ impl CopyStrategyRunner {
         for wallet in self.config.wallets.clone() {
             let runner = CopyWalletRunner::new(
                 wallet,
+                self.config.copy_dispatch.clone(),
                 self.rpc_client.clone(),
                 self.tx_builder.clone(),
                 self.identity.clone(),
