@@ -199,46 +199,44 @@ impl LanderStack {
                     return Err(LanderError::fatal("deadline expired before submission"));
                 }
 
-                let variant = match plan.variants_for_lander(lander_idx).first() {
-                    Some(variant) => variant.clone(),
-                    None => continue,
-                };
+                let variants = plan.variants_for_lander(lander_idx);
+                for variant in variants.iter().cloned() {
+                    let lander_clone = lander.clone();
+                    let lander_name = lander.name();
+                    let variant_id = variant.id();
+                    let variant_signature = variant.signature();
+                    let current_attempt = attempt_idx;
+                    let deadline_copy = deadline;
+                    let allocator = Arc::clone(&self.ip_allocator);
+                    let strategy = strategy_name.to_string();
+                    let dispatch = dispatch_label.to_string();
 
-                let lander_clone = lander.clone();
-                let lander_name = lander.name();
-                let variant_id = variant.id();
-                let variant_signature = variant.signature();
-                let current_attempt = attempt_idx;
-                let deadline_copy = deadline;
-                let allocator = Arc::clone(&self.ip_allocator);
-                let strategy = strategy_name.to_string();
-                let dispatch = dispatch_label.to_string();
+                    attempt_idx += 1;
 
-                attempt_idx += 1;
-
-                futures.push(async move {
-                    let (local_ip, result) = submit_with_lease(
-                        allocator,
-                        lander_clone,
-                        variant,
-                        deadline_copy,
-                        None,
-                        &strategy,
-                        &dispatch,
-                        lander_name,
-                        variant_id,
-                        current_attempt,
-                    )
-                    .await;
-                    (
-                        lander_name,
-                        current_attempt,
-                        variant_id,
-                        variant_signature,
-                        local_ip,
-                        result,
-                    )
-                });
+                    futures.push(async move {
+                        let (local_ip, result) = submit_with_lease(
+                            allocator,
+                            lander_clone,
+                            variant,
+                            deadline_copy,
+                            None,
+                            &strategy,
+                            &dispatch,
+                            lander_name,
+                            variant_id,
+                            current_attempt,
+                        )
+                        .await;
+                        (
+                            lander_name,
+                            current_attempt,
+                            variant_id,
+                            variant_signature,
+                            local_ip,
+                            result,
+                        )
+                    });
+                }
             }
 
             while let Some((lander_name, attempt, variant_id, signature, local_ip, result)) =
@@ -250,15 +248,6 @@ impl LanderStack {
                             receipt.local_ip = local_ip;
                         }
                         events::lander_success(strategy_name, dispatch_label, attempt, &receipt);
-                        if let Some(sig) = receipt.signature.as_deref() {
-                            info!(
-                                target: "lander::stack",
-                                signature = sig,
-                                "lander submission succeeded"
-                            );
-                        } else {
-                            info!(target: "lander::stack", "lander submission succeeded");
-                        }
                         return Ok(receipt);
                     }
                     Err(err) => {
@@ -387,15 +376,6 @@ impl LanderStack {
                             receipt.local_ip = local_ip;
                         }
                         events::lander_success(strategy_name, dispatch_label, attempt, &receipt);
-                        if let Some(sig) = receipt.signature.as_deref() {
-                            info!(
-                                target: "lander::stack",
-                                signature = sig,
-                                "lander submission succeeded"
-                            );
-                        } else {
-                            info!(target: "lander::stack", "lander submission succeeded");
-                        }
                         return Ok(receipt);
                     }
                     Err(err) => {
@@ -481,6 +461,7 @@ async fn submit_with_lease(
         local_ip,
     );
 
+    let submission_started = Instant::now();
     let mut result = lander
         .submit_variant(variant, deadline, endpoint.as_deref(), local_ip)
         .await;
@@ -498,6 +479,30 @@ async fn submit_with_lease(
         if receipt.local_ip.is_none() {
             receipt.local_ip = local_ip;
         }
+        let elapsed_ms = submission_started.elapsed().as_secs_f64() * 1_000.0;
+        let identifier = receipt
+            .signature
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| receipt.endpoint.clone());
+        let endpoint_num = receipt.variant_id;
+        let ip_label = receipt
+            .local_ip
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        info!(
+            target: "lander::submit",
+            strategy,
+            dispatch,
+            lander = receipt.lander,
+            "发送交易 endpoint_num={} endpoint={} id={} elapsed_ms={:.3} ip={}",
+            endpoint_num,
+            receipt.endpoint.as_str(),
+            identifier.as_str(),
+            elapsed_ms,
+            ip_label,
+        );
     }
 
     (local_ip, result)

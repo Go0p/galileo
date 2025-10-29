@@ -62,7 +62,7 @@ use crate::multi_leg::types::{
     LegDescriptor as MultiLegDescriptor, LegPlan, LegSide as MultiLegSide,
     QuoteIntent as MultiLegQuoteIntent,
 };
-use crate::network::{IpAllocator, IpLeaseHandle, IpLeaseMode, IpTaskKind};
+use crate::network::{IpAllocator, IpLeaseMode, IpTaskKind};
 use crate::strategy::types::{BlindDex, BlindMarketMeta, BlindOrder, BlindStep, TradePair};
 use crate::strategy::{Strategy, StrategyEvent};
 use crate::txs::jupiter::route_v2::{RouteV2Accounts, RouteV2InstructionBuilder};
@@ -871,33 +871,18 @@ where
             tokio::time::sleep(process_delay).await;
         }
 
-        let lease = self
-            .ip_allocator
-            .acquire(IpTaskKind::QuoteBuy, IpLeaseMode::Ephemeral)
-            .await?;
-        let lease_handle = lease.handle();
-        drop(lease);
-        let local_ip = Some(lease_handle.ip());
-
         let task = QuoteTask::new(pair, amount);
-        let result = self
-            .process_task(task, &lease_handle, Some(batch_id), local_ip)
-            .await;
-
-        if let Err(err) = &result {
-            if let Some(outcome) = quote_dispatcher::classify_ip_outcome(err) {
-                lease_handle.mark_outcome(outcome);
-            }
-        }
-
-        result
+        self.process_task(task, Some(batch_id)).await
     }
 
     async fn process_quote_outcome(
         &mut self,
         batch: QuoteBatchPlan,
         quote: Option<DoubleQuote>,
-        local_ip: Option<IpAddr>,
+        forward_ip: Option<IpAddr>,
+        reverse_ip: Option<IpAddr>,
+        forward_duration: Option<Duration>,
+        reverse_duration: Option<Duration>,
     ) -> EngineResult<()> {
         let QuoteBatchPlan {
             batch_id,
@@ -912,7 +897,9 @@ where
             amount,
             process_delay = ?process_delay,
             has_quote = quote.is_some(),
-            "处理并发报价结果"
+            forward_ip = ?forward_ip,
+            reverse_ip = ?reverse_ip,
+            "处理并发报价结果",
         );
 
         let Some(double_quote) = quote else {
@@ -930,7 +917,7 @@ where
             forward_out,
             reverse_out,
             Some(batch_id),
-            local_ip,
+            forward_ip,
         );
 
         let Some(opportunity) = self
@@ -939,6 +926,15 @@ where
         else {
             return Ok(());
         };
+
+        self.log_opportunity_discovery(
+            &task,
+            &opportunity,
+            forward_duration,
+            reverse_duration,
+            forward_ip,
+            reverse_ip,
+        );
         events::profit_detected(self.strategy.name(), &opportunity);
 
         let plan = ExecutionPlan::with_deadline(opportunity, self.settings.landing_timeout);
@@ -971,56 +967,196 @@ where
             .await?;
 
         for outcome in outcomes {
-            self.process_quote_outcome(outcome.batch, outcome.quote, outcome.local_ip)
-                .await?;
+            self.process_quote_outcome(
+                outcome.batch,
+                outcome.quote,
+                outcome.forward_ip,
+                outcome.reverse_ip,
+                outcome.forward_duration,
+                outcome.reverse_duration,
+            )
+            .await?;
         }
 
         Ok(())
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
-    async fn process_task(
-        &mut self,
-        task: QuoteTask,
-        lease: &IpLeaseHandle,
-        batch_id: Option<u64>,
-        local_ip: Option<IpAddr>,
-    ) -> EngineResult<()> {
+    async fn process_task(&mut self, task: QuoteTask, batch_id: Option<u64>) -> EngineResult<()> {
         if let Some(mut context) = self.multi_leg.take() {
             let result = self.process_multi_leg_task(&mut context, task).await;
             self.multi_leg = Some(context);
             return result;
         }
 
+        let (forward_handle_raw, forward_ip_addr) = self
+            .ip_allocator
+            .acquire_handle_excluding(IpTaskKind::QuoteBuy, IpLeaseMode::Ephemeral, None)
+            .await
+            .map_err(EngineError::NetworkResource)?;
+        let forward_ip = Some(forward_ip_addr);
+        let mut forward_handle = Some(forward_handle_raw);
         let strategy_name = self.strategy.name();
-        events::quote_start(strategy_name, &task, batch_id, local_ip);
+        events::quote_start(strategy_name, &task, batch_id, forward_ip);
         let quote_started = Instant::now();
-        let double_quote = match self
+        let forward_start = Instant::now();
+        let forward_result = self
             .quote_executor
-            .round_trip(&task, &self.settings.quote, lease)
-            .await?
-        {
-            Some(value) => value,
-            None => {
+            .quote_once(
+                &task.pair,
+                task.amount,
+                &self.settings.quote,
+                forward_handle
+                    .as_ref()
+                    .expect("forward handle available for first quote"),
+            )
+            .await;
+        let forward_duration = forward_start.elapsed();
+
+        let forward_quote = match forward_result {
+            Err(err) => {
                 events::quote_end(
                     strategy_name,
                     &task,
                     false,
                     quote_started.elapsed(),
                     batch_id,
-                    local_ip,
+                    forward_ip,
                 );
+                if let Some(handle) = forward_handle.take() {
+                    if let Some(outcome) = quote_dispatcher::classify_ip_outcome(&err) {
+                        handle.mark_outcome(outcome);
+                    }
+                }
+                return Err(err);
+            }
+            Ok(None) => {
+                events::quote_end(
+                    strategy_name,
+                    &task,
+                    false,
+                    quote_started.elapsed(),
+                    batch_id,
+                    forward_ip,
+                );
+                let _ = forward_handle.take();
                 return Ok(());
             }
+            Ok(Some(value)) => value,
         };
+
+        let Some(second_amount) = crate::engine::quote::second_leg_amount(&task, &forward_quote)
+        else {
+            events::quote_end(
+                strategy_name,
+                &task,
+                false,
+                quote_started.elapsed(),
+                batch_id,
+                forward_ip,
+            );
+            let _ = forward_handle.take();
+            return Ok(());
+        };
+
+        let _ = forward_handle.take();
+
+        let (reverse_handle_raw, reverse_ip_addr) = match self
+            .ip_allocator
+            .acquire_handle_excluding(IpTaskKind::QuoteSell, IpLeaseMode::Ephemeral, forward_ip)
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                events::quote_end(
+                    strategy_name,
+                    &task,
+                    false,
+                    quote_started.elapsed(),
+                    batch_id,
+                    forward_ip,
+                );
+                return Err(EngineError::NetworkResource(err));
+            }
+        };
+        let mut reverse_handle = Some(reverse_handle_raw);
+        let reverse_ip = Some(reverse_ip_addr);
+
+        let reverse_pair = task.pair.reversed();
+        let reverse_start = Instant::now();
+        let reverse_result = self
+            .quote_executor
+            .quote_once(
+                &reverse_pair,
+                second_amount,
+                &self.settings.quote,
+                reverse_handle
+                    .as_ref()
+                    .expect("reverse handle available for second quote"),
+            )
+            .await;
+        let reverse_duration = Some(reverse_start.elapsed());
+
+        let reverse_quote = match reverse_result {
+            Err(err) => {
+                events::quote_end(
+                    strategy_name,
+                    &task,
+                    false,
+                    quote_started.elapsed(),
+                    batch_id,
+                    forward_ip,
+                );
+                if let Some(handle) = reverse_handle.take() {
+                    if let Some(outcome) = quote_dispatcher::classify_ip_outcome(&err) {
+                        handle.mark_outcome(outcome);
+                    }
+                }
+                return Err(err);
+            }
+            Ok(None) => {
+                events::quote_end(
+                    strategy_name,
+                    &task,
+                    false,
+                    quote_started.elapsed(),
+                    batch_id,
+                    forward_ip,
+                );
+                let _ = reverse_handle.take();
+                return Ok(());
+            }
+            Ok(Some(value)) => value,
+        };
+
+        let _ = reverse_handle.take();
+
+        if !crate::engine::quote::aggregator_kinds_match(&task, &forward_quote, &reverse_quote) {
+            events::quote_end(
+                strategy_name,
+                &task,
+                false,
+                quote_started.elapsed(),
+                batch_id,
+                forward_ip,
+            );
+            return Ok(());
+        }
+
+        let double_quote = DoubleQuote {
+            forward: forward_quote,
+            reverse: reverse_quote,
+        };
+
         events::quote_end(
             strategy_name,
             &task,
             true,
             quote_started.elapsed(),
             batch_id,
-            local_ip,
+            forward_ip,
         );
+
         let forward_out = double_quote.forward.out_amount();
         let reverse_out = double_quote.reverse.out_amount();
         let aggregator = format!("{:?}", double_quote.forward.kind());
@@ -1031,7 +1167,7 @@ where
             forward_out,
             reverse_out,
             batch_id,
-            local_ip,
+            forward_ip,
         );
 
         let opportunity =
@@ -1042,10 +1178,55 @@ where
                 Some(value) => value,
                 None => return Ok(()),
             };
+
+        self.log_opportunity_discovery(
+            &task,
+            &opportunity,
+            Some(forward_duration),
+            reverse_duration,
+            forward_ip,
+            reverse_ip,
+        );
         events::profit_detected(strategy_name, &opportunity);
 
         let plan = ExecutionPlan::with_deadline(opportunity, self.settings.landing_timeout);
         self.execute_plan(plan).await
+    }
+
+    fn log_opportunity_discovery(
+        &self,
+        task: &QuoteTask,
+        opportunity: &SwapOpportunity,
+        forward_duration: Option<Duration>,
+        reverse_duration: Option<Duration>,
+        forward_ip: Option<IpAddr>,
+        reverse_ip: Option<IpAddr>,
+    ) {
+        let forward_ms = forward_duration
+            .map(|d| format!("{:.3}", d.as_secs_f64() * 1_000.0))
+            .unwrap_or_else(|| "-".to_string());
+        let reverse_ms = reverse_duration
+            .map(|d| format!("{:.3}", d.as_secs_f64() * 1_000.0))
+            .unwrap_or_else(|| "-".to_string());
+        let ip_summary = match (forward_ip, reverse_ip) {
+            (Some(f), Some(r)) if f == r => f.to_string(),
+            (Some(f), Some(r)) => format!("{},{}", f, r),
+            (Some(f), None) => f.to_string(),
+            (None, Some(r)) => r.to_string(),
+            _ => "-".to_string(),
+        };
+
+        info!(
+            target: "engine::opportunity",
+            "本次机会 base_mint={} amount_in={} forward_ms={} reverse_ms={} profit={} net_profit={} ip={}",
+            task.pair.input_mint,
+            opportunity.amount_in,
+            forward_ms,
+            reverse_ms,
+            opportunity.profit_lamports,
+            opportunity.net_profit(),
+            ip_summary,
+        );
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
@@ -1368,22 +1549,7 @@ where
                 .submit_plan(plan.as_ref(), deadline, &strategy_label)
                 .await
             {
-                Ok(receipt) => {
-                    if let Some(sig) = receipt.signature.as_deref() {
-                        info!(
-                            target: "engine::lander",
-                            strategy = strategy_label.as_str(),
-                            signature = sig,
-                            "lander submission succeeded"
-                        );
-                    } else {
-                        info!(
-                            target: "engine::lander",
-                            strategy = strategy_label.as_str(),
-                            "lander submission succeeded"
-                        );
-                    }
-                }
+                Ok(_receipt) => {}
                 Err(err) => {
                     let sig = tx_signature_for_log.as_deref().unwrap_or("");
                     warn!(
@@ -1407,17 +1573,6 @@ where
             deadline,
         } = plan;
         let strategy_name = self.strategy.name();
-        info!(
-            target: "engine::opportunity",
-            input_mint = %opportunity.pair.input_mint,
-            output_mint = %opportunity.pair.output_mint,
-            amount_in = opportunity.amount_in,
-            profit = opportunity.profit_lamports,
-            tip = opportunity.tip_lamports,
-            net_profit = opportunity.net_profit(),
-            "检测到套利机会"
-        );
-
         let swap_lease = match self
             .ip_allocator
             .acquire(IpTaskKind::SwapInstruction, IpLeaseMode::Ephemeral)

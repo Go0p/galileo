@@ -21,7 +21,7 @@ use crate::strategy::types::TradePair;
 use solana_sdk::pubkey::Pubkey;
 
 use super::error::{EngineError, EngineResult};
-use super::types::{DoubleQuote, QuoteTask};
+use super::types::QuoteTask;
 
 #[derive(Debug, Clone)]
 pub struct QuoteConfig {
@@ -144,68 +144,7 @@ impl QuoteExecutor {
     }
 
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
-    pub async fn round_trip(
-        &self,
-        task: &QuoteTask,
-        config: &QuoteConfig,
-        lease: &IpLeaseHandle,
-    ) -> EngineResult<Option<DoubleQuote>> {
-        let forward = match self
-            .quote_once(&task.pair, task.amount, config, lease)
-            .await?
-        {
-            Some(value) => value,
-            None => return Ok(None),
-        };
-
-        let first_out = forward.out_amount() as u128;
-        if first_out == 0 {
-            debug!(
-                target: "engine::quote",
-                input = %task.pair.input_mint,
-                output = %task.pair.output_mint,
-                amount = task.amount,
-                "首腿报价输出为零，跳过"
-            );
-            return Ok(None);
-        }
-
-        let second_amount = match u64::try_from(first_out) {
-            Ok(value) => value,
-            Err(_) => {
-                debug!(
-                    target: "engine::quote",
-                    amount = first_out,
-                    "首腿输出超过 u64，可疑路线，跳过"
-                );
-                return Ok(None);
-            }
-        };
-
-        let reverse_pair = task.pair.reversed();
-        let reverse = match self
-            .quote_once(&reverse_pair, second_amount, config, lease)
-            .await?
-        {
-            Some(value) => value,
-            None => return Ok(None),
-        };
-
-        if forward.kind() != reverse.kind() {
-            debug!(
-                target: "engine::quote",
-                forward_kind = ?forward.kind(),
-                reverse_kind = ?reverse.kind(),
-                "前后腿聚合器类型不一致，跳过"
-            );
-            return Ok(None);
-        }
-
-        Ok(Some(DoubleQuote { forward, reverse }))
-    }
-
-    #[cfg_attr(feature = "hotpath", hotpath::measure)]
-    async fn quote_once(
+    pub async fn quote_once(
         &self,
         pair: &TradePair,
         amount: u64,
@@ -448,6 +387,52 @@ impl QuoteExecutor {
                 Ok(None)
             }
         }
+    }
+}
+
+pub fn second_leg_amount(task: &QuoteTask, forward: &QuoteResponseVariant) -> Option<u64> {
+    let first_out = forward.out_amount() as u128;
+    if first_out == 0 {
+        debug!(
+            target: "engine::quote",
+            input = %task.pair.input_mint,
+            output = %task.pair.output_mint,
+            amount = task.amount,
+            "首腿报价输出为零，跳过"
+        );
+        return None;
+    }
+
+    match u64::try_from(first_out) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            debug!(
+                target: "engine::quote",
+                amount = first_out,
+                "首腿输出超过 u64，可疑路线，跳过"
+            );
+            None
+        }
+    }
+}
+
+pub fn aggregator_kinds_match(
+    task: &QuoteTask,
+    forward: &QuoteResponseVariant,
+    reverse: &QuoteResponseVariant,
+) -> bool {
+    if forward.kind() == reverse.kind() {
+        true
+    } else {
+        debug!(
+            target: "engine::quote",
+            forward_kind = ?forward.kind(),
+            reverse_kind = ?reverse.kind(),
+            input = %task.pair.input_mint,
+            output = %task.pair.output_mint,
+            "前后腿聚合器类型不一致，跳过"
+        );
+        false
     }
 }
 

@@ -33,6 +33,7 @@ use crate::multi_leg::{
     orchestrator::MultiLegOrchestrator,
     providers::{
         dflow::DflowLegProvider,
+        kamino::KaminoLegProvider,
         titan::{TitanLegProvider, TitanWsQuoteSource},
         ultra::UltraLegProvider,
     },
@@ -202,6 +203,11 @@ async fn run_blind_engine(
         ctx.set_dynamic_compute_unit_limit(
             MultiLegAggregatorKind::Dflow,
             dflow_defaults.dynamic_compute_unit_limit,
+        );
+        let kamino_defaults = &config.galileo.engine.kamino.quote_config;
+        ctx.set_wrap_and_unwrap_sol(
+            MultiLegAggregatorKind::Kamino,
+            kamino_defaults.wrap_and_unwrap_sol,
         );
         ctx
     });
@@ -379,6 +385,7 @@ fn build_multi_leg_runtime(
 
     register_ultra_leg(&mut orchestrator, config, identity)?;
     register_dflow_leg(&mut orchestrator, config)?;
+    register_kamino_leg(&mut orchestrator, config)?;
     register_titan_leg(&mut orchestrator, config)?;
 
     if orchestrator.buy_legs().is_empty() {
@@ -566,6 +573,67 @@ fn register_dflow_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
         LegSide::from(leg),
         Vec::new(),
         Vec::new(),
+    );
+    orchestrator.register_owned_provider(provider);
+    Ok(())
+}
+
+fn register_kamino_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfig) -> Result<()> {
+    let kamino_cfg = &config.galileo.engine.kamino;
+    if !kamino_cfg.enable {
+        return Ok(());
+    }
+
+    let leg = kamino_cfg
+        .leg
+        .ok_or_else(|| anyhow!("kamino.leg 必须在 multi-legs 模式下配置"))?;
+    let quote_base = kamino_cfg
+        .api_quote_base
+        .as_ref()
+        .ok_or_else(|| anyhow!("kamino.api_quote_base 未配置"))?
+        .trim()
+        .to_string();
+    if quote_base.is_empty() {
+        return Err(anyhow!("kamino.api_quote_base 不能为空"));
+    }
+    let swap_base = kamino_cfg
+        .api_swap_base
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| quote_base.clone());
+
+    let proxy_override = kamino_cfg
+        .api_proxy
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let global_proxy = resolve_global_http_proxy(&config.galileo.global)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let http_client = build_http_client_with_options(
+        proxy_override.as_deref(),
+        global_proxy.clone(),
+        false,
+        None,
+        None,
+    )?;
+    let http_pool =
+        build_http_client_pool(proxy_override.clone(), global_proxy.clone(), false, None);
+
+    let kamino_client = KaminoApiClient::with_ip_pool(
+        http_client,
+        quote_base,
+        swap_base,
+        &config.galileo.bot,
+        &config.galileo.global.logging,
+        Some(http_pool),
+    );
+
+    let provider = KaminoLegProvider::new(
+        kamino_client,
+        LegSide::from(leg),
+        kamino_cfg.quote_config.clone(),
     );
     orchestrator.register_owned_provider(provider);
     Ok(())

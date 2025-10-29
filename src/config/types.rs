@@ -362,6 +362,8 @@ pub struct KaminoEngineConfig {
     #[serde(default)]
     pub enable: bool,
     #[serde(default)]
+    pub leg: Option<LegRole>,
+    #[serde(default)]
     pub api_quote_base: Option<String>,
     #[serde(default)]
     pub api_swap_base: Option<String>,

@@ -41,6 +41,7 @@ pub enum AggregatorKind {
     Ultra,
     Dflow,
     Titan,
+    Kamino,
 }
 
 impl fmt::Display for AggregatorKind {
@@ -49,6 +50,7 @@ impl fmt::Display for AggregatorKind {
             AggregatorKind::Ultra => f.write_str("ultra"),
             AggregatorKind::Dflow => f.write_str("dflow"),
             AggregatorKind::Titan => f.write_str("titan"),
+            AggregatorKind::Kamino => f.write_str("kamino"),
         }
     }
 }

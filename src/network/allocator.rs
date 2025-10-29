@@ -102,6 +102,10 @@ impl IpAllocator {
         self.inner.slots.len()
     }
 
+    pub fn has_multiple_slots(&self) -> bool {
+        self.total_slots() > 1
+    }
+
     pub fn per_ip_inflight_limit(&self) -> Option<usize> {
         self.inner.per_ip_inflight_limit
     }
@@ -124,6 +128,50 @@ impl IpAllocator {
             .iter()
             .map(|slot| slot.ip())
             .collect::<Vec<_>>()
+    }
+
+    pub async fn acquire_excluding(
+        &self,
+        kind: IpTaskKind,
+        mode: IpLeaseMode,
+        exclude: Option<std::net::IpAddr>,
+    ) -> NetworkResult<IpLease> {
+        if exclude.is_none() || !self.has_multiple_slots() {
+            return self.acquire(kind, mode).await;
+        }
+
+        let excluded_ip = exclude.expect("checked above");
+        let total_slots = self.total_slots();
+        let max_attempts = total_slots.saturating_mul(2).max(1);
+        let mut attempts = 0usize;
+
+        loop {
+            let lease = self.acquire(kind, mode).await?;
+            let handle = lease.handle();
+            let ip = handle.ip();
+            drop(handle);
+
+            if ip != excluded_ip || attempts + 1 >= max_attempts {
+                return Ok(lease);
+            }
+
+            attempts += 1;
+            drop(lease);
+            tokio::task::yield_now().await;
+        }
+    }
+
+    pub async fn acquire_handle_excluding(
+        &self,
+        kind: IpTaskKind,
+        mode: IpLeaseMode,
+        exclude: Option<std::net::IpAddr>,
+    ) -> NetworkResult<(IpLeaseHandle, std::net::IpAddr)> {
+        let lease = self.acquire_excluding(kind, mode, exclude).await?;
+        let handle = lease.handle();
+        let ip = handle.ip();
+        drop(lease);
+        Ok((handle, ip))
     }
 
     pub async fn acquire(&self, kind: IpTaskKind, mode: IpLeaseMode) -> NetworkResult<IpLease> {

@@ -8,8 +8,8 @@ use solana_message::VersionedMessage;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::message::AddressLookupTableAccount;
 use solana_sdk::pubkey::Pubkey;
-use spl_associated_token_account::get_associated_token_address;
-use spl_token::solana_program::pubkey::Pubkey as SplPubkey;
+use spl_associated_token_account::id as associated_token_program_id;
+use spl_token::id as spl_token_program_id;
 use thiserror::Error;
 use tracing::{error, warn};
 
@@ -293,8 +293,11 @@ fn build_account_rewrites(
 }
 
 fn associated_address(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
-    let owner_spl = SplPubkey::new_from_array(owner.to_bytes());
-    let mint_spl = SplPubkey::new_from_array(mint.to_bytes());
-    let ata = get_associated_token_address(&owner_spl, &mint_spl);
-    Pubkey::new_from_array(ata.to_bytes())
+    let associated_program = Pubkey::new_from_array(associated_token_program_id().to_bytes());
+    let token_program = Pubkey::new_from_array(spl_token_program_id().to_bytes());
+    let (ata, _) = Pubkey::find_program_address(
+        &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
+        &associated_program,
+    );
+    ata
 }

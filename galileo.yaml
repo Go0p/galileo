@@ -158,6 +158,8 @@ engine:
     num_quotes: 2
   kamino:
     enable: true
+    # 腿方向：可选 buy / sell，用于套利腿角色匹配
+    leg: "buy"
     api_quote_base: "https://api.kamino.finance"
     api_swap_base: "https://api.kamino.finance"
     api_proxy: "http://192.168.124.4:9999"

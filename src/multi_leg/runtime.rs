@@ -573,6 +573,7 @@ fn to_ip_task_kind(descriptor: &LegDescriptor) -> IpTaskKind {
         AggregatorKind::Ultra => MultiLegAggregatorKind::Ultra,
         AggregatorKind::Dflow => MultiLegAggregatorKind::Dflow,
         AggregatorKind::Titan => MultiLegAggregatorKind::Titan,
+        AggregatorKind::Kamino => MultiLegAggregatorKind::Kamino,
     };
     let side = match descriptor.side {
         LegSide::Buy => MultiLegLegSide::Buy,

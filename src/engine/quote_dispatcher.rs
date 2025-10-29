@@ -30,7 +30,10 @@ pub struct QuoteDispatcher {
 pub struct QuoteDispatchOutcome {
     pub batch: QuoteBatchPlan,
     pub quote: Option<DoubleQuote>,
-    pub local_ip: Option<IpAddr>,
+    pub forward_ip: Option<IpAddr>,
+    pub reverse_ip: Option<IpAddr>,
+    pub forward_duration: Option<Duration>,
+    pub reverse_duration: Option<Duration>,
 }
 
 impl QuoteDispatcher {
@@ -86,6 +89,9 @@ impl QuoteDispatcher {
                             Output = (
                                 QuoteBatchPlan,
                                 Option<IpAddr>,
+                                Option<IpAddr>,
+                                Option<Duration>,
+                                Option<Duration>,
                                 Result<Option<DoubleQuote>, EngineError>,
                             ),
                         > + Send,
@@ -109,33 +115,138 @@ impl QuoteDispatcher {
                 let permit = match semaphore {
                     Some(ref sem) => match acquire_permit(sem).await {
                         Ok(permit) => Some(permit),
-                        Err(err) => return (batch, None, Err(err)),
+                        Err(err) => return (batch, None, None, None, None, Err(err)),
                     },
                     None => None,
                 };
 
-                let lease = dispatcher
+                let forward = dispatcher
                     .ip_allocator
-                    .acquire(IpTaskKind::QuoteBuy, IpLeaseMode::Ephemeral)
+                    .acquire_handle_excluding(IpTaskKind::QuoteBuy, IpLeaseMode::Ephemeral, None)
                     .await;
-                let lease = match lease {
-                    Ok(lease) => lease,
+                let (forward_handle_raw, forward_ip_addr) = match forward {
+                    Ok(value) => value,
                     Err(err) => {
                         if let Some(permit) = permit {
                             drop(permit);
                         }
-                        return (batch, None, Err(EngineError::NetworkResource(err)));
+                        return (
+                            batch,
+                            None,
+                            None,
+                            None,
+                            None,
+                            Err(EngineError::NetworkResource(err)),
+                        );
                     }
                 };
-                let lease_handle = lease.handle();
-                drop(lease);
-                let local_ip = Some(lease_handle.ip());
-
+                let forward_ip = Some(forward_ip_addr);
+                let mut forward_handle = Some(forward_handle_raw);
                 let task = QuoteTask::new(batch.pair.clone(), batch.amount);
-                events::quote_start(strategy.as_str(), &task, Some(batch.batch_id), local_ip);
+                events::quote_start(strategy.as_str(), &task, Some(batch.batch_id), forward_ip);
                 let started = Instant::now();
 
-                let result = executor.round_trip(&task, &config, &lease_handle).await;
+                let forward_start = Instant::now();
+                let forward_result = executor
+                    .quote_once(
+                        &task.pair,
+                        task.amount,
+                        &config,
+                        forward_handle
+                            .as_ref()
+                            .expect("forward handle available for initial quote"),
+                    )
+                    .await;
+                let forward_duration = Some(forward_start.elapsed());
+                let mut reverse_ip: Option<IpAddr> = None;
+                let mut reverse_duration: Option<Duration> = None;
+
+                let result: Result<Option<DoubleQuote>, EngineError> = match forward_result {
+                    Err(err) => Err(err),
+                    Ok(None) => Ok(None),
+                    Ok(Some(forward_quote)) => {
+                        match crate::engine::quote::second_leg_amount(&task, &forward_quote) {
+                            None => {
+                                let _ = forward_handle.take();
+                                Ok(None)
+                            }
+                            Some(second_amount) => {
+                                let _ = forward_handle.take();
+
+                                let (reverse_handle_raw, ip) = match dispatcher
+                                    .ip_allocator
+                                    .acquire_handle_excluding(
+                                        IpTaskKind::QuoteSell,
+                                        IpLeaseMode::Ephemeral,
+                                        forward_ip,
+                                    )
+                                    .await
+                                {
+                                    Ok(value) => value,
+                                    Err(err) => {
+                                        if let Some(permit) = permit {
+                                            drop(permit);
+                                        }
+                                        return (
+                                            batch,
+                                            forward_ip,
+                                            None,
+                                            forward_duration,
+                                            None,
+                                            Err(EngineError::NetworkResource(err)),
+                                        );
+                                    }
+                                };
+                                reverse_ip = Some(ip);
+                                let mut reverse_handle = Some(reverse_handle_raw);
+
+                                let reverse_pair = task.pair.reversed();
+                                let reverse_start = Instant::now();
+                                let reverse_result = executor
+                                    .quote_once(
+                                        &reverse_pair,
+                                        second_amount,
+                                        &config,
+                                        reverse_handle
+                                            .as_ref()
+                                            .expect("reverse handle available for double quote"),
+                                    )
+                                    .await;
+                                reverse_duration = Some(reverse_start.elapsed());
+
+                                match reverse_result {
+                                    Err(err) => {
+                                        if let Some(handle) = reverse_handle.take() {
+                                            if let Some(outcome) = classify_ip_outcome(&err) {
+                                                handle.mark_outcome(outcome);
+                                            }
+                                        }
+                                        Err(err)
+                                    }
+                                    Ok(None) => {
+                                        let _ = reverse_handle.take();
+                                        Ok(None)
+                                    }
+                                    Ok(Some(reverse_quote)) => {
+                                        let _ = reverse_handle.take();
+                                        if crate::engine::quote::aggregator_kinds_match(
+                                            &task,
+                                            &forward_quote,
+                                            &reverse_quote,
+                                        ) {
+                                            Ok(Some(DoubleQuote {
+                                                forward: forward_quote,
+                                                reverse: reverse_quote,
+                                            }))
+                                        } else {
+                                            Ok(None)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
 
                 match &result {
                     Ok(Some(_)) => {
@@ -145,7 +256,7 @@ impl QuoteDispatcher {
                             true,
                             started.elapsed(),
                             Some(batch.batch_id),
-                            local_ip,
+                            forward_ip,
                         );
                     }
                     Ok(None) => {
@@ -155,7 +266,7 @@ impl QuoteDispatcher {
                             false,
                             started.elapsed(),
                             Some(batch.batch_id),
-                            local_ip,
+                            forward_ip,
                         );
                     }
                     Err(err) => {
@@ -165,33 +276,53 @@ impl QuoteDispatcher {
                             false,
                             started.elapsed(),
                             Some(batch.batch_id),
-                            local_ip,
+                            forward_ip,
                         );
-                        if let Some(outcome) = classify_ip_outcome(err) {
-                            lease_handle.mark_outcome(outcome);
+                        if let Some(handle) = forward_handle.take() {
+                            if let Some(outcome) = classify_ip_outcome(err) {
+                                handle.mark_outcome(outcome);
+                            }
                         }
                     }
                 }
+
+                let _ = forward_handle.take();
 
                 if let Some(permit) = permit {
                     drop(permit);
                 }
 
-                drop(lease_handle);
-
-                (batch, local_ip, result)
+                (
+                    batch,
+                    forward_ip,
+                    reverse_ip,
+                    forward_duration,
+                    reverse_duration,
+                    result,
+                )
             }));
         }
 
         let mut outcomes = Vec::new();
         let mut first_error: Option<EngineError> = None;
 
-        while let Some((batch, local_ip, result)) = futures.next().await {
+        while let Some((
+            batch,
+            forward_ip,
+            reverse_ip,
+            forward_duration,
+            reverse_duration,
+            result,
+        )) = futures.next().await
+        {
             match result {
                 Ok(quote) => outcomes.push(QuoteDispatchOutcome {
                     batch,
                     quote,
-                    local_ip,
+                    forward_ip,
+                    reverse_ip,
+                    forward_duration,
+                    reverse_duration,
                 }),
                 Err(err) => {
                     if first_error.is_none() {

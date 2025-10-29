@@ -257,6 +257,19 @@ impl TransactionBuilder {
 
         let message =
             compile_message(&identity.pubkey, &instructions, &lookup_accounts, blockhash)?;
+        let signer_slice: Vec<_> = message
+            .account_keys
+            .iter()
+            .take(message.header.num_required_signatures as usize)
+            .collect();
+        debug!(
+            target: "engine::builder",
+            payer = %identity.pubkey,
+            required_signers = message.header.num_required_signatures,
+            total_static_accounts = message.account_keys.len(),
+            signers = ?signer_slice,
+            "构建 VersionedMessage 成功"
+        );
         let versioned = VersionedMessage::V0(message);
         let signer = identity.signer.clone();
         let tx = VersionedTransaction::try_new(versioned, &[signer.as_ref()])
