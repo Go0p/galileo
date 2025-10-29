@@ -37,7 +37,8 @@ use super::transaction::{
     apply_replacements, build_create_ata_instruction, collect_instruction_signers,
     decode_versioned_transaction, derive_associated_token_address, extract_compute_unit_limit,
     instructions_from_message, lookup_addresses, message_required_signatures, read_route_in_amount,
-    resolve_lookup_accounts, split_compute_budget, update_route_in_amount,
+    read_route_quoted_out_amount, resolve_lookup_accounts, split_compute_budget,
+    update_route_in_amount, update_route_quoted_out_amount,
 };
 pub(crate) struct CopyWalletRunner {
     wallet: CopyWalletConfig,
@@ -86,8 +87,10 @@ impl BaseMintInfo {
 enum AmountAdjustment {
     NotNeeded,
     Applied {
-        original: u64,
-        adjusted: u64,
+        original_in: u64,
+        adjusted_in: u64,
+        original_out: u64,
+        adjusted_out: u64,
         mint: Pubkey,
         available: u64,
     },
@@ -439,8 +442,10 @@ impl CopyWalletRunner {
                 return Ok(());
             }
             AmountAdjustment::Applied {
-                original,
-                adjusted,
+                original_in,
+                adjusted_in,
+                original_out,
+                adjusted_out,
                 mint,
                 available,
             } => {
@@ -449,10 +454,12 @@ impl CopyWalletRunner {
                     wallet = %self.wallet_pubkey,
                     signature = %signature,
                     mint = %mint,
-                    original_in = original,
-                    adjusted_in = adjusted,
+                    original_in,
+                    adjusted_in,
+                    original_out,
+                    adjusted_out,
                     available,
-                    "已根据身份余额调整 route in_amount"
+                    "已根据身份余额调整 route 金额"
                 );
             }
             AmountAdjustment::NotNeeded => {}
@@ -782,8 +789,10 @@ impl CopyWalletRunner {
             return Ok(AmountAdjustment::Skip);
         }
 
-        let mut target_amount: Option<u64> = None;
-        let mut original_amount: Option<u64> = None;
+        let mut target_in: Option<u64> = None;
+        let mut target_out: Option<u64> = None;
+        let mut original_in: Option<u64> = None;
+        let mut original_out: Option<u64> = None;
         let mut updated = false;
         let mut encountered = false;
 
@@ -793,29 +802,75 @@ impl CopyWalletRunner {
             }
 
             let kind = crate::jupiter_parser::classify(&instruction.data);
-            let current = match read_route_in_amount(kind, &instruction.data) {
+            let current_in = match read_route_in_amount(kind, &instruction.data) {
+                Some(value) => value,
+                None => continue,
+            };
+            let current_out = match read_route_quoted_out_amount(kind, &instruction.data) {
                 Some(value) => value,
                 None => continue,
             };
 
             encountered = true;
-            if target_amount.is_none() {
-                let capped = current.min(available);
-                if capped == 0 {
+            if target_in.is_none() {
+                if current_out < current_in {
+                    debug!(
+                        target: "strategy::copy",
+                        mint = %base.mint,
+                        current_in,
+                        current_out,
+                        "copy 指令净收益为负，跳过复制"
+                    );
                     return Ok(AmountAdjustment::Skip);
                 }
-                target_amount = Some(capped);
-                original_amount = Some(current);
+
+                let profit = current_out - current_in;
+                let capped_in = current_in.min(available);
+                if capped_in == 0 {
+                    return Ok(AmountAdjustment::Skip);
+                }
+                let desired_out = match capped_in.checked_add(profit) {
+                    Some(value) => value,
+                    None => {
+                        debug!(
+                            target: "strategy::copy",
+                            mint = %base.mint,
+                            profit,
+                            "base mint 裁剪导致金额溢出，跳过复制"
+                        );
+                        return Ok(AmountAdjustment::Skip);
+                    }
+                };
+                target_in = Some(capped_in);
+                target_out = Some(desired_out);
+                original_in = Some(current_in);
+                original_out = Some(current_out);
             }
 
-            let desired = target_amount.expect("target amount must exist");
-            if desired != current {
-                if let Err(err) = update_route_in_amount(kind, &mut instruction.data, desired) {
+            let desired_in = target_in.expect("target amount must exist");
+            let desired_out = target_out.expect("target out must exist");
+
+            if desired_in != current_in {
+                if let Err(err) = update_route_in_amount(kind, &mut instruction.data, desired_in) {
                     warn!(
                         target: "strategy::copy",
                         mint = %base.mint,
                         error = %err,
                         "调整 route 指令金额失败，跳过此次复制"
+                    );
+                    return Ok(AmountAdjustment::Skip);
+                }
+                updated = true;
+            }
+            if desired_out != current_out {
+                if let Err(err) =
+                    update_route_quoted_out_amount(kind, &mut instruction.data, desired_out)
+                {
+                    warn!(
+                        target: "strategy::copy",
+                        mint = %base.mint,
+                        error = %err,
+                        "调整 route quoted_out_amount 失败，跳过此次复制"
                     );
                     return Ok(AmountAdjustment::Skip);
                 }
@@ -830,19 +885,21 @@ impl CopyWalletRunner {
             return Ok(AmountAdjustment::NotNeeded);
         }
 
-        if let Some(adjusted) = target_amount {
-            if adjusted == 0 {
+        if let Some(adjusted_in) = target_in {
+            if adjusted_in == 0 {
                 return Ok(AmountAdjustment::Skip);
             }
             let mut cache = self.owned_token_accounts.write().await;
             if let Some(entry) = cache.get_mut(&base.mint) {
                 if entry.account == base_ata {
-                    entry.balance = entry.balance.map(|bal| bal.saturating_sub(adjusted));
+                    entry.balance = entry.balance.map(|bal| bal.saturating_sub(adjusted_in));
                 }
             }
             return Ok(AmountAdjustment::Applied {
-                original: original_amount.unwrap_or(adjusted),
-                adjusted,
+                original_in: original_in.unwrap_or(adjusted_in),
+                adjusted_in,
+                original_out: original_out.unwrap_or(target_out.unwrap_or(adjusted_in)),
+                adjusted_out: target_out.unwrap_or(adjusted_in),
                 mint: base.mint,
                 available,
             });

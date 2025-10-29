@@ -101,6 +101,16 @@ fn route_legacy_in_amount_offset(data: &[u8]) -> Option<usize> {
     Some(data.len().saturating_sub(rest.len()))
 }
 
+fn route_legacy_quoted_out_offset(data: &[u8]) -> Option<usize> {
+    let mut rest = data.get(8..)?;
+    let len = read_u32(&mut rest)? as usize;
+    if len != 0 {
+        return None;
+    }
+    let in_amount_offset = data.len().saturating_sub(rest.len());
+    Some(in_amount_offset + 8)
+}
+
 pub(crate) fn read_route_in_amount(kind: RouteKind, data: &[u8]) -> Option<u64> {
     match kind {
         RouteKind::RouteV2 => read_u64_at(data, 8),
@@ -124,6 +134,36 @@ pub(crate) fn update_route_in_amount(kind: RouteKind, data: &mut [u8], value: u6
             write_u64_at(data, offset, value)
         }
         _ => Err(anyhow!("当前 route 指令类型不支持 in_amount 调整")),
+    }
+}
+
+pub(crate) fn read_route_quoted_out_amount(kind: RouteKind, data: &[u8]) -> Option<u64> {
+    match kind {
+        RouteKind::RouteV2 => read_u64_at(data, 16),
+        RouteKind::SharedRouteV2 => read_u64_at(data, 17),
+        RouteKind::Route => {
+            let offset = route_legacy_quoted_out_offset(data)?;
+            read_u64_at(data, offset)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn update_route_quoted_out_amount(
+    kind: RouteKind,
+    data: &mut [u8],
+    value: u64,
+) -> Result<()> {
+    match kind {
+        RouteKind::RouteV2 => write_u64_at(data, 16, value),
+        RouteKind::SharedRouteV2 => write_u64_at(data, 17, value),
+        RouteKind::Route => {
+            let offset = route_legacy_quoted_out_offset(data).ok_or_else(|| {
+                anyhow!("Route 指令 route_plan 非空或数据无效，无法写入 quoted_out_amount")
+            })?;
+            write_u64_at(data, offset, value)
+        }
+        _ => Err(anyhow!("当前 route 指令类型不支持 quoted_out_amount 调整")),
     }
 }
 
