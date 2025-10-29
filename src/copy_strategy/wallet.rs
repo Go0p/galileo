@@ -766,19 +766,14 @@ impl CopyWalletRunner {
             return Ok(AmountAdjustment::Skip);
         }
 
-        let available = {
-            let cache = self.owned_token_accounts.read().await;
-            cache
-                .get(&base.mint)
-                .and_then(|entry| {
-                    if entry.account == base_ata {
-                        entry.balance
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(0)
-        };
+        let available = self
+            .owned_token_accounts
+            .read()
+            .await
+            .get(&base.mint)
+            .and_then(|entry| (entry.account == base_ata).then_some(entry.balance))
+            .flatten()
+            .unwrap_or(0);
 
         if available == 0 {
             debug!(
@@ -889,22 +884,11 @@ impl CopyWalletRunner {
             if adjusted_in == 0 {
                 return Ok(AmountAdjustment::Skip);
             }
-            let adjusted_out = target_out.unwrap_or(adjusted_in);
-            let mut cache = self.owned_token_accounts.write().await;
-            if let Some(entry) = cache.get_mut(&base.mint) {
-                if entry.account == base_ata {
-                    let current = entry.balance.unwrap_or(available);
-                    let updated = current
-                        .saturating_sub(adjusted_in)
-                        .saturating_add(adjusted_out);
-                    entry.balance = Some(updated);
-                }
-            }
             return Ok(AmountAdjustment::Applied {
                 original_in: original_in.unwrap_or(adjusted_in),
                 adjusted_in,
-                original_out: original_out.unwrap_or(adjusted_out),
-                adjusted_out,
+                original_out: original_out.unwrap_or(target_out.unwrap_or(adjusted_in)),
+                adjusted_out: target_out.unwrap_or(adjusted_in),
                 mint: base.mint,
                 available,
             });
