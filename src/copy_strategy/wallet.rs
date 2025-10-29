@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
@@ -30,6 +33,7 @@ use crate::lander::{Deadline, LanderFactory, LanderStack};
 use crate::monitoring::events;
 use crate::network::IpAllocator;
 use crate::txs::jupiter::types::JUPITER_V6_PROGRAM_ID;
+use tokio::sync::{Mutex, Notify};
 
 use super::constants::MAX_SEEN_SIGNATURES;
 use super::grpc::{YellowstoneTransactionClient, parse_transaction_update};
@@ -54,6 +58,7 @@ pub(crate) struct CopyWalletRunner {
     landing_timeout: Duration,
     dispatch_strategy: DispatchStrategy,
     compute_unit_price_mode: Option<ComputeUnitPriceMode>,
+    cu_limit_multiplier: f64,
     dry_run: bool,
     seen_signatures: tokio::sync::Mutex<SeenSignatures>,
     intermediate_mints: Arc<HashSet<Pubkey>>,
@@ -65,6 +70,65 @@ struct CopyTask {
     transaction: VersionedTransaction,
     token_balances: Option<TransactionTokenBalances>,
     loaded_addresses: Option<TransactionLoadedAddresses>,
+}
+
+struct CopyTaskQueue {
+    capacity: usize,
+    inner: Mutex<VecDeque<CopyTask>>,
+    notify: Notify,
+    closed: AtomicBool,
+}
+
+impl CopyTaskQueue {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            inner: Mutex::new(VecDeque::with_capacity(capacity)),
+            notify: Notify::new(),
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    async fn push(&self, task: CopyTask) -> bool {
+        let mut guard = self.inner.lock().await;
+        let mut dropped = false;
+        if guard.len() >= self.capacity {
+            guard.pop_front();
+            dropped = true;
+        }
+        guard.push_back(task);
+        drop(guard);
+        self.notify.notify_one();
+        dropped
+    }
+
+    async fn pop(&self) -> Option<CopyTask> {
+        loop {
+            if self.closed.load(Ordering::SeqCst) {
+                let mut guard = self.inner.lock().await;
+                if let Some(task) = guard.pop_front() {
+                    return Some(task);
+                }
+                return None;
+            }
+
+            let maybe_task = {
+                let mut guard = self.inner.lock().await;
+                guard.pop_front()
+            };
+
+            if let Some(task) = maybe_task {
+                return Some(task);
+            }
+
+            self.notify.notified().await;
+        }
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
 }
 
 struct ReplacementPlan {
@@ -153,6 +217,18 @@ impl CopyWalletRunner {
         let owned_token_accounts =
             Self::load_existing_token_mints(&rpc_client, &identity.pubkey).await?;
 
+        let cu_limit_multiplier = if wallet.cu_limit_multiplier <= 0.0 {
+            warn!(
+                target: "strategy::copy",
+                wallet = %wallet_pubkey,
+                configured = wallet.cu_limit_multiplier,
+                "cu_limit_multiplier 必须为正数，回退为 1.0"
+            );
+            1.0
+        } else {
+            wallet.cu_limit_multiplier
+        };
+
         Ok(Self {
             wallet,
             dispatch,
@@ -165,6 +241,7 @@ impl CopyWalletRunner {
             landing_timeout,
             dispatch_strategy,
             compute_unit_price_mode,
+             cu_limit_multiplier,
             dry_run,
             seen_signatures: tokio::sync::Mutex::new(SeenSignatures::new(MAX_SEEN_SIGNATURES)),
             intermediate_mints,
@@ -247,13 +324,14 @@ impl CopyWalletRunner {
             let capacity = usize::try_from(self.dispatch.queue_capacity.max(1))
                 .unwrap_or(1)
                 .max(1);
-            let (tx, mut rx) = tokio::sync::mpsc::channel::<CopyTask>(capacity);
+            let queue = Arc::new(CopyTaskQueue::new(capacity));
             let runner = Arc::clone(&self);
             let semaphore = Arc::clone(&semaphore);
             let queue_interval = Duration::from_millis(self.dispatch.queue_send_interval_ms);
+            let worker_queue = Arc::clone(&queue);
             let handle = tokio::spawn(async move {
                 let mut last_sent_at: Option<Instant> = None;
-                while let Some(task) = rx.recv().await {
+                while let Some(task) = worker_queue.pop().await {
                     if queue_interval != Duration::ZERO {
                         let now = Instant::now();
                         if let Some(prev) = last_sent_at {
@@ -272,12 +350,12 @@ impl CopyWalletRunner {
                     );
                 }
             });
-            Some((tx, handle))
+            Some((queue, handle))
         } else {
             None
         };
 
-        let queue_sender = queue_resources.as_ref().map(|(sender, _)| sender.clone());
+        let task_queue = queue_resources.as_ref().map(|(queue, _)| Arc::clone(queue));
 
         while let Some(update) = stream.next().await.transpose()? {
             if let Some(info) = parse_transaction_update(&update) {
@@ -363,15 +441,15 @@ impl CopyWalletRunner {
                         loaded_addresses: Some(loaded_addresses),
                     };
 
-                    if let Some(sender) = queue_sender.as_ref() {
-                        if let Err(err) = sender.send(task).await {
-                            error!(
+                    if let Some(queue) = task_queue.as_ref() {
+                        let dropped = queue.push(task).await;
+                        if dropped {
+                            warn!(
                                 target: "strategy::copy",
                                 wallet = %self.wallet_pubkey,
-                                error = %err,
-                                "copy 队列发送失败，提前退出"
+                                signature = %signature,
+                                "copy 队列已满，已丢弃最旧任务以保留最新交易"
                             );
-                            break;
                         }
                     } else {
                         CopyWalletRunner::spawn_replay_task(
@@ -385,8 +463,8 @@ impl CopyWalletRunner {
             }
         }
 
-        drop(queue_sender);
-        if let Some((_, handle)) = queue_resources {
+        if let Some((queue, handle)) = queue_resources {
+            queue.close();
             let _ = handle.await;
         }
 
@@ -690,8 +768,9 @@ impl CopyWalletRunner {
 
         let (compute_budget, main_instructions) =
             split_compute_budget(&patched_instructions, self.compute_unit_price_mode.as_ref());
-        let compute_unit_limit =
+        let raw_compute_unit_limit =
             extract_compute_unit_limit(&compute_budget).unwrap_or(crate::engine::FALLBACK_CU_LIMIT);
+        let compute_unit_limit = self.scale_compute_unit_limit(raw_compute_unit_limit);
 
         let mut bundle = MultiLegInstructions::new(
             compute_budget,
@@ -874,6 +953,28 @@ impl CopyWalletRunner {
                 }
             })
             .max_by_key(|info| info.delta())
+    }
+
+    fn scale_compute_unit_limit(&self, raw: u32) -> u32 {
+        if self.cu_limit_multiplier == 1.0 {
+            return raw.max(1);
+        }
+        let scaled = ((raw as f64) * self.cu_limit_multiplier).round();
+        let scaled = scaled
+            .max(1.0)
+            .min(u32::MAX as f64);
+        let scaled_u32 = scaled as u32;
+        if scaled_u32 != raw {
+            debug!(
+                target: "strategy::copy",
+                wallet = %self.wallet_pubkey,
+                original = raw,
+                scaled = scaled_u32,
+                multiplier = self.cu_limit_multiplier,
+                "compute unit limit 已按系数调整"
+            );
+        }
+        scaled_u32.max(1)
     }
 
     async fn adjust_route_amounts(

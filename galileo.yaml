@@ -431,7 +431,7 @@ copy_strategy:
     # 通过信号量实现，Permit 释放后新任务才能提交；在 queued 模式下忽略。
     max_inflight: 32
     # 队列模式的缓冲容量；所有触发交易扇出的组装任务都会排进同一个队列。
-    # 当排队任务数超过该值时，后续触发交易将被阻塞或丢弃（取决于实现策略）。
+    # 超出容量时会丢弃队首的旧任务，让最新触发交易优先入队。
     queue_capacity: 256
     # 指定毫秒数再处理下一笔，防止 gRPC 源头过快导致组装交易爆发。
     replay_interval_ms: 100
@@ -443,6 +443,8 @@ copy_strategy:
     fanout_count: 3
   wallets:
     - address: "AAAAA4WQFj5MByDDxmraSAtumvWk8eNTAL5421SAdLRA"
+      # 计算单元限制系数；影响落地交易时分配的计算单元数量。
+      cu_limit_multiplier: 0.94
       # accounts 来源
       source:
         # 来源类型 rpc 或者 grpc
@@ -466,7 +468,7 @@ copy_strategy:
           exclude_program_ids: 
             - ""
         enable_landers:
-          # - "jito"
+          - "jito"
 
 # 后跑策略
 # Backrun 策略的工作原理如下：

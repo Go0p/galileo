@@ -917,6 +917,8 @@ pub struct CopyWalletConfig {
     pub address: String,
     #[serde(default)]
     pub source: CopySourceConfig,
+    #[serde(default = "default_copy_cu_limit_multiplier")]
+    pub cu_limit_multiplier: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1064,6 +1066,10 @@ const fn default_copy_dispatch_queue_send_interval_ms() -> u64 {
 
 const fn default_copy_dispatch_fanout_count() -> u32 {
     1
+}
+
+const fn default_copy_cu_limit_multiplier() -> f64 {
+    1.0
 }
 
 const fn default_copy_pull_interval_minutes() -> u64 {
