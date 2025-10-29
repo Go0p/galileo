@@ -38,10 +38,6 @@ pub(crate) struct RouteContext {
     pub authority: Pubkey,
     pub source_ata: Pubkey,
     pub destination_ata: Pubkey,
-    pub source_mint: Pubkey,
-    pub destination_mint: Pubkey,
-    pub source_token_program: Pubkey,
-    pub destination_token_program: Pubkey,
     pub params: RouteParams,
 }
 
@@ -75,10 +71,6 @@ impl RouteContext {
                     authority: parsed.user_transfer_authority,
                     source_ata: parsed.user_source_token_account,
                     destination_ata: parsed.user_destination_token_account,
-                    source_mint: parsed.source_mint,
-                    destination_mint: parsed.destination_mint,
-                    source_token_program: parsed.source_token_program,
-                    destination_token_program: parsed.destination_token_program,
                     params,
                 })
             }
@@ -91,77 +83,11 @@ impl RouteContext {
                     authority: accounts[1].pubkey,
                     source_ata: accounts[2].pubkey,
                     destination_ata: accounts[3].pubkey,
-                    source_mint: Pubkey::default(),
-                    destination_mint: accounts[5].pubkey,
-                    source_token_program: accounts[0].pubkey,
-                    destination_token_program: accounts[0].pubkey,
                     params,
                 })
             }
             RouteKind::Other => None,
         }
-    }
-
-    pub fn populate_from_balances(
-        &mut self,
-        account_keys: &[Pubkey],
-        balances: Option<&TransactionTokenBalances>,
-    ) -> Result<()> {
-        if self.source_mint != Pubkey::default()
-            && self.destination_mint != Pubkey::default()
-            && self.source_token_program != Pubkey::default()
-            && self.destination_token_program != Pubkey::default()
-        {
-            return Ok(());
-        }
-
-        let Some(balances) = balances else {
-            return Err(anyhow!("Yellowstone meta 缺少 token balance 数据"));
-        };
-
-        if self.source_mint == Pubkey::default() {
-            let source_index = find_account_index(account_keys, &self.source_ata)
-                .ok_or_else(|| anyhow!("Route source ATA 未出现在账户列表中"))?;
-            let balance = balances
-                .get(source_index)
-                .ok_or_else(|| anyhow!("未在 Yellowstone token balances 中找到 source ATA"))?;
-            self.source_mint = balance.mint;
-            if let Some(program) = balance.token_program {
-                if self.source_token_program == Pubkey::default()
-                    || self.source_token_program != program
-                {
-                    self.source_token_program = program;
-                }
-            }
-        }
-
-        if let Some(dest_index) = find_account_index(account_keys, &self.destination_ata) {
-            if let Some(balance) = balances.get(dest_index) {
-                if self.destination_mint == Pubkey::default() {
-                    self.destination_mint = balance.mint;
-                }
-                if let Some(program) = balance.token_program {
-                    if self.destination_token_program == Pubkey::default()
-                        || self.destination_token_program != program
-                    {
-                        self.destination_token_program = program;
-                    }
-                }
-            }
-        }
-
-        if self.source_token_program == Pubkey::default()
-            || self.destination_token_program == Pubkey::default()
-        {
-            return Err(anyhow!("缺少 token program 信息"));
-        }
-        if self.source_mint == Pubkey::default() {
-            return Err(anyhow!("缺少 source mint"));
-        }
-        if self.destination_mint == Pubkey::default() {
-            return Err(anyhow!("缺少 destination mint"));
-        }
-        Ok(())
     }
 }
 
@@ -882,75 +808,6 @@ mod tests {
 
     fn pk(byte: u8) -> Pubkey {
         Pubkey::new_from_array([byte; 32])
-    }
-
-    #[test]
-    fn populate_route_context_uses_grpc_balances() {
-        let authority = pk(1);
-        let source_ata = pk(2);
-        let destination_ata = pk(3);
-        let destination_mint = pk(4);
-        let source_mint = pk(5);
-        let token_program = pk(6);
-
-        let mut route = RouteContext {
-            authority,
-            source_ata,
-            destination_ata,
-            source_mint: Pubkey::default(),
-            destination_mint,
-            source_token_program: token_program,
-            destination_token_program: token_program,
-            params: RouteParams::default(),
-        };
-
-        let account_keys = vec![
-            token_program,
-            authority,
-            source_ata,
-            destination_ata,
-            destination_mint,
-        ];
-
-        let mut meta = confirmed_block::TransactionStatusMeta::default();
-        meta.pre_token_balances.push(confirmed_block::TokenBalance {
-            account_index: 2,
-            mint: source_mint.to_string(),
-            ui_token_amount: None,
-            owner: authority.to_string(),
-            program_id: token_program.to_string(),
-        });
-
-        let balances = TransactionTokenBalances::try_from(&meta).expect("token balances");
-        route
-            .populate_from_balances(&account_keys, Some(&balances))
-            .expect("populate route context");
-
-        assert_eq!(route.source_mint, source_mint);
-        assert_eq!(route.destination_mint, destination_mint);
-        assert_eq!(route.source_token_program, token_program);
-        assert_eq!(route.destination_token_program, token_program);
-    }
-
-    #[test]
-    fn populate_route_context_errors_without_balances() {
-        let authority = pk(9);
-        let source_ata = pk(10);
-        let destination_ata = pk(11);
-        let token_program = pk(12);
-        let mut route = RouteContext {
-            authority,
-            source_ata,
-            destination_ata,
-            source_mint: Pubkey::default(),
-            destination_mint: pk(13),
-            source_token_program: token_program,
-            destination_token_program: token_program,
-            params: RouteParams::default(),
-        };
-        let account_keys = vec![token_program, authority, source_ata, destination_ata];
-        let result = route.populate_from_balances(&account_keys, None);
-        assert!(result.is_err());
     }
 
     #[test]
