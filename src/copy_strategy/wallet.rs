@@ -61,7 +61,6 @@ pub(crate) struct CopyWalletRunner {
     cu_limit_multiplier: f64,
     dry_run: bool,
     seen_signatures: tokio::sync::Mutex<SeenSignatures>,
-    intermediate_mints: Arc<HashSet<Pubkey>>,
     owned_token_accounts: tokio::sync::RwLock<HashMap<Pubkey, CachedTokenAccount>>,
 }
 
@@ -182,7 +181,6 @@ impl CopyWalletRunner {
         compute_unit_price_mode: Option<ComputeUnitPriceMode>,
         lander_factory: LanderFactory,
         lander_settings: LanderSettings,
-        intermediate_mints: Arc<HashSet<Pubkey>>,
         landing_timeout: Duration,
         dispatch_strategy: DispatchStrategy,
         dry_run: bool,
@@ -241,10 +239,9 @@ impl CopyWalletRunner {
             landing_timeout,
             dispatch_strategy,
             compute_unit_price_mode,
-             cu_limit_multiplier,
+            cu_limit_multiplier,
             dry_run,
             seen_signatures: tokio::sync::Mutex::new(SeenSignatures::new(MAX_SEEN_SIGNATURES)),
-            intermediate_mints,
             owned_token_accounts: tokio::sync::RwLock::new(owned_token_accounts),
         })
     }
@@ -610,7 +607,7 @@ impl CopyWalletRunner {
             return Ok(());
         };
 
-        let plan = self
+        let replacement = self
             .build_replacement_plan(&route_ctx, &account_keys, token_balances)
             .await?;
 
@@ -688,10 +685,10 @@ impl CopyWalletRunner {
             target: "strategy::copy",
             wallet = %self.wallet_pubkey,
             signature = %signature,
-            replacements = ?plan.mapping,
+            replacements = ?replacement.mapping,
             "账户替换表已生成"
         );
-        apply_replacements(&mut jupiter_instructions, &plan.mapping);
+        apply_replacements(&mut jupiter_instructions, &replacement.mapping);
 
         let replaced_accounts_snapshot = describe_jupiter_accounts(&jupiter_instructions);
         debug!(
@@ -707,7 +704,7 @@ impl CopyWalletRunner {
         patched_instructions.extend(compute_budget_instructions);
 
         let mut scheduled_accounts = HashSet::new();
-        for assignment in &plan.pending_atas {
+        for assignment in &replacement.pending_atas {
             if assignment.existed
                 || assignment.mint == Pubkey::default()
                 || assignment.token_program == Pubkey::default()
@@ -715,9 +712,6 @@ impl CopyWalletRunner {
                 continue;
             }
             if !scheduled_accounts.insert(assignment.account) {
-                continue;
-            }
-            if self.intermediate_mints.contains(&assignment.mint) {
                 continue;
             }
 
@@ -736,12 +730,6 @@ impl CopyWalletRunner {
                 &assignment.token_program,
             )?;
             patched_instructions.push(ix);
-            let mut cache = self.owned_token_accounts.write().await;
-            cache.entry(assignment.mint).or_insert(CachedTokenAccount {
-                account: assignment.account,
-                token_program: assignment.token_program,
-                balance: None,
-            });
         }
 
         patched_instructions.extend(jupiter_instructions);
@@ -798,13 +786,13 @@ impl CopyWalletRunner {
             }
         }
 
-        let plan = self
+        let dispatch_plan = self
             .planner
             .plan(self.dispatch_strategy, &prepared, &layout);
 
         if self.dry_run {
             let variants: usize = (0..layout.len())
-                .map(|idx| plan.variants_for_lander(idx).len())
+                .map(|idx| dispatch_plan.variants_for_lander(idx).len())
                 .sum();
             info!(
                 target: "strategy::copy",
@@ -817,7 +805,11 @@ impl CopyWalletRunner {
         }
 
         let deadline = Deadline::from_instant(Instant::now() + self.landing_timeout);
-        match self.lander_stack.submit_plan(&plan, deadline, "copy").await {
+        match self
+            .lander_stack
+            .submit_plan(&dispatch_plan, deadline, "copy")
+            .await
+        {
             Ok(receipt) => {
                 events::copy_transaction_dispatched(&self.wallet_pubkey, signature, 0);
                 info!(
@@ -960,9 +952,7 @@ impl CopyWalletRunner {
             return raw.max(1);
         }
         let scaled = ((raw as f64) * self.cu_limit_multiplier).round();
-        let scaled = scaled
-            .max(1.0)
-            .min(u32::MAX as f64);
+        let scaled = scaled.max(1.0).min(u32::MAX as f64);
         let scaled_u32 = scaled as u32;
         if scaled_u32 != raw {
             debug!(

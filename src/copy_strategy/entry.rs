@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,10 +11,9 @@ use crate::cli::strategy::{
     StrategyBackend, StrategyMode, build_http_client_pool, build_ip_allocator,
     build_rpc_client_pool,
 };
-use crate::config::{AppConfig, IntermediumConfig, LanderSettings};
+use crate::config::{AppConfig, LanderSettings};
 use crate::engine::{ComputeUnitPriceMode, EngineIdentity, TransactionBuilder};
 use crate::lander::LanderFactory;
-use solana_sdk::pubkey::Pubkey;
 
 use super::runner::CopyStrategyRunner;
 
@@ -70,8 +67,6 @@ pub async fn run_copy_strategy(
         Some(rpc_client_pool),
     );
 
-    let intermediate_mints = Arc::new(parse_intermediate_mints(&config.galileo.intermedium)?);
-
     let compute_unit_price_mode = derive_compute_unit_price_mode(&config.lander.lander);
     let lander_factory = LanderFactory::new(
         rpc_client.clone(),
@@ -94,24 +89,9 @@ pub async fn run_copy_strategy(
         landing_timeout,
         dispatch_strategy,
         dry_run,
-        intermediate_mints,
     };
 
     runner.run().await
-}
-
-fn parse_intermediate_mints(config: &IntermediumConfig) -> Result<HashSet<Pubkey>> {
-    let mut set = HashSet::new();
-    for mint in &config.mints {
-        let trimmed = mint.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let pubkey = Pubkey::from_str(trimmed)
-            .map_err(|err| anyhow!("intermedium.mints 中的 mint `{trimmed}` 解析失败: {err}"))?;
-        set.insert(pubkey);
-    }
-    Ok(set)
 }
 
 fn derive_compute_unit_price_mode(settings: &LanderSettings) -> Option<ComputeUnitPriceMode> {

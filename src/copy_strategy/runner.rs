@@ -1,11 +1,9 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use futures::StreamExt;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::pubkey::Pubkey;
 use tracing::warn;
 
 use crate::config::{CopyStrategyConfig, LanderSettings};
@@ -26,7 +24,6 @@ pub struct CopyStrategyRunner {
     pub(crate) landing_timeout: Duration,
     pub(crate) dispatch_strategy: DispatchStrategy,
     pub(crate) dry_run: bool,
-    pub(crate) intermediate_mints: Arc<HashSet<Pubkey>>,
 }
 
 impl CopyStrategyRunner {
@@ -49,7 +46,6 @@ impl CopyStrategyRunner {
                 self.compute_unit_price_mode.clone(),
                 self.lander_factory.clone(),
                 self.lander_settings.clone(),
-                Arc::clone(&self.intermediate_mints),
                 self.landing_timeout,
                 self.dispatch_strategy,
                 self.dry_run,
