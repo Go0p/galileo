@@ -1,10 +1,10 @@
-use std::str::FromStr;
+use std::{collections::HashSet, str::FromStr};
 
 use async_trait::async_trait;
 use reqwest::{Error as ReqwestError, StatusCode};
 use solana_compute_budget_interface as compute_budget;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
-use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
+use solana_sdk::{instruction::Instruction, message::AddressLookupTableAccount, pubkey::Pubkey};
 use thiserror::Error;
 use tracing::debug;
 
@@ -66,13 +66,19 @@ impl KaminoLegProvider {
         let mut compute_budget_instructions = Vec::new();
         let mut main_instructions = Vec::new();
         let mut compute_unit_limit: Option<u32> = None;
+        let mut total_compute_unit_limit: u128 = 0;
         let mut compute_unit_price: Option<u64> = None;
 
         for instruction in route.instructions.flatten() {
             if instruction.program_id == compute_budget::id() {
                 if let Some(parsed) = parse_compute_budget(&instruction) {
                     match parsed {
-                        ParsedComputeBudget::Limit(limit) => compute_unit_limit = Some(limit),
+                        ParsedComputeBudget::Limit(limit) => {
+                            compute_unit_limit = Some(limit);
+                            total_compute_unit_limit =
+                                total_compute_unit_limit.saturating_add(limit as u128);
+                            continue;
+                        }
                         ParsedComputeBudget::Price(price) => compute_unit_price = Some(price),
                         ParsedComputeBudget::Other => {}
                     }
@@ -84,29 +90,86 @@ impl KaminoLegProvider {
         }
 
         let mut lookup_table_addresses = Vec::new();
+        let mut resolved_lookup_tables = Vec::new();
+        let mut seen_keys = HashSet::new();
         for entry in &route.lookup_table_accounts_bs58 {
-            let trimmed = entry.trim();
-            if trimmed.is_empty() {
+            let key_text = entry.key.trim();
+            if key_text.is_empty() {
                 continue;
             }
-            match Pubkey::from_str(trimmed) {
-                Ok(pubkey) => lookup_table_addresses.push(pubkey),
+            match Pubkey::from_str(key_text) {
+                Ok(key) => {
+                    if seen_keys.insert(key) {
+                        lookup_table_addresses.push(key);
+                        let mut table_addresses = Vec::new();
+                        let mut seen_addr = HashSet::new();
+                        for addr in &entry.addresses {
+                            let trimmed = addr.trim();
+                            if trimmed.is_empty() {
+                                continue;
+                            }
+                            match Pubkey::from_str(trimmed) {
+                                Ok(pubkey) => {
+                                    if seen_addr.insert(pubkey) {
+                                        table_addresses.push(pubkey);
+                                    }
+                                }
+                                Err(err) => {
+                                    debug!(
+                                        target: "multi_leg::kamino",
+                                        address = trimmed,
+                                        error = %err,
+                                        "解析 Kamino lookup table address 失败，忽略"
+                                    );
+                                }
+                            }
+                        }
+                        if !table_addresses.is_empty() {
+                            resolved_lookup_tables.push(AddressLookupTableAccount {
+                                key,
+                                addresses: table_addresses,
+                            });
+                        }
+                    }
+                }
                 Err(err) => {
                     debug!(
                         target: "multi_leg::kamino",
-                        address = trimmed,
+                        address = key_text,
                         error = %err,
-                        "解析 Kamino lookup table 地址失败，忽略"
+                        "解析 Kamino lookup table key 失败，忽略"
                     );
                 }
             }
         }
 
-        let limit = compute_unit_limit.unwrap_or(FALLBACK_CU_LIMIT);
-        if compute_unit_limit.is_none() {
-            compute_budget_instructions
-                .insert(0, ComputeBudgetInstruction::set_compute_unit_limit(limit));
+        let raw_limit = if total_compute_unit_limit > 0 {
+            total_compute_unit_limit
+                .min(u32::MAX as u128)
+                .max(1) as u32
+        } else {
+            compute_unit_limit.unwrap_or(FALLBACK_CU_LIMIT)
+        };
+        let configured_multiplier = sanitize_multiplier(self.quote_config.cu_limit_multiplier)
+            .unwrap_or(1.0);
+        let multiplier = context
+            .compute_unit_limit_multiplier
+            .and_then(sanitize_multiplier)
+            .unwrap_or(configured_multiplier);
+        let limit = apply_cu_limit_multiplier(raw_limit, multiplier);
+        if limit != raw_limit {
+            debug!(
+                target: "multi_leg::kamino",
+                original = raw_limit,
+                adjusted = limit,
+                multiplier,
+                "Kamino 指令 compute unit limit 按系数调整"
+            );
         }
+        compute_budget_instructions.insert(
+            0,
+            ComputeBudgetInstruction::set_compute_unit_limit(limit),
+        );
 
         let mut compute_price = compute_unit_price;
 
@@ -145,7 +208,7 @@ impl KaminoLegProvider {
             instructions: main_instructions,
             compute_budget_instructions,
             address_lookup_table_addresses: lookup_table_addresses,
-            resolved_lookup_tables: Vec::new(),
+            resolved_lookup_tables,
             prioritization_fee_lamports,
             blockhash: None,
             raw_transaction: None,
@@ -311,4 +374,28 @@ fn trim_non_empty(value: &str) -> Option<&str> {
     } else {
         Some(trimmed)
     }
+}
+
+fn sanitize_multiplier(value: f64) -> Option<f64> {
+    if value.is_finite() && value > 0.0 {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn apply_cu_limit_multiplier(base: u32, multiplier: f64) -> u32 {
+    let sanitized_multiplier = sanitize_multiplier(multiplier).unwrap_or(1.0);
+    let base_limit = base.max(1);
+    let mut scaled = (base_limit as f64) * sanitized_multiplier;
+    if !scaled.is_finite() {
+        return base_limit;
+    }
+    if scaled < 1.0 {
+        scaled = 1.0;
+    }
+    if scaled > u32::MAX as f64 {
+        scaled = u32::MAX as f64;
+    }
+    scaled.round() as u32
 }

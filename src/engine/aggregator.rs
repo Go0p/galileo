@@ -274,7 +274,35 @@ impl QuotePayloadVariant {
                 .payload
                 .route_plan
                 .extend(rhs.payload.route_plan.iter().cloned()),
-            (QuotePayloadVariant::Kamino(_), QuotePayloadVariant::Kamino(_)) => {}
+            (QuotePayloadVariant::Kamino(lhs), QuotePayloadVariant::Kamino(rhs)) => {
+                lhs.route
+                    .instructions
+                    .append_from(&rhs.route.instructions);
+                for value in &rhs.route.lookup_table_accounts_bs58 {
+                    if let Some(existing) = lhs
+                        .route
+                        .lookup_table_accounts_bs58
+                        .iter_mut()
+                        .find(|entry| entry.key == value.key)
+                    {
+                        let mut seen: HashSet<String> =
+                            existing.addresses.iter().cloned().collect();
+                        for addr in &value.addresses {
+                            if seen.insert(addr.clone()) {
+                                existing.addresses.push(addr.clone());
+                            }
+                        }
+                    } else {
+                        lhs.route
+                            .lookup_table_accounts_bs58
+                            .push(value.clone());
+                    }
+                }
+                lhs.route.response_time_get_quote_ms = lhs
+                    .route
+                    .response_time_get_quote_ms
+                    .saturating_add(rhs.route.response_time_get_quote_ms);
+            }
             _ => {}
         }
     }
@@ -373,6 +401,7 @@ pub struct KaminoSwapBundle {
     pub compute_budget_instructions: Vec<Instruction>,
     pub main_instructions: Vec<Instruction>,
     pub lookup_table_addresses: Vec<Pubkey>,
+    pub resolved_lookup_tables: Vec<AddressLookupTableAccount>,
     pub prioritization_fee_lamports: Option<u64>,
     pub compute_unit_limit: u32,
 }
@@ -382,6 +411,7 @@ impl KaminoSwapBundle {
         compute_budget_instructions: Vec<Instruction>,
         main_instructions: Vec<Instruction>,
         lookup_table_addresses: Vec<Pubkey>,
+        resolved_lookup_tables: Vec<AddressLookupTableAccount>,
         prioritization_fee_lamports: Option<u64>,
         compute_unit_limit: u32,
     ) -> Self {
@@ -389,6 +419,7 @@ impl KaminoSwapBundle {
             compute_budget_instructions,
             main_instructions,
             lookup_table_addresses,
+            resolved_lookup_tables,
             prioritization_fee_lamports,
             compute_unit_limit,
         }
@@ -481,7 +512,7 @@ impl SwapInstructionsVariant {
             SwapInstructionsVariant::Dflow(_) => &[],
             SwapInstructionsVariant::Ultra(bundle) => bundle.resolved_lookup_tables.as_slice(),
             SwapInstructionsVariant::MultiLeg(bundle) => bundle.resolved_lookup_tables.as_slice(),
-            SwapInstructionsVariant::Kamino(_) => &[],
+            SwapInstructionsVariant::Kamino(bundle) => bundle.resolved_lookup_tables.as_slice(),
         }
     }
 
@@ -576,4 +607,122 @@ where
     steps
         .iter()
         .try_fold(0u64, |acc, step| acc.checked_add(extractor(step)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::kamino::quote::{
+        AmountsExactIn, AmountsExactOut, LookupTableEntry, RawInstruction, RouteInstructions,
+    };
+    use crate::api::kamino::Route;
+    use solana_sdk::pubkey::Pubkey;
+
+    fn build_route(
+        swap_program: Pubkey,
+        lookup_addr: &str,
+        response_ms: u64,
+        amount_in: u64,
+        amount_out: u64,
+    ) -> Route {
+        let instructions = RouteInstructions {
+            create_in_ata_ixs: Vec::new(),
+            create_out_ata_ixs: Vec::new(),
+            wrap_sol_ixs: Vec::new(),
+            limo_logs_start_ixs: Vec::new(),
+            limo_ledger_start_ixs: Vec::new(),
+            swap_ixs: vec![RawInstruction {
+                program_id: swap_program,
+                data: vec![1],
+                keys: Vec::new(),
+            }],
+            limo_ledger_end_ixs: Vec::new(),
+            limo_logs_end_ixs: Vec::new(),
+            unwrap_sol_ixs: Vec::new(),
+        };
+        Route {
+            router_type: "kamino".to_string(),
+            response_time_get_quote_ms: response_ms,
+            price_impact_bps: None,
+            guaranteed_price_impact_bps: None,
+            price_impact_amount: None,
+            guaranteed_price_impact_amount: None,
+            lookup_table_accounts_bs58: vec![LookupTableEntry {
+                key: lookup_addr.to_string(),
+                addresses: vec!["11111111111111111111111111111111".to_string()],
+            }],
+            amounts_exact_in: AmountsExactIn {
+                amount_in,
+                amount_out_guaranteed: amount_out,
+                amount_out,
+            },
+            amounts_exact_out: AmountsExactOut {
+                amount_out: 0,
+                amount_in_guaranteed: 0,
+                amount_in: 0,
+            },
+            instructions,
+        }
+    }
+
+    #[test]
+    fn extend_route_combines_kamino_instructions() {
+        let input_mint = Pubkey::new_unique();
+        let output_mint = Pubkey::new_unique();
+        let intermediate = Pubkey::new_unique();
+
+        let route_a = build_route(
+            Pubkey::new_unique(),
+            "LookupA",
+            5,
+            100,
+            110,
+        );
+        let route_b = build_route(
+            Pubkey::new_unique(),
+            "LookupB",
+            7,
+            110,
+            120,
+        );
+
+        let mut lhs = QuotePayloadVariant::Kamino(KaminoQuotePayload {
+            route: route_a,
+            input_mint,
+            output_mint: intermediate,
+            context_slot: 0,
+            time_taken_ms: 5.0,
+        });
+        let rhs = QuotePayloadVariant::Kamino(KaminoQuotePayload {
+            route: route_b,
+            input_mint: intermediate,
+            output_mint,
+            context_slot: 0,
+            time_taken_ms: 7.0,
+        });
+
+        lhs.extend_route(&rhs);
+
+        if let QuotePayloadVariant::Kamino(payload) = lhs {
+            assert_eq!(payload.route.instructions.swap_ixs.len(), 2);
+            assert_eq!(payload.route.lookup_table_accounts_bs58.len(), 2);
+            assert!(
+                payload
+                    .route
+                    .lookup_table_accounts_bs58
+                    .iter()
+                    .any(|entry| entry.key == "LookupA")
+            );
+            assert!(
+                payload
+                    .route
+                    .lookup_table_accounts_bs58
+                    .iter()
+                    .any(|entry| entry.key == "LookupB")
+            );
+            assert_eq!(payload.route.response_time_get_quote_ms, 12);
+        } else {
+            panic!("Kamino payload expected");
+        }
+    }
 }

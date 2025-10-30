@@ -1216,7 +1216,7 @@ where
             _ => "-".to_string(),
         };
 
-        info!(
+        debug!(
             target: "engine::opportunity",
             "本次机会 base_mint={} amount_in={} forward_ms={} reverse_ms={} profit={} net_profit={} ip={}",
             task.pair.input_mint,
@@ -1758,22 +1758,7 @@ where
                 .submit_plan(plan.as_ref(), deadline, &strategy_label)
                 .await
             {
-                Ok(receipt) => {
-                    if let Some(sig) = receipt.signature.as_deref() {
-                        info!(
-                            target: "engine::lander",
-                            strategy = strategy_label.as_str(),
-                            signature = sig,
-                            "lander submission succeeded"
-                        );
-                    } else {
-                        info!(
-                            target: "engine::lander",
-                            strategy = strategy_label.as_str(),
-                            "lander submission succeeded"
-                        );
-                    }
-                }
+                Ok(_receipt) => {}
                 Err(err) => {
                     let sig = tx_signature_for_log.as_deref().unwrap_or("");
                     warn!(
@@ -1781,7 +1766,13 @@ where
                         strategy = strategy_label.as_str(),
                         tx_signature = sig,
                         error = %err,
-                        "lander submission failed"
+                        "{}",
+                        format_args!(
+                            "落地失败: 策略={} 签名={} 错误={}",
+                            strategy_label,
+                            sig,
+                            err
+                        )
                     );
                 }
             }

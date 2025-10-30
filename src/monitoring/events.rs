@@ -221,16 +221,22 @@ pub fn quote_start(
 ) {
     let batch_repr = batch_id.map(|value| value.to_string());
     let ip_repr = local_ip.map(|value| value.to_string());
+    let batch_display = batch_repr.as_deref().unwrap_or("none");
+    let ip_display = ip_repr.as_deref().unwrap_or("unknown");
+    let input_mint = task.pair.input_mint.as_str();
+    let output_mint = task.pair.output_mint.as_str();
+    let amount = task.amount;
     info!(
         target: "monitoring::quote",
-        event = "start",
         strategy,
-        input_mint = %task.pair.input_mint,
-        output_mint = %task.pair.output_mint,
-        amount = task.amount,
         batch_id = ?batch_repr,
         local_ip = ?ip_repr,
-        "quote started"
+        input_mint = %input_mint,
+        output_mint = %output_mint,
+        amount,
+        "{}",
+        format_args!("报价开始: strategy={} input_mint={} output_mint={} amount={} batch_id={} node={}",
+            strategy, input_mint, output_mint, amount, batch_display, ip_display)
     );
 }
 
@@ -245,34 +251,39 @@ pub fn quote_end(
     let latency_ms = elapsed.as_secs_f64() * 1_000.0;
     let batch_repr = batch_id.map(|value| value.to_string());
     let ip_repr = local_ip.map(|value| value.to_string());
+    let batch_display = batch_repr.as_deref().unwrap_or("none");
+    let ip_display = ip_repr.as_deref().unwrap_or("unknown");
+    let input_mint = task.pair.input_mint.as_str();
+    let output_mint = task.pair.output_mint.as_str();
+    let amount = task.amount;
 
     if success {
         info!(
             target: "monitoring::quote",
-            event = "end",
-            status = "success",
             strategy,
-            input_mint = %task.pair.input_mint,
-            output_mint = %task.pair.output_mint,
-            amount = task.amount,
             latency_ms,
             batch_id = ?batch_repr,
             local_ip = ?ip_repr,
-            "quote completed"
+            input_mint = %input_mint,
+            output_mint = %output_mint,
+            amount,
+            "{}",
+            format_args!("报价完成: status=success input_mint={} output_mint={} amount={} latency={:.3}ms batch_id={} node={}",
+                input_mint, output_mint, amount, latency_ms, batch_display, ip_display)
         );
     } else {
         warn!(
             target: "monitoring::quote",
-            event = "end",
-            status = "empty",
             strategy,
-            input_mint = %task.pair.input_mint,
-            output_mint = %task.pair.output_mint,
-            amount = task.amount,
             latency_ms,
             batch_id = ?batch_repr,
             local_ip = ?ip_repr,
-            "quote returned no result"
+            input_mint = %input_mint,
+            output_mint = %output_mint,
+            amount,
+            "{}",
+            format_args!("报价完成: status=empty input_mint={} output_mint={} amount={} latency={:.3}ms batch_id={} node={}",
+                input_mint, output_mint, amount, latency_ms, batch_display, ip_display)
         );
     }
 
@@ -309,34 +320,42 @@ pub fn quote_round_trip(
 ) {
     let batch_repr = batch_id.map(|value| value.to_string());
     let ip_repr = local_ip.map(|value| value.to_string());
+    let batch_display = batch_repr.as_deref().unwrap_or("none");
+    let ip_display = ip_repr.as_deref().unwrap_or("unknown");
+    let base_mint = task.pair.input_mint.as_str();
+    let quote_mint = task.pair.output_mint.as_str();
+    let amount_in = task.amount;
     info!(
         target: "monitoring::quote",
-        event = "round_trip",
         strategy,
-        base_mint = %task.pair.input_mint,
-        quote_mint = %task.pair.output_mint,
         aggregator,
-        amount_in = task.amount,
-        first_leg_out = first_leg_out,
-        round_trip_out = round_trip_out,
         batch_id = ?batch_repr,
         local_ip = ?ip_repr,
-        "round-trip quote summary"
+        base_mint = %base_mint,
+        quote_mint = %quote_mint,
+        amount_in,
+        first_leg_out,
+        round_trip_out,
+        "{}",
+        format_args!("报价回环: aggregator={} base_mint={} quote_mint={} amount_in={} first_leg_out={} round_trip_out={} batch_id={} node={}",
+            aggregator, base_mint, quote_mint, amount_in, first_leg_out, round_trip_out, batch_display, ip_display)
     );
 }
 
 pub fn profit_detected(strategy: &str, opportunity: &SwapOpportunity) {
+    let input_mint = opportunity.pair.input_mint.as_str();
+    let output_mint = opportunity.pair.output_mint.as_str();
+    let amount_in = opportunity.amount_in;
+    let profit = opportunity.profit_lamports;
+    let net_profit = opportunity.net_profit();
     info!(
         target: "monitoring::profit",
-        event = "detected",
         strategy,
-        input_mint = %opportunity.pair.input_mint,
-        output_mint = %opportunity.pair.output_mint,
-        amount_in = opportunity.amount_in,
-        profit_lamports = opportunity.profit_lamports,
-        tip_lamports = opportunity.tip_lamports,
-        net_profit = opportunity.net_profit(),
-        "profitable opportunity"
+        "{}",
+        format_args!(
+            "检测到套利机会: strategy={} input_mint={} output_mint={} amount_in={} profit={} net_profit={}",
+            strategy, input_mint, output_mint, amount_in, profit, net_profit
+        )
     );
 
     if prometheus_enabled() {
@@ -361,17 +380,22 @@ pub fn swap_fetched(
     local_ip: Option<IpAddr>,
 ) {
     let ip_repr = local_ip.map(|value| value.to_string());
+    let ip_display = ip_repr.as_deref().unwrap_or("unknown");
+    let input_mint = opportunity.pair.input_mint.as_str();
+    let output_mint = opportunity.pair.output_mint.as_str();
+    let amount_in = opportunity.amount_in;
     info!(
         target: "monitoring::swap",
-        event = "fetched",
         strategy,
-        input_mint = %opportunity.pair.input_mint,
-        output_mint = %opportunity.pair.output_mint,
-        amount_in = opportunity.amount_in,
+        input_mint = %input_mint,
+        output_mint = %output_mint,
+        amount_in,
         compute_unit_limit,
         prioritization_fee,
         local_ip = ?ip_repr,
-        "swap instructions ready"
+        "{}",
+        format_args!("Swap 指令就绪: strategy={} input_mint={} output_mint={} amount={} compute_unit_limit={} prioritization_fee={} node={}",
+            strategy, input_mint, output_mint, amount_in, compute_unit_limit, prioritization_fee, ip_display)
     );
 
     if prometheus_enabled() {
@@ -400,13 +424,20 @@ pub fn flashloan_applied(
 ) {
     info!(
         target: "monitoring::flashloan",
-        event = "applied",
         strategy,
         protocol,
         mint = %mint,
         borrow_amount,
         inner_instruction_count,
-        "flashloan applied"
+        "{}",
+        format_args!(
+            "闪电贷注入: 策略={} 协议={} 铸币={} 借用量={} 指令数={}",
+            strategy,
+            protocol,
+            mint,
+            borrow_amount,
+            inner_instruction_count
+        )
     );
 
     if prometheus_enabled() {
@@ -443,18 +474,25 @@ pub fn transaction_built(
     local_ip: Option<IpAddr>,
 ) {
     let ip_repr = local_ip.map(|value| value.to_string());
+    let ip_display = ip_repr.as_deref().unwrap_or("unknown");
+    let input_mint = opportunity.pair.input_mint.as_str();
+    let output_mint = opportunity.pair.output_mint.as_str();
+    let amount_in = opportunity.amount_in;
     info!(
         target: "monitoring::transaction",
-        event = "built",
         strategy,
-        input_mint = %opportunity.pair.input_mint,
-        output_mint = %opportunity.pair.output_mint,
-        amount_in = opportunity.amount_in,
+        input_mint = %input_mint,
+        output_mint = %output_mint,
+        amount_in,
         slot,
         blockhash,
         last_valid_block_height,
         local_ip = ?ip_repr,
-        "transaction prepared"
+        "{}",
+        format_args!("交易构建完成: strategy={} input_mint={} output_mint={} amount={} slot={} blockhash={} last_valid={} node={}",
+            strategy, input_mint, output_mint, amount_in, slot, blockhash,
+            last_valid_block_height.map(|v| v.to_string()).unwrap_or_else(|| "unknown".to_string()),
+            ip_display)
     );
 
     if prometheus_enabled() {
@@ -476,16 +514,25 @@ pub fn lander_attempt(
     local_ip: Option<IpAddr>,
 ) {
     let ip_repr = local_ip.map(|value| value.to_string());
+    let ip_display = ip_repr.as_deref().unwrap_or("unknown");
     info!(
         target: "monitoring::lander",
-        event = "attempt",
         strategy,
         dispatch,
         lander = name,
         variant,
         attempt,
         local_ip = ?ip_repr,
-        "lander submission attempt"
+        "{}",
+        format_args!(
+            "落地器尝试: 策略={} 调度={} 落地器={} 变体={} 尝试={} 节点={}",
+            strategy,
+            dispatch,
+            name,
+            variant,
+            attempt,
+            ip_display
+        )
     );
 
     if prometheus_enabled() {
@@ -504,9 +551,10 @@ pub fn lander_attempt(
 
 pub fn lander_success(strategy: &str, dispatch: &str, attempt: usize, receipt: &LanderReceipt) {
     let ip_repr = receipt.local_ip.map(|value| value.to_string());
+    let ip_display = ip_repr.as_deref().unwrap_or("unknown");
+    let signature = receipt.signature.as_deref().unwrap_or_default();
     info!(
         target: "monitoring::lander",
-        event = "success",
         strategy,
         dispatch,
         lander = receipt.lander,
@@ -515,9 +563,22 @@ pub fn lander_success(strategy: &str, dispatch: &str, attempt: usize, receipt: &
         endpoint = %receipt.endpoint,
         slot = receipt.slot,
         blockhash = %receipt.blockhash,
-        signature = receipt.signature.as_deref().unwrap_or_default(),
+        signature = signature,
         local_ip = ?ip_repr,
-        "lander submission succeeded"
+        "{}",
+        format_args!(
+            "落地器成功: 策略={} 调度={} 落地器={} 变体={} 尝试={} Slot={} Blockhash={} Endpoint={} 签名={} 节点={}",
+            strategy,
+            dispatch,
+            receipt.lander,
+            receipt.variant_id,
+            attempt,
+            receipt.slot,
+            receipt.blockhash,
+            receipt.endpoint,
+            signature,
+            ip_display
+        )
     );
 
     if prometheus_enabled() {
@@ -554,9 +615,9 @@ pub fn lander_failure(
     err: &LanderError,
 ) {
     let ip_repr = local_ip.map(|value| value.to_string());
+    let ip_display = ip_repr.as_deref().unwrap_or("unknown");
     warn!(
         target: "monitoring::lander",
-        event = "failure",
         strategy,
         dispatch,
         lander = name,
@@ -564,7 +625,17 @@ pub fn lander_failure(
         attempt,
         local_ip = ?ip_repr,
         error = %err,
-        "lander submission failed"
+        "{}",
+        format_args!(
+            "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 节点={} 错误={}",
+            strategy,
+            dispatch,
+            name,
+            variant,
+            attempt,
+            ip_display,
+            err
+        )
     );
 
     if prometheus_enabled() {
@@ -594,11 +665,14 @@ pub fn lander_failure(
 pub fn copy_transaction_captured(wallet: &Pubkey, signature: &Signature, fanout: u32) {
     info!(
         target: "monitoring::copy",
-        event = "captured",
         wallet = %wallet,
         signature = %signature,
         fanout,
-        "copy candidate captured"
+        "{}",
+        format_args!(
+            "复制候选捕获: 钱包={} 签名={} Fanout={}",
+            wallet, signature, fanout
+        )
     );
 
     if prometheus_enabled() {
@@ -613,11 +687,14 @@ pub fn copy_transaction_captured(wallet: &Pubkey, signature: &Signature, fanout:
 pub fn copy_transaction_dispatched(wallet: &Pubkey, signature: &Signature, attempt: u32) {
     info!(
         target: "monitoring::copy",
-        event = "dispatched",
         wallet = %wallet,
         signature = %signature,
         attempt,
-        "copy transaction dispatched"
+        "{}",
+        format_args!(
+            "复制交易下发: 钱包={} 签名={} 尝试={}",
+            wallet, signature, attempt
+        )
     );
 
     if prometheus_enabled() {
@@ -662,10 +739,13 @@ pub fn copy_queue_workers(wallet: &Pubkey, workers: usize) {
 pub fn copy_wallet_refresh_success(wallet: &Pubkey, accounts: usize) {
     info!(
         target: "monitoring::copy",
-        event = "wallet_refresh",
         wallet = %wallet,
         accounts,
-        "wallet cache refreshed"
+        "{}",
+        format_args!(
+            "复制钱包刷新成功: 钱包={} 账户数={}",
+            wallet, accounts
+        )
     );
 
     if prometheus_enabled() {
@@ -686,9 +766,9 @@ pub fn copy_wallet_refresh_success(wallet: &Pubkey, accounts: usize) {
 pub fn copy_wallet_refresh_error(wallet: &Pubkey) {
     warn!(
         target: "monitoring::copy",
-        event = "wallet_refresh_error",
         wallet = %wallet,
-        "wallet cache refresh failed"
+        "{}",
+        format_args!("复制钱包刷新失败: 钱包={}", wallet)
     );
 
     if prometheus_enabled() {

@@ -892,7 +892,10 @@ fn resolve_quote_dispatch_config(
             batch_interval_duration(engine.dflow.quote_config.batch_interval_ms),
         ),
         StrategyBackend::Kamino { .. } => {
-            (parallelism_override(QuoteParallelism::Auto), Duration::ZERO)
+            (
+                parallelism_override(engine.kamino.quote_config.parallelism),
+                batch_interval_duration(engine.kamino.quote_config.batch_interval_ms),
+            )
         }
         StrategyBackend::Ultra { .. } => (
             parallelism_override(engine.ultra.quote_config.parallelism),
@@ -1214,8 +1217,11 @@ async fn prepare_swap_components(
             let kamino_quote_cfg = config.galileo.engine.kamino.quote_config.clone();
             let quote_executor =
                 QuoteExecutor::for_kamino((*api_client).clone(), kamino_quote_cfg.clone());
-            let swap_preparer = SwapPreparer::for_kamino(compute_unit_price_mode.clone());
-            Ok((quote_executor, swap_preparer, (true, true), false))
+            let swap_preparer = SwapPreparer::for_kamino(
+                kamino_quote_cfg.clone(),
+                compute_unit_price_mode.clone(),
+            );
+            Ok((quote_executor, swap_preparer, (false, false), false))
         }
         StrategyBackend::Ultra {
             api_client,
@@ -1223,9 +1229,13 @@ async fn prepare_swap_components(
         } => {
             identity.set_skip_user_accounts_rpc_calls(false);
             let ultra_quote_cfg = config.galileo.engine.ultra.quote_config.clone();
+            let ultra_swap_cfg = config.galileo.engine.ultra.swap_config.clone();
             let quote_executor = QuoteExecutor::for_ultra((*api_client).clone(), ultra_quote_cfg);
-            let swap_preparer =
-                SwapPreparer::for_ultra(rpc_client.clone(), compute_unit_price_mode.clone());
+            let swap_preparer = SwapPreparer::for_ultra(
+                rpc_client.clone(),
+                ultra_swap_cfg,
+                compute_unit_price_mode.clone(),
+            );
             Ok((quote_executor, swap_preparer, (true, true), false))
         }
         StrategyBackend::None => {

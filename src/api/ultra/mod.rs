@@ -240,28 +240,45 @@ impl UltraApiClient {
         let log_swap_mode = order.swap_mode.unwrap_or(SwapMode::ExactIn);
         let log_router = order.router.as_deref().unwrap_or("<none>");
         let log_quote_id = order.quote_id.as_deref().unwrap_or("<none>");
+        let slow_threshold = self.slow_order_warn_ms as f64;
 
-        info!(
-            target: "ultra::order",
-            input_mint = %log_input_mint,
-            output_mint = %log_output_mint,
-            in_amount = log_in_amount,
-            out_amount = log_out_amount,
-            swap_mode = ?log_swap_mode,
-            router = %log_router,
-            quote_id = log_quote_id,
-            elapsed_ms = format_args!("{elapsed_ms:.3}"),
-            "Ultra /order 响应成功"
+        let message = format_args!(
+            "Ultra /order 完成: input_mint={} in_amount={} out_amount={} elapsed_ms={:.3} router={} swap_mode={:?} quote_id={}",
+            log_input_mint,
+            log_in_amount,
+            log_out_amount,
+            elapsed_ms,
+            log_router,
+            log_swap_mode,
+            log_quote_id
         );
-        if elapsed_ms > self.slow_order_warn_ms as f64 {
+        if elapsed_ms > slow_threshold {
             warn!(
                 target: "ultra::order",
-                elapsed_ms = format_args!("{elapsed_ms:.3}"),
-                slow_threshold_ms = self.slow_order_warn_ms,
                 input_mint = %log_input_mint,
                 output_mint = %log_output_mint,
+                in_amount = log_in_amount,
+                out_amount = log_out_amount,
+                swap_mode = ?log_swap_mode,
                 router = %log_router,
-                "Ultra /order 耗时超过告警阈值"
+                quote_id = log_quote_id,
+                elapsed_ms = format_args!("{elapsed_ms:.3}"),
+                "{}",
+                message
+            );
+        } else {
+            info!(
+                target: "ultra::order",
+                input_mint = %log_input_mint,
+                output_mint = %log_output_mint,
+                in_amount = log_in_amount,
+                out_amount = log_out_amount,
+                swap_mode = ?log_swap_mode,
+                router = %log_router,
+                quote_id = log_quote_id,
+                elapsed_ms = format_args!("{elapsed_ms:.3}"),
+                "{}",
+                message
             );
         }
 

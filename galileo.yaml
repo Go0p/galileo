@@ -41,15 +41,16 @@ global:
 
   # 日志级别
   logging:
-    level: "debug"
+    level: "info"
     json: false
     # 日志输出的时区偏移（单位：小时）。示例：8 代表 UTC+8。
     timezone_offset_hours: 8
 
 engine:
-  # 可选值：jupiter / dflow / ultra / multi-legs /none
-  backend: "none"
-  # backend: "ultra"
+  # 可选值：jupiter / dflow / ultra / multi-legs / kamino / none
+  # backend: "none"
+  backend: "kamino"
+  # backend: "multi-legs"
   # backend: "multi-legs"
   # backend: "dflow"
   jupiter:
@@ -87,16 +88,16 @@ engine:
       dynamic_compute_unit_limit: true
       wrap_and_unwrap_sol: false
   ultra:
-    enable: true
+    enable: false
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
-    leg: "sell"
+    leg: "buy"
     api_quote_base: "https://ultra-api.jup.ag"
     api_swap_base: "https://ultra-api.jup.ag"
     api_proxy: "http://192.168.124.4:9999"
     quote_config:
       use_wsol: true
-      taker: "k1bWgJv1fdVMCqgDM2jkEfhEzKW7XgGpj8vGGKjgSnJ"
-      # taker: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
+      # taker: "k1bWgJv1fdVMCqgDM2jkEfhEzKW7XgGpj8vGGKjgSnJ"
+      taker: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
       exclude_routers: []
       priority_fee_lamports: 10
       # Ultra 报价并发，同 jupiter.quote_config.parallelism 语义
@@ -104,13 +105,11 @@ engine:
       # Ultra 报价批次间隔（毫秒），0 表示不额外延迟
       batch_interval_ms: 0
     swap_config:
-      dynamic_compute_unit_limit: true
-      wrap_and_unwrap_sol: false
+      cu_limit_multiplier: 0.92
   dflow:
-    enable: true
+    enable: false
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
     leg: "sell"
-
     # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
     api_quote_base: "https://quote-api.dflow.net"
     api_swap_base: "https://quote-api.dflow.net"
@@ -128,7 +127,7 @@ engine:
       wrap_and_unwrap_sol: false
       cu_limit_multiplier: 0.92
   titan:
-    enable: true
+    enable: false
     # 腿方向：Titan 仅支持 buy 腿
     leg: "buy"
     # Titan 推流首条报价超时时间（毫秒），超过后视为异常并重新调度
@@ -161,30 +160,35 @@ engine:
   kamino:
     enable: true
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
-    leg: "buy"
+    leg: "sell"
     api_quote_base: "https://api.kamino.finance"
     api_swap_base: "https://api.kamino.finance"
     api_proxy: "http://192.168.124.4:9999"
     quote_config:
+      cu_limit_multiplier: 0.92
+      # Kamino 报价并发，同 jupiter.quote_config.parallelism 语义
+      parallelism: "auto"
+      # Kamino 报价批次间隔（毫秒），0 表示不额外延迟
+      batch_interval_ms: 0
       max_slippage_bps: 0
-      executor: ""
+      executor: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
       referrer_pda: ""
       include_setup_ixs: true
       wrap_and_unwrap_sol: false
       routes:
-        - "dflow"
-        - "jupiter"
-        - "jupiterSelfHosted"
-        - "jupiterEuropa"
-        - "per"
-        - "fluxbeam"
-        - "raydium"
-        - "hashflow"
+        # - "dflow"
+        # - "jupiter"
+        # - "jupiterSelfHosted"
+        # - "jupiterEuropa"
+        # - "per"
+        # - "fluxbeam"
+        # - "raydium"
+        # - "hashflow"
         - "okx"
-        - "clover"
-        - "zeroEx"
-        - "spur"
-        - "lifi"
+        # - "clover"
+        # - "zeroEx"
+        # - "spur"
+        # - "lifi"
       
 # 机器人会尝试找到盈利路线，具体方法是：获取给定交易规模的 base_mint 到 intermediate_mints 的报价，
 # 然后再获取 intermediate_mints 到 base_mint 的另一个报价，
@@ -279,7 +283,7 @@ flashloan:
 
 # 盲发策略
 blind_strategy:
-  enable: false
+  enable: true
   memo: ""
   # 只允许交易这些 dex
   enable_dexs: [
@@ -305,10 +309,10 @@ blind_strategy:
   base_mints:
     - mint: "So11111111111111111111111111111111111111112"
       trade_size_range:
-        - 6_000_000_000 # 10 SOL
-        - 9_800_000_000 # 100 SOL
+        - 1_000_000_000 # 6 SOL
+        # - 9_800_000_000 # 9.8 SOL
       # 在范围内将生成多少种不同的交易规模
-      trade_range_count: 3
+      trade_range_count: 1
       # 目前支持三个值： linear 、 random 、 exponential
       # exponential 将根据指数值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 77, 315, 668, 1000]
       # linear 将根据线性值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 200, 400, 600, 800, 1000]
@@ -316,7 +320,7 @@ blind_strategy:
       # 固定规模报价则会同时发送两个报价。
       trade_range_strategy: "linear"
       # 最小利润
-      min_quote_profit: 1000
+      min_quote_profit: 100
       # 交易延时
       # 单位为毫秒。默认值表示机器人将等待 1000 毫秒，然后针对相同代币交易规模的对再次尝试。减少此值将增加立即捕捉价格变化的机会，但会增加读取 RPC 负载。
       process_delay: 2000
@@ -427,7 +431,7 @@ pure_blind_strategy:
     route_labels: true         # 指标上打 route 名称标签
 
 copy_strategy:
-  enable: true
+  enable: false
   copy_dispatch:
     # copy 触发交易的调度方式："parallel" 立即并发落地；"queued" 入队串行提交的流程
     mode: "queued"

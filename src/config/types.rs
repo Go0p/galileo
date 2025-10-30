@@ -373,7 +373,7 @@ pub struct KaminoEngineConfig {
     pub quote_config: KaminoQuoteConfig,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct KaminoQuoteConfig {
     #[serde(default)]
     pub max_slippage_bps: u16,
@@ -387,6 +387,28 @@ pub struct KaminoQuoteConfig {
     pub wrap_and_unwrap_sol: bool,
     #[serde(default)]
     pub routes: Vec<String>,
+    #[serde(default = "default_cu_limit_multiplier")]
+    pub cu_limit_multiplier: f64,
+    #[serde(default)]
+    pub parallelism: QuoteParallelism,
+    #[serde(default)]
+    pub batch_interval_ms: Option<u64>,
+}
+
+impl Default for KaminoQuoteConfig {
+    fn default() -> Self {
+        Self {
+            max_slippage_bps: 0,
+            executor: String::new(),
+            referrer_pda: String::new(),
+            include_setup_ixs: super::default_true(),
+            wrap_and_unwrap_sol: false,
+            routes: Vec::new(),
+            cu_limit_multiplier: default_cu_limit_multiplier(),
+            parallelism: QuoteParallelism::default(),
+            batch_interval_ms: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -465,10 +487,8 @@ fn default_priority_fee_lamports() -> Option<u64> {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct UltraSwapConfig {
-    #[serde(default = "super::default_true")]
-    pub dynamic_compute_unit_limit: bool,
-    #[serde(default)]
-    pub wrap_and_unwrap_sol: bool,
+    #[serde(default = "default_cu_limit_multiplier")]
+    pub cu_limit_multiplier: f64,
 }
 
 impl Default for UltraEngineConfig {
@@ -505,8 +525,7 @@ impl Default for UltraQuoteConfig {
 impl Default for UltraSwapConfig {
     fn default() -> Self {
         Self {
-            dynamic_compute_unit_limit: true,
-            wrap_and_unwrap_sol: false,
+            cu_limit_multiplier: default_cu_limit_multiplier(),
         }
     }
 }

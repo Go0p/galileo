@@ -15,7 +15,7 @@ use crate::api::dflow::{
 use crate::api::jupiter::{
     ComputeUnitPriceMicroLamports, JupiterApiClient, SwapInstructionsRequest,
 };
-use crate::config::{DflowSwapConfig, JupiterSwapConfig};
+use crate::config::{DflowSwapConfig, JupiterSwapConfig, KaminoQuoteConfig, UltraSwapConfig};
 use crate::engine::ultra::{
     UltraAdapter, UltraAdapterError, UltraContext, UltraFinalizedSwap, UltraLookupResolver,
     UltraPreparationParams, UltraPreparedSwap,
@@ -68,10 +68,13 @@ pub enum SwapPreparerBackend {
         client: DflowApiClient,
         defaults: DflowSwapConfig,
     },
-    Kamino,
+    Kamino {
+        cu_limit_multiplier: f64,
+    },
     Ultra {
         rpc: Arc<RpcClient>,
         alt_cache: AltCache,
+        defaults: UltraSwapConfig,
     },
     Disabled,
 }
@@ -111,21 +114,29 @@ impl SwapPreparer {
         }
     }
 
-    pub fn for_kamino(compute_unit_price: Option<ComputeUnitPriceMode>) -> Self {
+    pub fn for_kamino(
+        defaults: KaminoQuoteConfig,
+        compute_unit_price: Option<ComputeUnitPriceMode>,
+    ) -> Self {
+        let multiplier = sanitize_multiplier(defaults.cu_limit_multiplier).unwrap_or(1.0);
         Self {
-            backend: SwapPreparerBackend::Kamino,
+            backend: SwapPreparerBackend::Kamino {
+                cu_limit_multiplier: multiplier,
+            },
             compute_unit_price,
         }
     }
 
     pub fn for_ultra(
         rpc: Arc<RpcClient>,
+        defaults: UltraSwapConfig,
         compute_unit_price: Option<ComputeUnitPriceMode>,
     ) -> Self {
         Self {
             backend: SwapPreparerBackend::Ultra {
                 rpc,
                 alt_cache: AltCache::new(),
+                defaults,
             },
             compute_unit_price,
         }
@@ -231,11 +242,17 @@ impl SwapPreparer {
                 }
                 SwapInstructionsVariant::Dflow(response)
             }
-            (SwapPreparerBackend::Kamino, QuotePayloadVariant::Kamino(payload)) => {
+            (
+                SwapPreparerBackend::Kamino {
+                    cu_limit_multiplier,
+                },
+                QuotePayloadVariant::Kamino(payload),
+            ) => {
                 let instructions = payload.route.instructions.flatten();
                 let mut compute_budget_instructions = Vec::new();
                 let mut main_instructions = Vec::new();
                 let mut compute_unit_limit: Option<u32> = None;
+                let mut total_compute_unit_limit: u128 = 0;
                 let mut compute_unit_price: Option<u64> = None;
 
                 for ix in instructions {
@@ -243,7 +260,10 @@ impl SwapPreparer {
                         if let Some(parsed) = parse_compute_budget_instruction(&ix) {
                             match parsed {
                                 ParsedComputeBudget::Limit(value) => {
-                                    compute_unit_limit = Some(value)
+                                    compute_unit_limit = Some(value);
+                                    total_compute_unit_limit =
+                                        total_compute_unit_limit.saturating_add(value as u128);
+                                    continue;
                                 }
                                 ParsedComputeBudget::Price(value) => {
                                     compute_unit_price = Some(value)
@@ -258,29 +278,80 @@ impl SwapPreparer {
                 }
 
                 let mut lookup_table_addresses = Vec::new();
-                for address in &payload.route.lookup_table_accounts_bs58 {
-                    let trimmed = address.trim();
-                    if trimmed.is_empty() {
+                let mut resolved_lookup_tables = Vec::new();
+                let mut seen_keys = HashSet::new();
+                for entry in &payload.route.lookup_table_accounts_bs58 {
+                    let key_text = entry.key.trim();
+                    if key_text.is_empty() {
                         continue;
                     }
-                    match Pubkey::from_str(trimmed) {
-                        Ok(pubkey) => lookup_table_addresses.push(pubkey),
+                    match Pubkey::from_str(key_text) {
+                        Ok(key) => {
+                            if seen_keys.insert(key) {
+                                lookup_table_addresses.push(key);
+                                let mut table_addresses = Vec::new();
+                                let mut seen_addr = HashSet::new();
+                                for addr in &entry.addresses {
+                                    let trimmed = addr.trim();
+                                    if trimmed.is_empty() {
+                                        continue;
+                                    }
+                                    match Pubkey::from_str(trimmed) {
+                                        Ok(pubkey) => {
+                                            if seen_addr.insert(pubkey) {
+                                                table_addresses.push(pubkey);
+                                            }
+                                        }
+                                        Err(err) => {
+                                            debug!(
+                                                target: "engine::swap_preparer",
+                                                address = trimmed,
+                                                error = %err,
+                                                "解析 Kamino lookup table address 失败，忽略"
+                                            );
+                                        }
+                                    }
+                                }
+                                if !table_addresses.is_empty() {
+                                    resolved_lookup_tables.push(AddressLookupTableAccount {
+                                        key,
+                                        addresses: table_addresses,
+                                    });
+                                }
+                            }
+                        }
                         Err(err) => {
                             debug!(
                                 target: "engine::swap_preparer",
-                                address = trimmed,
+                                address = key_text,
                                 error = %err,
-                                "解析 Kamino lookup table 地址失败，忽略"
+                                "解析 Kamino lookup table key 失败，忽略"
                             );
                         }
                     }
                 }
 
-                let limit = compute_unit_limit.unwrap_or(FALLBACK_CU_LIMIT);
-                if compute_unit_limit.is_none() {
-                    compute_budget_instructions
-                        .insert(0, ComputeBudgetInstruction::set_compute_unit_limit(limit));
+                let raw_limit = if total_compute_unit_limit > 0 {
+                    total_compute_unit_limit
+                        .min(u32::MAX as u128)
+                        .max(1) as u32
+                } else {
+                    compute_unit_limit.unwrap_or(FALLBACK_CU_LIMIT)
+                };
+                let limit = apply_cu_limit_multiplier(raw_limit, *cu_limit_multiplier);
+                if limit != raw_limit {
+                    debug!(
+                        target = "engine::swap_preparer",
+                        original = raw_limit,
+                        adjusted = limit,
+                        multiplier = *cu_limit_multiplier,
+                        "Kamino compute unit limit 已按配置系数调整"
+                    );
                 }
+                compute_budget_instructions.insert(
+                    0,
+                    ComputeBudgetInstruction::set_compute_unit_limit(limit),
+                );
 
                 if let Some(strategy) = &self.compute_unit_price {
                     let price = strategy.sample();
@@ -309,12 +380,20 @@ impl SwapPreparer {
                     compute_budget_instructions,
                     main_instructions,
                     lookup_table_addresses,
+                    resolved_lookup_tables,
                     prioritization_fee_lamports,
                     limit,
                 );
                 SwapInstructionsVariant::Kamino(bundle)
             }
-            (SwapPreparerBackend::Ultra { rpc, alt_cache }, QuotePayloadVariant::Ultra(_)) => {
+            (
+                SwapPreparerBackend::Ultra {
+                    rpc,
+                    alt_cache,
+                    defaults,
+                },
+                QuotePayloadVariant::Ultra(_),
+            ) => {
                 let override_price = self.sample_compute_unit_price();
                 let legs = opportunity.ultra_legs.as_ref().ok_or_else(|| {
                     EngineError::InvalidConfig("Ultra 套利机会缺少前后腿明细".into())
@@ -347,8 +426,20 @@ impl SwapPreparer {
                 .await
                 .map_err(map_adapter_error)?;
 
-                let finalized =
-                    combine_ultra_swaps(forward, reverse, FALLBACK_CU_LIMIT, override_price);
+                let multiplier = if defaults.cu_limit_multiplier.is_finite()
+                    && defaults.cu_limit_multiplier > 0.0
+                {
+                    defaults.cu_limit_multiplier
+                } else {
+                    1.0
+                };
+                let finalized = combine_ultra_swaps(
+                    forward,
+                    reverse,
+                    FALLBACK_CU_LIMIT,
+                    override_price,
+                    multiplier,
+                );
 
                 SwapInstructionsVariant::Ultra(finalized)
             }
@@ -361,9 +452,9 @@ impl SwapPreparer {
             | (SwapPreparerBackend::Ultra { .. }, QuotePayloadVariant::Jupiter(_))
             | (SwapPreparerBackend::Ultra { .. }, QuotePayloadVariant::Dflow(_))
             | (SwapPreparerBackend::Ultra { .. }, QuotePayloadVariant::Kamino(_))
-            | (SwapPreparerBackend::Kamino, QuotePayloadVariant::Jupiter(_))
-            | (SwapPreparerBackend::Kamino, QuotePayloadVariant::Dflow(_))
-            | (SwapPreparerBackend::Kamino, QuotePayloadVariant::Ultra(_)) => {
+            | (SwapPreparerBackend::Kamino { .. }, QuotePayloadVariant::Jupiter(_))
+            | (SwapPreparerBackend::Kamino { .. }, QuotePayloadVariant::Dflow(_))
+            | (SwapPreparerBackend::Kamino { .. }, QuotePayloadVariant::Ultra(_)) => {
                 return Err(EngineError::InvalidConfig(
                     "套利机会聚合器类型与落地器不匹配".into(),
                 ));
@@ -384,6 +475,30 @@ impl SwapPreparer {
             .map(|mode| mode.sample())
             .filter(|price| *price > 0)
     }
+}
+
+fn sanitize_multiplier(value: f64) -> Option<f64> {
+    if value.is_finite() && value > 0.0 {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn apply_cu_limit_multiplier(base: u32, multiplier: f64) -> u32 {
+    let sanitized_multiplier = sanitize_multiplier(multiplier).unwrap_or(1.0);
+    let base_limit = base.max(1);
+    let mut scaled = (base_limit as f64) * sanitized_multiplier;
+    if !scaled.is_finite() {
+        return base_limit;
+    }
+    if scaled < 1.0 {
+        scaled = 1.0;
+    }
+    if scaled > u32::MAX as f64 {
+        scaled = u32::MAX as f64;
+    }
+    scaled.round() as u32
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -442,6 +557,7 @@ fn combine_ultra_swaps(
     reverse: UltraPreparedSwap,
     fallback_limit: u32,
     override_price: Option<u64>,
+    multiplier: f64,
 ) -> UltraFinalizedSwap {
     let forward_limit = forward
         .requested_compute_unit_limit
@@ -452,6 +568,27 @@ fn combine_ultra_swaps(
     let combined_limit = forward_limit
         .saturating_add(reverse_limit)
         .max(fallback_limit);
+
+    let sanitized_multiplier = if multiplier.is_finite() && multiplier > 0.0 {
+        multiplier
+    } else {
+        1.0
+    };
+    let mut scaled_limit = (combined_limit as f64) * sanitized_multiplier;
+    if !scaled_limit.is_finite() {
+        scaled_limit = combined_limit as f64;
+    }
+    let mut rounded_limit = scaled_limit.round();
+    if !rounded_limit.is_finite() {
+        rounded_limit = combined_limit as f64;
+    }
+    if rounded_limit < fallback_limit as f64 {
+        rounded_limit = fallback_limit as f64;
+    }
+    if rounded_limit > u32::MAX as f64 {
+        rounded_limit = u32::MAX as f64;
+    }
+    let merged_limit = rounded_limit as u32;
 
     let mut effective_price = forward
         .requested_compute_unit_price_micro_lamports
@@ -464,7 +601,7 @@ fn combine_ultra_swaps(
 
     let mut compute_budget_instructions = Vec::new();
     compute_budget_instructions.push(ComputeBudgetInstruction::set_compute_unit_limit(
-        combined_limit,
+        merged_limit,
     ));
     if let Some(price) = effective_price {
         compute_budget_instructions.push(ComputeBudgetInstruction::set_compute_unit_price(price));
@@ -499,7 +636,7 @@ fn combine_ultra_swaps(
         address_lookup_table_addresses,
         resolved_lookup_tables,
         prioritization_fee_lamports: prioritization_fee,
-        compute_unit_limit: combined_limit,
+        compute_unit_limit: merged_limit,
     }
 }
 

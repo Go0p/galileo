@@ -96,6 +96,11 @@ Marginfi 的账户创建、Bank 映射、借款规模等均内置处理：首次
 ## DFlow 引擎参数
 - `[galileo.engine.dflow.swap_config].cu_limit_multiplier`：对 `/swap-instructions` 返回的 compute unit limit 乘以系数后再落地，默认 `1.0`，可用于收敛 DFlow 过于保守的估算；若填入 `0 < value < 1` 表示收缩，`value > 1` 则放大开销。
 
+## Kamino 引擎参数
+- `[galileo.engine.kamino.quote_config].cu_limit_multiplier`：对 `/kswap/all-routes` 返回的 compute budget 指令中的 compute unit limit 乘以系数并写回，默认 `1.0`；用于在保存吞吐的前提下压缩或放大 Kamino 给出的上限估计。
+- `[galileo.engine.kamino.quote_config].parallelism`：Kamino 报价请求并发度（同 Jupiter/DFlow 语义），支持 `"auto"` 或正整数。
+- `[galileo.engine.kamino.quote_config].batch_interval_ms`：Kamino 报价批次之间的最小间隔，毫秒；`0` 表示不额外延迟。
+
 ## 后续建议
 1. 根据环境补全 RPC、Yellowstone、Jito 等敏感信息。
 2. 将 `token-cache.json` 的生成流程移植为 Rust 子命令或定时任务，保持和 `filter_markets_with_mints` 同步。

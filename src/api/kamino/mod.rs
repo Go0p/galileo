@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use metrics::{counter, histogram};
-use reqwest::StatusCode;
+use reqwest::{header, StatusCode};
 use serde_json::Value;
 use thiserror::Error;
 use tracing::{Level, debug, trace, warn};
@@ -43,6 +43,26 @@ pub enum KaminoError {
     Schema(String),
     #[error("failed to construct IP-bound HTTP client: {0}")]
     ClientPool(String),
+}
+
+fn apply_kamino_headers(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    builder
+        .header(header::ACCEPT, "*/*")
+        .header(header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9")
+        .header(header::ORIGIN, "https://kamino.com")
+        .header(header::REFERER, "https://kamino.com/")
+        .header(header::HOST, "api.kamino.finance")
+        .header(
+            header::USER_AGENT,
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+        )
+        .header("Sec-Ch-Ua", r#""Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141""#)
+        .header("Sec-Ch-Ua-Mobile", "?0")
+        .header("Sec-Ch-Ua-Platform", r#""Windows""#)
+        .header("Sec-Fetch-Dest", "empty")
+        .header("Sec-Fetch-Mode", "cors")
+        .header("Sec-Fetch-Site", "cross-site")
+        .header("Priority", "u=1, i")
 }
 
 #[derive(Clone)]
@@ -189,10 +209,12 @@ impl KaminoApiClient {
 
         let client = self.http_client(local_ip)?;
         let started = Instant::now();
-        let response = client
-            .get(&url)
-            .timeout(self.quote_timeout)
-            .query(&query_params)
+        let response = apply_kamino_headers(
+            client
+                .get(&url)
+                .timeout(self.quote_timeout)
+                .query(&query_params),
+        )
             .send()
             .await
             .map_err(|err| {

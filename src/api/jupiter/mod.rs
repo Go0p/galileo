@@ -199,7 +199,7 @@ impl JupiterApiClient {
                 "Jupiter 报价耗时对比"
             );
         }
-        info!(
+        debug!(
             target: "jupiter::quote",
             input_mint = %quote.input_mint,
             output_mint = %quote.output_mint,
@@ -339,7 +339,7 @@ impl JupiterApiClient {
         let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
         self.record_swap_metrics("success", Some(elapsed_ms), Some(status));
 
-        info!(
+        debug!(
             target: "jupiter::swap_instructions",
             elapsed_ms = format_args!("{elapsed_ms:.3}"),
             compute_unit_limit = instructions.compute_unit_limit,

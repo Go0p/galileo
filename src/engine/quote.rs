@@ -276,6 +276,15 @@ impl QuoteExecutor {
                 match client.quote_with_ip(&request, local_ip).await {
                     Ok(response) => {
                         if let Some(route) = response.best_route() {
+                            debug!(
+                                target: "engine::quote",
+                                input_mint = %pair.input_mint,
+                                output_mint = %pair.output_mint,
+                                amount,
+                                router = route.router_type.as_str(),
+                                lookup_tables = route.lookup_table_accounts_bs58.len(),
+                                "Kamino 采用首条路线"
+                            );
                             let quote = KaminoQuote {
                                 input_mint: pair.input_pubkey,
                                 output_mint: pair.output_pubkey,

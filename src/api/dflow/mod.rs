@@ -15,7 +15,7 @@ use reqwest::{
 };
 use serde_json::Value;
 use thiserror::Error;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
 use url::form_urlencoded;
 
 use crate::config::{BotConfig, LoggingConfig, LoggingProfile};
@@ -348,7 +348,7 @@ impl DflowApiClient {
         let elapsed = guard.finish();
         let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
         self.record_quote_metrics("success", Some(elapsed_ms), Some(status));
-        info!(
+        debug!(
             target: "dflow::quote",
             input_mint = %quote.payload().input_mint,
             output_mint = %quote.payload().output_mint,
@@ -540,7 +540,7 @@ impl DflowApiClient {
         let elapsed = guard.finish();
         let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
         self.record_swap_metrics("success", Some(elapsed_ms), Some(status));
-        info!(
+        debug!(
             target: "dflow::swap_instructions",
             compute_unit_limit = instructions.compute_unit_limit,
             prioritization_fee = instructions

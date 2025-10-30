@@ -260,11 +260,23 @@ impl LanderStack {
                             local_ip,
                             &err,
                         );
+                        let sig_display = signature.as_deref().unwrap_or("<none>");
                         warn!(
                             target: "lander::stack",
                             lander = lander_name,
-                            tx_signature = signature.as_deref().unwrap_or(""),
-                            "lander submission failed"
+                            variant = variant_id,
+                            attempt,
+                            tx_signature = sig_display,
+                            "{}",
+                            format_args!(
+                                "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={}",
+                                strategy_name,
+                                dispatch_label,
+                                lander_name,
+                                variant_id,
+                                attempt,
+                                sig_display
+                            )
                         );
                         last_err = Some(err);
                     }
@@ -395,7 +407,17 @@ impl LanderStack {
                                     lander = lander_name,
                                     endpoint = endpoint_name,
                                     tx_signature = signature.as_deref().unwrap_or(""),
-                                    "lander submission failed"
+                                    "{}",
+                                    format_args!(
+                                        "落地器失败: 策略={} 调度={} 落地器={} Endpoint={} 变体={} 尝试={} 签名={}",
+                                        strategy_name,
+                                        dispatch_label,
+                                        lander_name,
+                                        endpoint_name,
+                                        variant_id,
+                                        attempt,
+                                        signature.as_deref().unwrap_or("<none>")
+                                    )
                                 );
                             }
                             None => {
@@ -403,7 +425,16 @@ impl LanderStack {
                                     target: "lander::stack",
                                     lander = lander_name,
                                     tx_signature = signature.as_deref().unwrap_or(""),
-                                    "lander submission failed"
+                                    "{}",
+                                    format_args!(
+                                        "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={}",
+                                        strategy_name,
+                                        dispatch_label,
+                                        lander_name,
+                                        variant_id,
+                                        attempt,
+                                        signature.as_deref().unwrap_or("<none>")
+                                    )
                                 );
                             }
                         }

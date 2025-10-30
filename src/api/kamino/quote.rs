@@ -3,7 +3,7 @@ use serde_json::Value;
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::pubkey::Pubkey;
 
-use super::serde_helpers::{parse_base64, parse_pubkey, parse_u64};
+use super::serde_helpers::{parse_base64, parse_lookup_table_accounts, parse_pubkey, parse_u64};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -157,8 +157,8 @@ const DEFAULT_ROUTER_TYPES: &[&str] = &[
 ];
 const DEFAULT_INCLUDE_LIMO_LOGS: bool = false;
 const DEFAULT_INCLUDE_RFQ: bool = true;
-const DEFAULT_TIMEOUT_MS: u64 = 200;
-const DEFAULT_AT_LEAST_ONE_TIMEOUT_MS: u64 = 200;
+const DEFAULT_TIMEOUT_MS: u64 = 2000;
+const DEFAULT_AT_LEAST_ONE_TIMEOUT_MS: u64 = 2000;
 const DEFAULT_WITH_SIMULATION: bool = false;
 const DEFAULT_FILTER_FAILED_SIMULATIONS: bool = false;
 const DEFAULT_REQUEST_PRICE_IMPACT: bool = false;
@@ -207,8 +207,8 @@ pub struct Route {
     pub price_impact_amount: Option<String>,
     #[serde(default)]
     pub guaranteed_price_impact_amount: Option<String>,
-    #[serde(default)]
-    pub lookup_table_accounts_bs58: Vec<String>,
+    #[serde(default, deserialize_with = "parse_lookup_table_accounts")]
+    pub lookup_table_accounts_bs58: Vec<LookupTableEntry>,
     pub amounts_exact_in: AmountsExactIn,
     pub amounts_exact_out: AmountsExactOut,
     pub instructions: RouteInstructions,
@@ -248,6 +248,7 @@ pub struct AmountsExactOut {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct RouteInstructions {
     #[serde(default)]
     pub create_in_ata_ixs: Vec<RawInstruction>,
@@ -278,14 +279,20 @@ impl RouteInstructions {
 
     pub fn extend_into(&self, target: &mut Vec<Instruction>) {
         append(target, &self.create_in_ata_ixs);
-        append(target, &self.create_out_ata_ixs);
-        append(target, &self.wrap_sol_ixs);
-        append(target, &self.limo_logs_start_ixs);
-        append(target, &self.limo_ledger_start_ixs);
         append(target, &self.swap_ixs);
-        append(target, &self.limo_ledger_end_ixs);
-        append(target, &self.limo_logs_end_ixs);
-        append(target, &self.unwrap_sol_ixs);
+    }
+
+    pub fn append_from(&mut self, other: &RouteInstructions) {
+        self.wrap_sol_ixs
+            .extend(other.wrap_sol_ixs.iter().cloned());
+        self.swap_ixs.extend(other.swap_ixs.iter().cloned());
+        self.unwrap_sol_ixs
+            .extend(other.unwrap_sol_ixs.iter().cloned());
+    }
+
+    #[allow(dead_code)]
+    pub fn create_out_ata_ixs(&self) -> &[RawInstruction] {
+        &self.create_out_ata_ixs
     }
 }
 
@@ -293,6 +300,13 @@ fn append(target: &mut Vec<Instruction>, source: &[RawInstruction]) {
     for ix in source {
         target.push(ix.to_instruction());
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LookupTableEntry {
+    pub key: String,
+    #[serde(default)]
+    pub addresses: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -336,6 +350,7 @@ pub struct RawAccountMeta {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use serde_json::json;
 
     fn params_map(params: &[(String, String)]) -> HashMap<&str, Vec<String>> {
         let mut map: HashMap<&str, Vec<String>> = HashMap::new();
@@ -407,5 +422,61 @@ mod tests {
 
         let routers = map.get("routerTypes[]").expect("custom routers missing");
         assert_eq!(routers, &vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn route_parses_lookup_table_accounts_in_mixed_forms() {
+        let json = json!({
+            "routerType": "fluxbeam",
+            "responseTimeGetQuoteMs": 10,
+            "amountsExactIn": {
+                "amountIn": "1",
+                "amountOutGuaranteed": "2",
+                "amountOut": "2"
+            },
+            "amountsExactOut": {
+                "amountOut": "0",
+                "amountInGuaranteed": "0",
+                "amountIn": "0"
+            },
+            "instructions": {
+                "createInAtaIxs": [],
+                "createOutAtaIxs": [],
+                "wrapSolIxs": [],
+                "limoLogsStartIxs": [],
+                "limoLedgerStartIxs": [],
+                "swapIxs": [],
+                "limoLedgerEndIxs": [],
+                "limoLogsEndIxs": [],
+                "unwrapSolIxs": []
+            },
+            "lookupTableAccountsBs58": [
+                " 5abc ",
+                { "address": "6def" },
+                { "lookupTable": "7ghi" },
+                { "lookupTableAddress": "8jkl" },
+                { "lookupTableAccount": { "address": "9mno" } },
+                { "lookupTableAccount": { "addresses": ["A1", "B2"] } },
+                { "addresses": ["C3", null] },
+                { "pubkey": "D4" },
+                null
+            ]
+        });
+
+        let route: Route = serde_json::from_value(json).expect("route deserializes");
+        assert_eq!(
+            route.lookup_table_accounts_bs58,
+            vec![
+                "5abc".to_string(),
+                "6def".to_string(),
+                "7ghi".to_string(),
+                "8jkl".to_string(),
+                "9mno".to_string(),
+                "A1".to_string(),
+                "B2".to_string(),
+                "C3".to_string(),
+                "D4".to_string(),
+            ]
+        );
     }
 }
