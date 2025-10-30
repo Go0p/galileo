@@ -88,6 +88,7 @@ struct LegCombination {
 struct LegContextDefaults {
     wrap_and_unwrap_sol: Option<bool>,
     dynamic_compute_unit_limit: Option<bool>,
+    compute_unit_limit_multiplier: Option<f64>,
 }
 
 pub struct MultiLegEngineContext {
@@ -130,6 +131,17 @@ impl MultiLegEngineContext {
             .dynamic_compute_unit_limit = Some(value);
     }
 
+    pub fn set_compute_unit_limit_multiplier(
+        &mut self,
+        kind: MultiLegAggregatorKind,
+        multiplier: f64,
+    ) {
+        self.leg_defaults
+            .entry(kind)
+            .or_default()
+            .compute_unit_limit_multiplier = Some(multiplier);
+    }
+
     fn runtime(&self) -> &MultiLegRuntime {
         &self.runtime
     }
@@ -154,6 +166,9 @@ impl MultiLegEngineContext {
             if let Some(flag) = defaults.dynamic_compute_unit_limit {
                 ctx.dynamic_compute_unit_limit = Some(flag);
             }
+            if let Some(multiplier) = defaults.compute_unit_limit_multiplier {
+                ctx.compute_unit_limit_multiplier = Some(multiplier);
+            }
         }
         ctx
     }
@@ -177,7 +192,6 @@ impl MultiLegExecution {
 
 pub(super) struct MintSchedule {
     amounts: Vec<u64>,
-    next_index: usize,
     process_delay: Duration,
     next_ready: Instant,
 }
@@ -186,22 +200,24 @@ impl MintSchedule {
     fn from_profile(profile: TradeProfile) -> Self {
         Self {
             amounts: profile.amounts,
-            next_index: 0,
             process_delay: profile.process_delay,
             next_ready: Instant::now(),
         }
     }
 
-    fn next_amount(&mut self) -> Option<u64> {
-        if self.amounts.is_empty() {
+    fn take_ready_batch(&mut self, now: Instant) -> Option<Vec<u64>> {
+        if self.amounts.is_empty() || now < self.next_ready {
             return None;
         }
-        let amount = self.amounts[self.next_index];
-        self.next_index = (self.next_index + 1) % self.amounts.len();
-        Some(amount)
+        self.next_ready = now + self.process_delay;
+        Some(self.amounts.clone())
     }
 
-    fn ready(&self, now: Instant) -> bool {
+    fn has_amounts(&self) -> bool {
+        !self.amounts.is_empty()
+    }
+
+    fn is_ready(&self, now: Instant) -> bool {
         now >= self.next_ready
     }
 
@@ -209,14 +225,6 @@ impl MintSchedule {
         self.next_ready
             .checked_duration_since(now)
             .unwrap_or(Duration::ZERO)
-    }
-
-    fn mark_dispatched(&mut self, now: Instant) {
-        self.next_ready = now + self.process_delay;
-    }
-
-    fn process_delay(&self) -> Duration {
-        self.process_delay
     }
 }
 
@@ -856,20 +864,14 @@ where
             batch_id,
             pair,
             amount,
-            process_delay,
         } = batch;
 
         trace!(
             target: "engine::quote",
             batch_id,
             amount,
-            process_delay = ?process_delay,
             "处理报价批次（legacy）"
         );
-
-        if !process_delay.is_zero() {
-            tokio::time::sleep(process_delay).await;
-        }
 
         let task = QuoteTask::new(pair, amount);
         self.process_task(task, Some(batch_id)).await
@@ -888,14 +890,12 @@ where
             batch_id,
             pair,
             amount,
-            process_delay,
         } = batch;
 
         trace!(
             target: "engine::quote",
             batch_id,
             amount,
-            process_delay = ?process_delay,
             has_quote = quote.is_some(),
             forward_ip = ?forward_ip,
             reverse_ip = ?reverse_ip,

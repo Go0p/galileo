@@ -313,6 +313,7 @@ impl Default for cfg::DflowSwapConfig {
         Self {
             dynamic_compute_unit_limit: true,
             wrap_and_unwrap_sol: false,
+            cu_limit_multiplier: 1.0,
         }
     }
 }

@@ -409,6 +409,12 @@ pub struct DflowSwapConfig {
     pub dynamic_compute_unit_limit: bool,
     #[serde(default)]
     pub wrap_and_unwrap_sol: bool,
+    #[serde(default = "default_cu_limit_multiplier")]
+    pub cu_limit_multiplier: f64,
+}
+
+const fn default_cu_limit_multiplier() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Clone, Deserialize)]

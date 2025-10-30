@@ -216,7 +216,19 @@ impl SwapPreparer {
                     }
                 }
 
-                let response = client.swap_instructions(&request, local_ip).await?;
+                let mut response = client.swap_instructions(&request, local_ip).await?;
+                let original_limit = response.compute_unit_limit;
+                let adjusted_limit =
+                    response.adjust_compute_unit_limit(defaults.cu_limit_multiplier);
+                if adjusted_limit != original_limit {
+                    debug!(
+                        target = "engine::swap_preparer",
+                        original = original_limit,
+                        adjusted = adjusted_limit,
+                        multiplier = defaults.cu_limit_multiplier,
+                        "DFlow compute unit limit 已按配置系数调整"
+                    );
+                }
                 SwapInstructionsVariant::Dflow(response)
             }
             (SwapPreparerBackend::Kamino, QuotePayloadVariant::Kamino(payload)) => {

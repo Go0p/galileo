@@ -1387,8 +1387,11 @@ impl Strategy for PureBlindStrategy {
 
                 for route in &self.routes {
                     if let Some(first_step) = route.forward.first() {
-                        if let Some(ready) = ctx.take_amounts_if_ready(&first_step.input.mint) {
-                            for &amount in &ready.amounts {
+                        if let Some(amounts) = ctx.take_amounts_if_ready(&first_step.input.mint) {
+                            if amounts.is_empty() {
+                                continue;
+                            }
+                            for &amount in &amounts {
                                 let min_profit = route.min_profit();
                                 batch.push(BlindOrder {
                                     amount_in: amount,
@@ -1404,21 +1407,19 @@ impl Strategy for PureBlindStrategy {
                                 });
                             }
 
-                            if !ready.amounts.is_empty() {
-                                let count = ready.amounts.len();
-                                events::pure_blind_orders_prepared(
-                                    route.label(),
-                                    "forward",
-                                    route.source().as_str(),
-                                    count,
-                                );
-                                events::pure_blind_orders_prepared(
-                                    route.label(),
-                                    "reverse",
-                                    route.source().as_str(),
-                                    count,
-                                );
-                            }
+                            let count = amounts.len();
+                            events::pure_blind_orders_prepared(
+                                route.label(),
+                                "forward",
+                                route.source().as_str(),
+                                count,
+                            );
+                            events::pure_blind_orders_prepared(
+                                route.label(),
+                                "reverse",
+                                route.source().as_str(),
+                                count,
+                            );
                         }
                     }
                 }

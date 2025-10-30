@@ -90,6 +90,9 @@ jupiter:
 
 Marginfi 的账户创建、Bank 映射、借款规模等均内置处理：首次启动会根据钱包自动创建 Marginfi account，后续复用；借款金额默认等于策略的交易规模。
 
+## DFlow 引擎参数
+- `[galileo.engine.dflow.swap_config].cu_limit_multiplier`：对 `/swap-instructions` 返回的 compute unit limit 乘以系数后再落地，默认 `1.0`，可用于收敛 DFlow 过于保守的估算；若填入 `0 < value < 1` 表示收缩，`value > 1` 则放大开销。
+
 ## 后续建议
 1. 根据环境补全 RPC、Yellowstone、Jito 等敏感信息。
 2. 将 `token-cache.json` 的生成流程移植为 Rust 子命令或定时任务，保持和 `filter_markets_with_mints` 同步。

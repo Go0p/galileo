@@ -180,7 +180,7 @@ impl LegProvider for DflowLegProvider {
         lease: Option<&IpLeaseHandle>,
     ) -> Result<Self::Plan, Self::BuildError> {
         let request = self.build_swap_request(quote, context);
-        let response = match self
+        let mut response = match self
             .client
             .swap_instructions(&request, lease.map(|handle| handle.ip()))
             .await
@@ -195,7 +195,22 @@ impl LegProvider for DflowLegProvider {
                 return Err(err);
             }
         };
+        let multiplier = context
+            .compute_unit_limit_multiplier
+            .unwrap_or(self.swap_defaults.cu_limit_multiplier);
+        let original_limit = response.compute_unit_limit;
+        let adjusted_limit = response.adjust_compute_unit_limit(multiplier);
+        if adjusted_limit != original_limit {
+            debug!(
+                target: "multi_leg::dflow",
+                original = original_limit,
+                adjusted = adjusted_limit,
+                multiplier,
+                "DFlow 指令 compute unit limit 按系数调整"
+            );
+        }
         let mut plan = self.into_plan(quote, response);
+        plan.requested_compute_unit_limit = Some(adjusted_limit);
         if plan.requested_compute_unit_price_micro_lamports.is_none() {
             plan.requested_compute_unit_price_micro_lamports =
                 context.compute_unit_price_micro_lamports;

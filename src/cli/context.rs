@@ -161,6 +161,23 @@ pub fn resolve_global_http_proxy(global: &GlobalConfig) -> Option<String> {
         .map(|value| value.to_string())
 }
 
+pub fn rpc_default_headers(endpoint: &str) -> reqwest::header::HeaderMap {
+    let mut headers = HttpSender::default_headers();
+
+    if let Ok(url) = reqwest::Url::parse(endpoint) {
+        if let Some(host) = url.host_str() {
+            if host.eq_ignore_ascii_case("pump-fe.helius-rpc.com") {
+                headers.insert(
+                    reqwest::header::ORIGIN,
+                    reqwest::header::HeaderValue::from_static("https://swap.pump.fun"),
+                );
+            }
+        }
+    }
+
+    headers
+}
+
 fn sanitize_jupiter_host(host: &str) -> String {
     let trimmed = host.trim();
     if trimmed.is_empty() {
@@ -327,6 +344,7 @@ mod tests {
                 api_proxy: Some("   ".to_string()),
                 ..JupiterEngineConfig::default()
             },
+            ..EngineConfig::default()
         };
         assert!(resolve_jupiter_api_proxy(&engine).is_none());
     }
@@ -339,11 +357,28 @@ mod tests {
                 api_proxy: Some("  http://127.0.0.1:8888  ".to_string()),
                 ..JupiterEngineConfig::default()
             },
+            ..EngineConfig::default()
         };
         assert_eq!(
             resolve_jupiter_api_proxy(&engine).as_deref(),
             Some("http://127.0.0.1:8888")
         );
+    }
+
+    #[test]
+    fn test_rpc_default_headers_adds_origin_for_pump_fun() {
+        let headers =
+            rpc_default_headers("https://pump-fe.helius-rpc.com/?api-key=test-key-placeholder");
+        let origin = headers
+            .get(reqwest::header::ORIGIN)
+            .and_then(|value| value.to_str().ok());
+        assert_eq!(origin, Some("https://swap.pump.fun"));
+    }
+
+    #[test]
+    fn test_rpc_default_headers_no_origin_on_other_hosts() {
+        let headers = rpc_default_headers("https://api.mainnet-beta.solana.com");
+        assert!(headers.get(reqwest::header::ORIGIN).is_none());
     }
 }
 
@@ -356,8 +391,14 @@ pub fn resolve_rpc_client(global: &GlobalConfig) -> Result<ResolvedRpcClient> {
     let rotator = Arc::new(RpcEndpointRotator::new(endpoints)?);
     let primary_url = rotator.primary_url().to_string();
 
-    let client = if let Some(proxy_url) = resolve_global_http_proxy(global) {
-        let proxy = reqwest::Proxy::all(&proxy_url)
+    let proxy = resolve_global_http_proxy(global);
+    let mut builder = reqwest::Client::builder()
+        .default_headers(rpc_default_headers(&primary_url))
+        .timeout(Duration::from_secs(30))
+        .pool_idle_timeout(Duration::from_secs(30));
+
+    if let Some(proxy_url) = proxy.as_ref() {
+        let proxy = reqwest::Proxy::all(proxy_url)
             .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
         info!(
             target: "rpc::client",
@@ -365,22 +406,19 @@ pub fn resolve_rpc_client(global: &GlobalConfig) -> Result<ResolvedRpcClient> {
             url = %primary_url,
             "RPC 客户端将通过 global.proxy 访问"
         );
-        let client = reqwest::Client::builder()
-            .default_headers(HttpSender::default_headers())
-            .timeout(Duration::from_secs(30))
-            .pool_idle_timeout(Duration::from_secs(30))
-            .proxy(proxy)
-            .danger_accept_invalid_certs(true)
-            .build()
-            .map_err(|err| anyhow!("构建代理 RPC 客户端失败: {err}"))?;
-        let sender = HttpSender::new_with_client(primary_url.clone(), client);
-        RpcClient::new_sender(
-            sender,
-            RpcClientConfig::with_commitment(solana_commitment_config::CommitmentConfig::default()),
-        )
+        builder = builder.proxy(proxy).danger_accept_invalid_certs(true);
     } else {
-        RpcClient::new(primary_url.clone())
-    };
+        builder = builder.no_proxy();
+    }
+
+    let client = builder
+        .build()
+        .map_err(|err| anyhow!("构建 RPC 客户端失败: {err}"))?;
+    let sender = HttpSender::new_with_client(primary_url.clone(), client);
+    let client = RpcClient::new_sender(
+        sender,
+        RpcClientConfig::with_commitment(solana_commitment_config::CommitmentConfig::default()),
+    );
 
     if rotator.endpoints().len() > 1 {
         info!(

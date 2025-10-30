@@ -68,13 +68,10 @@
 3. **缓存策略**：遵循“无缓存原则”。如需提高性能，可在单个 tick 内复用一次 RPC 结果，但不得跨 tick 保存陈旧数据。
 
 ## 4. 交易调度与随机化
-- **trade size 生成**：沿用 `generate_amounts_for_base()` 逻辑（`src/cli/strategy.rs:296`），得到升序 `Vec<u64>`。  
-- **双向盲发**：对每个 `amount`，生成两条路线：  
-  1. `DEX_A (买入)` → `DEX_B (卖出)`  
-  2. `DEX_B (买入)` → `DEX_A (卖出)`  
-  这样 `trade_range_count = 3` ⇒ 共 6 笔交易。
-- **顺序随机化**：可在调度层（`StrategyEngine::handle_action` 或新建执行器）对双向指令进行 `shuffle`，避免可预测节奏。
-- **节流控制**：沿用 `process_delay`、`sending_cooldown`。需确保盲发过程中仍尊重这些参数，否则会与守则“评估 Quote → Swap → 落地耗时”冲突。
+- **trade size 生成**：沿用 `generate_amounts_for_base()` 逻辑（`src/cli/strategy.rs`），配置中声明的每个档位都会参与；若设置了 `trade_range_count`，会在 `min/max` 间按策略插值补点，然后对所有档位施加 930–999 bp 的轻量扰动。  
+- **批量盲发**：当某个 base mint 达到 `process_delay`，调度器会一次性发送该 mint 的全部 trade size，确保 IP 资源被充分占用。  
+- **顺序随机化**：若需要进一步打散顺序，可在调度层（`StrategyEngine::handle_action` 或专用执行器）对返回的任务 `shuffle`。  
+- **节流控制**：`process_delay` 用于约束同一 base mint 进入下一轮批量调度的最小间隔；`batch_interval_ms` 仅在需要时作为跨批次退避。`sending_cooldown` 暂未在调度层生效，如需开启需补充实现。
 
 ## 5. 监控与性能
 - **Tracing**：在关键步骤添加 `hotpath::measure` / `hotpath::measure_block!` 标签，例如：  

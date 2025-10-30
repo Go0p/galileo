@@ -129,6 +129,7 @@ pub struct LegBuildContext {
     pub sponsor: Option<Pubkey>,
     pub wrap_and_unwrap_sol: Option<bool>,
     pub dynamic_compute_unit_limit: Option<bool>,
+    pub compute_unit_limit_multiplier: Option<f64>,
 }
 
 /// 腿执行计划，包含组合指令和可能的附加元数据。

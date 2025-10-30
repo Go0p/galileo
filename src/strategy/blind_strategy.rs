@@ -31,19 +31,22 @@ impl Strategy for BlindStrategy {
                     return ctx.into_decision();
                 }
 
-                let idx = if self.next_pair_index >= pairs.len() {
+                let total = pairs.len();
+                if self.next_pair_index >= total {
                     self.next_pair_index = 0;
-                    0
-                } else {
-                    self.next_pair_index
-                };
-
-                if let Some(pair) = pairs.get(idx) {
-                    if let Some(ready) = ctx.take_amounts_if_ready(&pair.input_pubkey) {
-                        ctx.push_quote_tasks(pair, ready);
-                    }
-                    self.next_pair_index = (idx + 1) % pairs.len();
                 }
+                let start = self.next_pair_index;
+                for offset in 0..total {
+                    let idx = (start + offset) % total;
+                    let pair = &pairs[idx];
+                    if let Some(amounts) = ctx.take_amounts_if_ready(&pair.input_pubkey) {
+                        if !amounts.is_empty() {
+                            ctx.push_quote_tasks(pair, amounts);
+                        }
+                    }
+                }
+
+                self.next_pair_index = (start + 1) % total;
 
                 ctx.into_decision()
             }

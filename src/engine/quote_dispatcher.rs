@@ -8,7 +8,7 @@ use futures::{StreamExt, stream::FuturesUnordered};
 use reqwest::StatusCode;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
-use tracing::{trace, warn};
+use tracing::trace;
 
 use crate::engine::EngineResult;
 use crate::engine::error::EngineError;
@@ -107,7 +107,7 @@ impl QuoteDispatcher {
             let strategy = Arc::clone(&strategy_label);
 
             futures.push(Box::pin(async move {
-                let delay = dispatcher.compute_dispatch_delay(index, batch.process_delay);
+                let delay = dispatcher.compute_dispatch_delay(index, parallelism);
                 if !delay.is_zero() {
                     sleep(delay).await;
                 }
@@ -360,27 +360,22 @@ impl QuoteDispatcher {
         computed.max(1).min(planned)
     }
 
-    fn compute_dispatch_delay(&self, index: usize, process_delay: Duration) -> Duration {
-        let base_delay = if self.batch_interval.is_zero() || index == 0 {
-            Duration::ZERO
-        } else {
-            // 使用 f32 保持简单，batch 数量有限时不会溢出
-            self.batch_interval.mul_f32(index as f32)
-        };
-
-        match base_delay.checked_add(process_delay) {
-            Some(total) => total,
-            None => {
-                warn!(
-                    target: "engine::dispatcher",
-                    batch_index = index,
-                    base_delay = ?base_delay,
-                    process_delay = ?process_delay,
-                    "批次调度延迟溢出，使用 1 秒退避"
-                );
-                Duration::from_secs(1)
-            }
+    fn compute_dispatch_delay(&self, index: usize, parallelism: usize) -> Duration {
+        let parallelism = parallelism.max(1);
+        if self.batch_interval.is_zero() {
+            return Duration::ZERO;
         }
+
+        let wave = index / parallelism;
+        if wave == 0 {
+            return Duration::ZERO;
+        }
+
+        if index % parallelism == 0 {
+            return self.batch_interval;
+        }
+
+        Duration::ZERO
     }
 }
 

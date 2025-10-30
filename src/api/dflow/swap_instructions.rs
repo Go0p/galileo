@@ -3,6 +3,7 @@ use super::serde_helpers::{field_as_string, option_field_as_string};
 pub use crate::api::jupiter::swap_instructions::{PrioritizationType, PriorityLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_sdk::{
     hash::Hash,
     instruction::{AccountMeta, Instruction},
@@ -88,6 +89,9 @@ pub enum DestinationTokenAccount {
     ViaOwner(DestinationTokenAccountViaOwner),
     Address(#[serde(with = "field_as_string")] Pubkey),
 }
+
+const COMPUTE_BUDGET_PROGRAM_ID: Pubkey =
+    solana_sdk::pubkey!("ComputeBudget111111111111111111111111111111");
 
 /// `/swap-instructions` 请求体。
 #[derive(Serialize, Debug, Clone)]
@@ -280,6 +284,47 @@ impl SwapInstructionsResponse {
         instructions.extend(self.cleanup_instructions.iter().cloned());
         instructions
     }
+
+    pub fn adjust_compute_unit_limit(&mut self, multiplier: f64) -> u32 {
+        let sanitized_multiplier = if multiplier.is_finite() && multiplier > 0.0 {
+            multiplier
+        } else {
+            1.0
+        };
+        let base_limit = self.compute_unit_limit.max(1);
+        let mut scaled = (base_limit as f64 * sanitized_multiplier).round();
+        if !scaled.is_finite() {
+            scaled = base_limit as f64;
+        }
+        if scaled < 1.0 {
+            scaled = 1.0;
+        }
+        if scaled > u32::MAX as f64 {
+            scaled = u32::MAX as f64;
+        }
+        let scaled_u32 = scaled as u32;
+        if scaled_u32 == self.compute_unit_limit {
+            return self.compute_unit_limit.max(1);
+        }
+        self.compute_unit_limit = scaled_u32.max(1);
+
+        let mut replaced = false;
+        for ix in self.compute_budget_instructions.iter_mut() {
+            if is_compute_unit_limit_instruction(ix) {
+                *ix = ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit);
+                replaced = true;
+            }
+        }
+
+        if !replaced {
+            self.compute_budget_instructions.insert(
+                0,
+                ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit),
+            );
+        }
+
+        self.compute_unit_limit
+    }
 }
 
 impl TryFrom<Value> for SwapInstructionsResponse {
@@ -290,6 +335,10 @@ impl TryFrom<Value> for SwapInstructionsResponse {
         let internal: SwapInstructionsResponseInternal = serde_json::from_value(value)?;
         Ok(Self::from_internal(raw, internal))
     }
+}
+
+fn is_compute_unit_limit_instruction(ix: &Instruction) -> bool {
+    ix.program_id == COMPUTE_BUDGET_PROGRAM_ID && ix.data.first() == Some(&2)
 }
 
 #[allow(dead_code)]
@@ -310,5 +359,62 @@ mod base64_serde {
         STANDARD
             .decode(raw)
             .map_err(|err| de::Error::custom(format!("base64 decoding error: {err:?}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+
+    fn stub_response(limit: u32) -> SwapInstructionsResponse {
+        SwapInstructionsResponse {
+            raw: Value::Null,
+            compute_budget_instructions: vec![ComputeBudgetInstruction::set_compute_unit_limit(
+                limit,
+            )],
+            setup_instructions: Vec::new(),
+            swap_instruction: Instruction {
+                program_id: Pubkey::new_unique(),
+                accounts: Vec::new(),
+                data: Vec::new(),
+            },
+            cleanup_instructions: Vec::new(),
+            other_instructions: Vec::new(),
+            address_lookup_table_addresses: Vec::new(),
+            blockhash_with_metadata: BlockhashWithMetadata {
+                blockhash: Hash::default(),
+                last_valid_block_height: 0,
+            },
+            prioritization_fee_lamports: None,
+            compute_unit_limit: limit,
+            prioritization_type: None,
+        }
+    }
+
+    #[test]
+    fn adjust_compute_unit_limit_scales_and_updates_instruction() {
+        let mut response = stub_response(1_400_000);
+        let updated = response.adjust_compute_unit_limit(0.5);
+        assert_eq!(updated, 700_000);
+        assert_eq!(response.compute_unit_limit, 700_000);
+        let limit_ix = response
+            .compute_budget_instructions
+            .iter()
+            .find(|ix| is_compute_unit_limit_instruction(ix))
+            .expect("missing compute unit limit instruction");
+        assert_eq!(limit_ix.data[1..5], 700_000u32.to_le_bytes());
+    }
+
+    #[test]
+    fn adjust_compute_unit_limit_inserts_when_absent() {
+        let mut response = stub_response(500_000);
+        response.compute_budget_instructions.clear();
+        let updated = response.adjust_compute_unit_limit(1.2);
+        assert_eq!(updated, 600_000);
+        assert!(!response.compute_budget_instructions.is_empty());
+        let limit_ix = &response.compute_budget_instructions[0];
+        assert!(is_compute_unit_limit_instruction(limit_ix));
+        assert_eq!(limit_ix.data[1..5], 600_000u32.to_le_bytes());
     }
 }

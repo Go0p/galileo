@@ -204,6 +204,10 @@ async fn run_blind_engine(
             MultiLegAggregatorKind::Dflow,
             dflow_defaults.dynamic_compute_unit_limit,
         );
+        ctx.set_compute_unit_limit_multiplier(
+            MultiLegAggregatorKind::Dflow,
+            dflow_defaults.cu_limit_multiplier,
+        );
         let kamino_defaults = &config.galileo.engine.kamino.quote_config;
         ctx.set_wrap_and_unwrap_sol(
             MultiLegAggregatorKind::Kamino,
@@ -832,8 +836,9 @@ pub(crate) fn build_rpc_client_pool(
             return Ok(existing.clone());
         }
 
+        let default_headers = crate::cli::context::rpc_default_headers(endpoint);
         let mut builder = reqwest::Client::builder()
-            .default_headers(HttpSender::default_headers())
+            .default_headers(default_headers)
             .timeout(Duration::from_secs(30))
             .pool_idle_timeout(Duration::from_secs(30))
             .local_address(ip);
@@ -1481,11 +1486,17 @@ fn generate_amounts_for_base(base: &config::BlindBaseMintConfig) -> Vec<u64> {
         return Vec::new();
     }
 
-    let mut values: BTreeSet<u64> = base.trade_size_range.iter().copied().collect();
-    if base.trade_size_range.len() >= 2 {
+    let mut values: BTreeSet<u64> = base
+        .trade_size_range
+        .iter()
+        .copied()
+        .filter(|value| *value > 0)
+        .collect();
+
+    if values.len() >= 2 {
         if let Some(count) = base.trade_range_count {
             if count >= 2 {
-                let mut sorted = base.trade_size_range.clone();
+                let mut sorted = values.iter().copied().collect::<Vec<_>>();
                 sorted.sort_unstable();
                 let min = sorted.first().copied().unwrap_or(0);
                 let max = sorted.last().copied().unwrap_or(min);
@@ -1501,15 +1512,13 @@ fn generate_amounts_for_base(base: &config::BlindBaseMintConfig) -> Vec<u64> {
         }
     }
 
-    // Titan 在单个 IP 上仅需要两档 trade size，保留最大的两档即可。
-    let selected: Vec<u64> = values.iter().rev().take(2).copied().collect();
-    if selected.is_empty() {
+    if values.is_empty() {
         return Vec::new();
     }
 
     let mut rng = rand::rng();
     let mut tweaked: BTreeSet<u64> = BTreeSet::new();
-    for amount in selected {
+    for amount in values {
         let basis_points: u16 = rng.random_range(930..=999);
         let adjusted = (((amount as u128) * basis_points as u128) + 999) / 1_000;
         let normalized = adjusted.max(1).min(u128::from(u64::MAX)) as u64;
