@@ -1016,6 +1016,8 @@ pub struct CopyDispatchConfig {
     pub max_inflight: u32,
     #[serde(default = "default_copy_dispatch_queue_capacity")]
     pub queue_capacity: u32,
+    #[serde(default = "default_copy_dispatch_queue_worker_count")]
+    pub queue_worker_count: u32,
     #[serde(default = "default_copy_dispatch_replay_interval_ms")]
     pub replay_interval_ms: u64,
     #[serde(default = "default_copy_dispatch_queue_send_interval_ms")]
@@ -1030,6 +1032,7 @@ impl Default for CopyDispatchConfig {
             mode: default_copy_dispatch_mode(),
             max_inflight: default_copy_dispatch_max_inflight(),
             queue_capacity: default_copy_dispatch_queue_capacity(),
+            queue_worker_count: default_copy_dispatch_queue_worker_count(),
             replay_interval_ms: default_copy_dispatch_replay_interval_ms(),
             queue_send_interval_ms: default_copy_dispatch_queue_send_interval_ms(),
             fanout_count: default_copy_dispatch_fanout_count(),
@@ -1060,6 +1063,10 @@ const fn default_copy_dispatch_max_inflight() -> u32 {
 
 const fn default_copy_dispatch_queue_capacity() -> u32 {
     256
+}
+
+const fn default_copy_dispatch_queue_worker_count() -> u32 {
+    1
 }
 
 const fn default_copy_dispatch_replay_interval_ms() -> u64 {

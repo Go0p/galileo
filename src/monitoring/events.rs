@@ -628,3 +628,33 @@ pub fn copy_transaction_dispatched(wallet: &Pubkey, signature: &Signature, attem
         .increment(1);
     }
 }
+
+pub fn copy_queue_depth(wallet: &Pubkey, depth: usize) {
+    if prometheus_enabled() {
+        gauge!(
+            "galileo_copy_queue_depth",
+            "wallet" => wallet.to_string()
+        )
+        .set(depth as f64);
+    }
+}
+
+pub fn copy_queue_task_dropped(wallet: &Pubkey) {
+    if prometheus_enabled() {
+        counter!(
+            "galileo_copy_queue_dropped_total",
+            "wallet" => wallet.to_string()
+        )
+        .increment(1);
+    }
+}
+
+pub fn copy_queue_workers(wallet: &Pubkey, workers: usize) {
+    if prometheus_enabled() {
+        gauge!(
+            "galileo_copy_queue_workers",
+            "wallet" => wallet.to_string()
+        )
+        .set(workers as f64);
+    }
+}

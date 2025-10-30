@@ -1,12 +1,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::str::FromStr;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
+use dashmap::DashMap;
 use futures::StreamExt;
 use serde_json::json;
 use solana_account_decoder::{UiAccountData, UiAccountEncoding};
@@ -33,7 +31,8 @@ use crate::lander::{Deadline, LanderFactory, LanderStack};
 use crate::monitoring::events;
 use crate::network::IpAllocator;
 use crate::txs::jupiter::types::JUPITER_V6_PROGRAM_ID;
-use tokio::sync::{Mutex, Notify};
+use flume::{self, Receiver, Sender, TrySendError};
+use tokio::sync::Mutex;
 
 use super::constants::MAX_SEEN_SIGNATURES;
 use super::grpc::{YellowstoneTransactionClient, parse_transaction_update};
@@ -61,7 +60,7 @@ pub(crate) struct CopyWalletRunner {
     cu_limit_multiplier: f64,
     dry_run: bool,
     seen_signatures: tokio::sync::Mutex<SeenSignatures>,
-    owned_token_accounts: tokio::sync::RwLock<HashMap<Pubkey, CachedTokenAccount>>,
+    owned_token_accounts: DashMap<Pubkey, CachedTokenAccount>,
 }
 
 struct CopyTask {
@@ -72,61 +71,71 @@ struct CopyTask {
 }
 
 struct CopyTaskQueue {
-    capacity: usize,
-    inner: Mutex<VecDeque<CopyTask>>,
-    notify: Notify,
-    closed: AtomicBool,
+    sender: Sender<CopyTask>,
+    receiver: Receiver<CopyTask>,
+    wallet: Pubkey,
 }
 
 impl CopyTaskQueue {
-    fn new(capacity: usize) -> Self {
-        Self {
-            capacity,
-            inner: Mutex::new(VecDeque::with_capacity(capacity)),
-            notify: Notify::new(),
-            closed: AtomicBool::new(false),
-        }
+    fn new(capacity: usize, wallet: Pubkey) -> Self {
+        let (sender, receiver) = flume::bounded(capacity);
+        let queue = Self {
+            sender,
+            receiver,
+            wallet,
+        };
+        queue.record_depth();
+        queue
     }
 
     async fn push(&self, task: CopyTask) -> bool {
-        let mut guard = self.inner.lock().await;
         let mut dropped = false;
-        if guard.len() >= self.capacity {
-            guard.pop_front();
-            dropped = true;
+        match self.sender.try_send(task) {
+            Ok(()) => {}
+            Err(TrySendError::Full(task)) => {
+                dropped = true;
+                // 丢弃最旧任务，再尝试发送。
+                let _ = self.receiver.try_recv();
+                self.record_drop();
+                if let Err(err) = self.sender.send_async(task).await {
+                    debug!(
+                        target: "strategy::copy",
+                        error = %err,
+                        "复制任务队列在发送时被关闭"
+                    );
+                }
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                debug!(
+                    target: "strategy::copy",
+                    "复制任务队列已关闭，忽略新任务"
+                );
+            }
         }
-        guard.push_back(task);
-        drop(guard);
-        self.notify.notify_one();
+        self.record_depth();
         dropped
     }
 
     async fn pop(&self) -> Option<CopyTask> {
-        loop {
-            if self.closed.load(Ordering::SeqCst) {
-                let mut guard = self.inner.lock().await;
-                if let Some(task) = guard.pop_front() {
-                    return Some(task);
-                }
-                return None;
-            }
-
-            let maybe_task = {
-                let mut guard = self.inner.lock().await;
-                guard.pop_front()
-            };
-
-            if let Some(task) = maybe_task {
-                return Some(task);
-            }
-
-            self.notify.notified().await;
+        let result = self.receiver.recv_async().await;
+        self.record_depth();
+        match result {
+            Ok(task) => Some(task),
+            Err(_) => None,
         }
     }
 
     fn close(&self) {
-        self.closed.store(true, Ordering::SeqCst);
-        self.notify.notify_waiters();
+        self.sender.disconnect();
+        self.record_depth();
+    }
+
+    fn record_depth(&self) {
+        events::copy_queue_depth(&self.wallet, self.receiver.len());
+    }
+
+    fn record_drop(&self) {
+        events::copy_queue_task_dropped(&self.wallet);
     }
 }
 
@@ -227,6 +236,8 @@ impl CopyWalletRunner {
             wallet.cu_limit_multiplier
         };
 
+        let owned_token_accounts_map = DashMap::from_iter(owned_token_accounts.into_iter());
+
         Ok(Self {
             wallet,
             dispatch,
@@ -242,7 +253,7 @@ impl CopyWalletRunner {
             cu_limit_multiplier,
             dry_run,
             seen_signatures: tokio::sync::Mutex::new(SeenSignatures::new(MAX_SEEN_SIGNATURES)),
-            owned_token_accounts: tokio::sync::RwLock::new(owned_token_accounts),
+            owned_token_accounts: owned_token_accounts_map,
         })
     }
 
@@ -321,33 +332,44 @@ impl CopyWalletRunner {
             let capacity = usize::try_from(self.dispatch.queue_capacity.max(1))
                 .unwrap_or(1)
                 .max(1);
-            let queue = Arc::new(CopyTaskQueue::new(capacity));
-            let runner = Arc::clone(&self);
-            let semaphore = Arc::clone(&semaphore);
+            let queue = Arc::new(CopyTaskQueue::new(capacity, self.wallet_pubkey));
+            let worker_count = usize::try_from(self.dispatch.queue_worker_count.max(1))
+                .unwrap_or(1)
+                .max(1);
+            events::copy_queue_workers(&self.wallet_pubkey, worker_count);
+
             let queue_interval = Duration::from_millis(self.dispatch.queue_send_interval_ms);
-            let worker_queue = Arc::clone(&queue);
-            let handle = tokio::spawn(async move {
-                let mut last_sent_at: Option<Instant> = None;
-                while let Some(task) = worker_queue.pop().await {
-                    if queue_interval != Duration::ZERO {
-                        let now = Instant::now();
-                        if let Some(prev) = last_sent_at {
-                            let target = prev + queue_interval;
-                            if now < target {
-                                tokio::time::sleep(target - now).await;
+            let mut handles = Vec::with_capacity(worker_count);
+
+            for _ in 0..worker_count {
+                let runner = Arc::clone(&self);
+                let semaphore = Arc::clone(&semaphore);
+                let worker_queue = Arc::clone(&queue);
+                let handle = tokio::spawn(async move {
+                    let mut last_sent_at: Option<Instant> = None;
+                    while let Some(task) = worker_queue.pop().await {
+                        if queue_interval != Duration::ZERO {
+                            let now = Instant::now();
+                            if let Some(prev) = last_sent_at {
+                                let target = prev + queue_interval;
+                                if now < target {
+                                    tokio::time::sleep(target - now).await;
+                                }
                             }
+                            last_sent_at = Some(Instant::now());
                         }
+
+                        CopyWalletRunner::spawn_replay_task(
+                            Arc::clone(&runner),
+                            Arc::clone(&semaphore),
+                            task,
+                            fanout_count,
+                        );
                     }
-                    last_sent_at = Some(Instant::now());
-                    CopyWalletRunner::spawn_replay_task(
-                        Arc::clone(&runner),
-                        Arc::clone(&semaphore),
-                        task,
-                        fanout_count,
-                    );
-                }
-            });
-            Some((queue, handle))
+                });
+                handles.push(handle);
+            }
+            Some((queue, handles))
         } else {
             None
         };
@@ -460,9 +482,11 @@ impl CopyWalletRunner {
             }
         }
 
-        if let Some((queue, handle)) = queue_resources {
+        if let Some((queue, handles)) = queue_resources {
             queue.close();
-            let _ = handle.await;
+            for handle in handles {
+                let _ = handle.await;
+            }
         }
 
         Ok(())
@@ -537,12 +561,10 @@ impl CopyWalletRunner {
         token_program: &Pubkey,
     ) -> Result<(Pubkey, bool)> {
         let ata = derive_associated_token_address(&self.identity.pubkey, mint, token_program)?;
-        {
-            let cache = self.owned_token_accounts.read().await;
-            if let Some(entry) = cache.get(mint) {
-                if entry.account == ata && entry.token_program == *token_program {
-                    return Ok((ata, true));
-                }
+        if let Some(entry) = self.owned_token_accounts.get(mint) {
+            let account = entry.value();
+            if account.account == ata && account.token_program == *token_program {
+                return Ok((ata, true));
             }
         }
         Ok((ata, false))
@@ -991,11 +1013,15 @@ impl CopyWalletRunner {
 
         let available = self
             .owned_token_accounts
-            .read()
-            .await
             .get(&base.mint)
-            .and_then(|entry| (entry.account == base_ata).then_some(entry.balance))
-            .flatten()
+            .and_then(|entry| {
+                let account = entry.value();
+                if account.account == base_ata {
+                    account.balance
+                } else {
+                    None
+                }
+            })
             .unwrap_or(0);
 
         if available == 0 {

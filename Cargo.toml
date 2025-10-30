@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 spl-token = { version = "9.0.0", features = ["no-entrypoint"] }
 spl-token-2022 = { version = "9.0.0", features = ["no-entrypoint"] }
-spl-associated-token-account = { version = "7.0.0", features = ["no-entrypoint"] }
+spl-associated-token-account = { version = "8.0.0", features = ["no-entrypoint"] }
 solana-client = "3.0.7"
 solana-rpc-client = "3.0.7"
 solana-sdk = "3.0.0"
@@ -15,12 +15,13 @@ solana-commitment-config = "3.0.0"
 solana-system-interface = { version = "2.0.0", features = ["bincode"] }
 solana-compute-budget-interface = "3.0.0"
 anyhow = "1.0.100"
-clap = { version = "4.5.49", features = ["derive"] }
+clap = { version = "4.5.51", features = ["derive"] }
 async-trait = "0.1.89"
 bytes = "1.10.1"
 flate2 = "1.1.4"
 futures = "0.3.31"
 once_cell = "1.21.3"
+rayon = "1.11.0"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -64,6 +65,8 @@ uuid = { version = "1.11.0", features = ["v4"] }
 zeroize = "1.8.1"
 dashmap = "6.1.0"
 if-addrs = "0.14.0"
+flume = "0.11.0"
+parking_lot = "0.12.5"
 
 yellowstone-vixen-orca-whirlpool-parser = "0.5.0"
 yellowstone-vixen-raydium-clmm-parser = "0.5.0"

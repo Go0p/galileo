@@ -3,10 +3,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Error, Result, anyhow};
-use futures::future::{join_all, try_join};
+use futures::future::try_join;
+use futures::{StreamExt, stream::FuturesUnordered};
+use parking_lot::Mutex;
+use rayon::prelude::*;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
 use tracing::{debug, instrument, warn};
 
@@ -249,44 +252,30 @@ impl MultiLegRuntime {
             return PairPlanBatchResult::default();
         }
 
-        let futures: Vec<_> = requests
-            .into_iter()
-            .map(|request| {
-                let runtime = self;
-                async move {
-                    let result = runtime
-                        .plan_pair_raw(
-                            request.buy_index,
-                            request.sell_index,
-                            &request.buy_intent,
-                            &request.sell_intent,
-                            &request.buy_context,
-                            &request.sell_context,
-                        )
-                        .await;
-                    (request, result)
-                }
-            })
-            .collect();
-
         let mut successes = Vec::new();
         let mut failures = Vec::new();
 
-        for (request, outcome) in join_all(futures).await {
+        let mut stream = FuturesUnordered::new();
+        for request in requests {
+            let runtime = self;
+            stream.push(async move {
+                let result = runtime
+                    .plan_pair_raw(
+                        request.buy_index,
+                        request.sell_index,
+                        &request.buy_intent,
+                        &request.sell_intent,
+                        &request.buy_context,
+                        &request.sell_context,
+                    )
+                    .await;
+                (request, result)
+            });
+        }
+
+        while let Some((request, outcome)) = stream.next().await {
             match outcome {
-                Ok(plan) => {
-                    let profit_lamports = calculate_profit(&plan);
-                    successes.push(PairPlanEvaluation {
-                        descriptor: LegPairDescriptor {
-                            buy: plan.buy.descriptor.clone(),
-                            sell: plan.sell.descriptor.clone(),
-                        },
-                        trade_size: request.trade_size(),
-                        tag: request.tag,
-                        plan,
-                        profit_lamports,
-                    });
-                }
+                Ok(plan) => successes.push(PairPlanSuccess { request, plan }),
                 Err(error) => {
                     warn!(
                         target = "multi_leg::runtime",
@@ -306,9 +295,10 @@ impl MultiLegRuntime {
             }
         }
 
-        successes.sort_by(|a, b| b.profit_lamports.cmp(&a.profit_lamports));
+        let mut evaluations = evaluate_pair_plans(successes);
+        evaluations.sort_by(|a, b| b.profit_lamports.cmp(&a.profit_lamports));
         PairPlanBatchResult {
-            successes,
+            successes: evaluations,
             failures,
         }
     }
@@ -452,6 +442,38 @@ impl PairPlanRequest {
     }
 }
 
+struct PairPlanSuccess {
+    request: PairPlanRequest,
+    plan: LegPairPlan,
+}
+
+fn evaluate_pair_plans(successes: Vec<PairPlanSuccess>) -> Vec<PairPlanEvaluation> {
+    if successes.is_empty() {
+        return Vec::new();
+    }
+
+    let pool = crate::concurrency::rayon_pool();
+    pool.install(|| {
+        successes
+            .into_par_iter()
+            .map(|success| {
+                let PairPlanSuccess { request, plan } = success;
+                let profit_lamports = calculate_profit(&plan);
+                PairPlanEvaluation {
+                    descriptor: LegPairDescriptor {
+                        buy: plan.buy.descriptor.clone(),
+                        sell: plan.sell.descriptor.clone(),
+                    },
+                    trade_size: request.trade_size(),
+                    tag: request.tag,
+                    plan,
+                    profit_lamports,
+                }
+            })
+            .collect()
+    })
+}
+
 #[derive(Debug, Default)]
 pub struct PairPlanBatchResult {
     pub successes: Vec<PairPlanEvaluation>,
@@ -551,12 +573,21 @@ impl TitanThrottle {
     }
 
     async fn wait(&self) {
-        let mut guard = self.next_allowed.lock().await;
-        let now = Instant::now();
-        if now < *guard {
-            sleep(*guard - now).await;
+        let delay = {
+            let mut guard = self.next_allowed.lock();
+            let now = Instant::now();
+            let delay = if now < *guard {
+                Some(*guard - now)
+            } else {
+                None
+            };
+            *guard = now + self.min_interval;
+            delay
+        };
+
+        if let Some(duration) = delay {
+            sleep(duration).await;
         }
-        *guard = Instant::now() + self.min_interval;
     }
 }
 

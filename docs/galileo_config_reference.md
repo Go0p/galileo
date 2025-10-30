@@ -36,6 +36,8 @@
 - Bot/节点共机隔离 → `[galileo.bot.cpu_affinity]`（`enable`、`worker_cores`、`max_blocking_threads`、`strict` 分别控制是否启用绑定、Tokio worker 对应的核心列表、阻塞线程池上限以及拓扑校验策略）
 - 报价 / 指令 / 落地超时 → `[galileo.bot.quote_ms]`、`[galileo.bot.swap_ms]`、`[galileo.bot.landing_ms]`（单位：毫秒；`swap_ms` 省略时继承 `quote_ms`）
 - `random_engine`、`max_concurrent` 等策略参数仍由套利逻辑控制，`galileo` 侧保留 `jupiter.extra_args` 以便继续传入实验性开关。
+- Copy 队列并行度 → `[galileo.copy.copy_dispatch].queue_worker_count`（默认 `1`，大于 1 时同时消费排队任务），配合 `queue_capacity` / `queue_send_interval_ms` 调整节奏；对应指标 `galileo_copy_queue_depth`、`galileo_copy_queue_dropped_total`、`galileo_copy_queue_workers` 观测排队情况。
+- CPU 密集型任务并行度 → 环境变量 `GALILEO_RAYON_THREADS`（可选），用于覆盖多腿收益评估等 rayon 线程池的线程数；默认为物理核心数。
 
 ## 守护与监控
 - `.jupiter_running`/`kill-process.sh` 中的重启机制 → `[jupiter.process]`，后续由 `JupiterBinaryManager` 统一调度；可通过 `auto_restart_minutes` + `max_restart_attempts` 控制重启频率与次数

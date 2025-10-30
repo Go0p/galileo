@@ -9,6 +9,7 @@ use tracing::{debug, info, warn};
 mod api;
 mod cache;
 mod cli;
+mod concurrency;
 mod config;
 mod copy_strategy;
 mod dexes;
