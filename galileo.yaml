@@ -217,6 +217,8 @@ intermedium:
 bot:
   # 是否测试模式
   dry_run: false
+  # 自动刷新钱包的间隔，单位为分钟，0表示不刷新
+  auto_refresh_wallet_minute: 30
   cpu_affinity:
     # 开启后，bot 会将 Tokio runtime 线程绑定到指定 CPU 核，避免与验证节点争抢
     enable: false

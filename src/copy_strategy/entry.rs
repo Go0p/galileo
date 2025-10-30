@@ -76,6 +76,17 @@ pub async fn run_copy_strategy(
 
     let landing_timeout = resolve_landing_timeout(&config.galileo.bot);
     let dispatch_strategy = config.lander.lander.sending_strategy;
+    let wallet_refresh_interval = if config.galileo.bot.auto_refresh_wallet_minute == 0 {
+        None
+    } else {
+        Some(Duration::from_secs(
+            config
+                .galileo
+                .bot
+                .auto_refresh_wallet_minute
+                .saturating_mul(60),
+        ))
+    };
 
     let runner = CopyStrategyRunner {
         config: copy_config.clone(),
@@ -89,6 +100,7 @@ pub async fn run_copy_strategy(
         landing_timeout,
         dispatch_strategy,
         dry_run,
+        wallet_refresh_interval,
     };
 
     runner.run().await

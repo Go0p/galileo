@@ -28,13 +28,6 @@ use crate::txs::jupiter::types::JUPITER_V6_PROGRAM_ID;
 use super::constants::{ASSOCIATED_TOKEN_PROGRAM_ID, COMPUTE_BUDGET_PROGRAM_ID, SYSTEM_PROGRAM_ID};
 
 #[derive(Clone, Debug)]
-pub(crate) struct CachedTokenAccount {
-    pub account: Pubkey,
-    pub token_program: Pubkey,
-    pub balance: Option<u64>,
-}
-
-#[derive(Clone, Debug)]
 pub(crate) struct RouteContext {
     pub authority: Pubkey,
 }

@@ -26,6 +26,7 @@ mod pure_blind;
 mod rpc;
 mod strategy;
 mod txs;
+mod wallet;
 
 use crate::cli::args::Cli;
 use crate::cli::context::{init_tracing, load_configuration};

@@ -24,6 +24,7 @@ pub struct CopyStrategyRunner {
     pub(crate) landing_timeout: Duration,
     pub(crate) dispatch_strategy: DispatchStrategy,
     pub(crate) dry_run: bool,
+    pub(crate) wallet_refresh_interval: Option<Duration>,
 }
 
 impl CopyStrategyRunner {
@@ -48,6 +49,7 @@ impl CopyStrategyRunner {
                 self.lander_settings.clone(),
                 self.landing_timeout,
                 self.dispatch_strategy,
+                self.wallet_refresh_interval,
                 self.dry_run,
             )
             .await

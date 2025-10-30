@@ -4,15 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use dashmap::DashMap;
 use futures::StreamExt;
-use serde_json::json;
-use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_config::RpcAccountInfoConfig;
-use solana_client::rpc_config::RpcTokenAccountsFilter;
-use solana_client::rpc_request::RpcRequest;
-use solana_client::rpc_response::{Response as RpcResponse, RpcKeyedAccount};
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
@@ -31,17 +24,18 @@ use crate::lander::{Deadline, LanderFactory, LanderStack};
 use crate::monitoring::events;
 use crate::network::IpAllocator;
 use crate::txs::jupiter::types::JUPITER_V6_PROGRAM_ID;
+use crate::wallet::WalletStateManager;
 use flume::{self, Receiver, Sender, TrySendError};
-use tokio::sync::Mutex;
+use parking_lot::Mutex as ParkingMutex;
 
 use super::constants::MAX_SEEN_SIGNATURES;
 use super::grpc::{YellowstoneTransactionClient, parse_transaction_update};
 use super::transaction::filter_transaction;
 use super::transaction::{
-    CachedTokenAccount, RouteContext, TransactionLoadedAddresses, TransactionTokenBalances,
-    apply_replacements, build_create_ata_instruction, collect_instruction_signers,
-    decode_versioned_transaction, derive_associated_token_address, extract_compute_unit_limit,
-    instructions_from_message, lookup_addresses, message_required_signatures, read_route_in_amount,
+    RouteContext, TransactionLoadedAddresses, TransactionTokenBalances, apply_replacements,
+    build_create_ata_instruction, collect_instruction_signers, decode_versioned_transaction,
+    derive_associated_token_address, extract_compute_unit_limit, instructions_from_message,
+    lookup_addresses, message_required_signatures, read_route_in_amount,
     read_route_quoted_out_amount, resolve_lookup_accounts, split_compute_budget,
     update_route_in_amount, update_route_quoted_out_amount,
 };
@@ -60,7 +54,7 @@ pub(crate) struct CopyWalletRunner {
     cu_limit_multiplier: f64,
     dry_run: bool,
     seen_signatures: tokio::sync::Mutex<SeenSignatures>,
-    owned_token_accounts: DashMap<Pubkey, CachedTokenAccount>,
+    wallet_state: Arc<WalletStateManager>,
 }
 
 struct CopyTask {
@@ -71,7 +65,7 @@ struct CopyTask {
 }
 
 struct CopyTaskQueue {
-    sender: Sender<CopyTask>,
+    sender: ParkingMutex<Option<Sender<CopyTask>>>,
     receiver: Receiver<CopyTask>,
     wallet: Pubkey,
 }
@@ -80,7 +74,7 @@ impl CopyTaskQueue {
     fn new(capacity: usize, wallet: Pubkey) -> Self {
         let (sender, receiver) = flume::bounded(capacity);
         let queue = Self {
-            sender,
+            sender: ParkingMutex::new(Some(sender)),
             receiver,
             wallet,
         };
@@ -89,15 +83,25 @@ impl CopyTaskQueue {
     }
 
     async fn push(&self, task: CopyTask) -> bool {
+        let sender_opt = {
+            let guard = self.sender.lock();
+            guard.clone()
+        };
+
+        let Some(sender) = sender_opt else {
+            self.record_depth();
+            return true;
+        };
+
         let mut dropped = false;
-        match self.sender.try_send(task) {
+        match sender.try_send(task) {
             Ok(()) => {}
             Err(TrySendError::Full(task)) => {
                 dropped = true;
                 // 丢弃最旧任务，再尝试发送。
                 let _ = self.receiver.try_recv();
                 self.record_drop();
-                if let Err(err) = self.sender.send_async(task).await {
+                if let Err(err) = sender.send_async(task).await {
                     debug!(
                         target: "strategy::copy",
                         error = %err,
@@ -110,6 +114,7 @@ impl CopyTaskQueue {
                     target: "strategy::copy",
                     "复制任务队列已关闭，忽略新任务"
                 );
+                dropped = true;
             }
         }
         self.record_depth();
@@ -126,7 +131,10 @@ impl CopyTaskQueue {
     }
 
     fn close(&self) {
-        self.sender.disconnect();
+        {
+            let mut guard = self.sender.lock();
+            guard.take();
+        }
         self.record_depth();
     }
 
@@ -192,6 +200,7 @@ impl CopyWalletRunner {
         lander_settings: LanderSettings,
         landing_timeout: Duration,
         dispatch_strategy: DispatchStrategy,
+        wallet_refresh_interval: Option<Duration>,
         dry_run: bool,
     ) -> Result<Self> {
         let wallet_pubkey = Pubkey::from_str(wallet.address.trim())
@@ -221,9 +230,6 @@ impl CopyWalletRunner {
                 .map_err(|err| anyhow!(err))?,
         );
 
-        let owned_token_accounts =
-            Self::load_existing_token_mints(&rpc_client, &identity.pubkey).await?;
-
         let cu_limit_multiplier = if wallet.cu_limit_multiplier <= 0.0 {
             warn!(
                 target: "strategy::copy",
@@ -236,7 +242,10 @@ impl CopyWalletRunner {
             wallet.cu_limit_multiplier
         };
 
-        let owned_token_accounts_map = DashMap::from_iter(owned_token_accounts.into_iter());
+        let wallet_state =
+            WalletStateManager::new(rpc_client.clone(), identity.pubkey, wallet_refresh_interval)
+                .await
+                .map_err(|err| anyhow!("初始化钱包状态失败: {err}"))?;
 
         Ok(Self {
             wallet,
@@ -253,7 +262,7 @@ impl CopyWalletRunner {
             cu_limit_multiplier,
             dry_run,
             seen_signatures: tokio::sync::Mutex::new(SeenSignatures::new(MAX_SEEN_SIGNATURES)),
-            owned_token_accounts: owned_token_accounts_map,
+            wallet_state,
         })
     }
 
@@ -561,8 +570,7 @@ impl CopyWalletRunner {
         token_program: &Pubkey,
     ) -> Result<(Pubkey, bool)> {
         let ata = derive_associated_token_address(&self.identity.pubkey, mint, token_program)?;
-        if let Some(entry) = self.owned_token_accounts.get(mint) {
-            let account = entry.value();
+        if let Some(account) = self.wallet_state.get_account(mint) {
             if account.account == ata && account.token_program == *token_program {
                 return Ok((ata, true));
             }
@@ -1012,10 +1020,9 @@ impl CopyWalletRunner {
         }
 
         let available = self
-            .owned_token_accounts
-            .get(&base.mint)
-            .and_then(|entry| {
-                let account = entry.value();
+            .wallet_state
+            .get_account(&base.mint)
+            .and_then(|account| {
                 if account.account == base_ata {
                     account.balance
                 } else {
@@ -1144,78 +1151,6 @@ impl CopyWalletRunner {
         }
 
         Ok(AmountAdjustment::NotNeeded)
-    }
-
-    async fn load_existing_token_mints(
-        rpc_client: &Arc<RpcClient>,
-        owner: &Pubkey,
-    ) -> Result<HashMap<Pubkey, CachedTokenAccount>> {
-        let mut cached = HashMap::new();
-        let program_ids = [
-            Pubkey::new_from_array(spl_token::id().to_bytes()),
-            Pubkey::new_from_array(spl_token_2022::id().to_bytes()),
-        ];
-        for program_id in program_ids {
-            let filter = RpcTokenAccountsFilter::ProgramId(program_id.to_string());
-            let config = RpcAccountInfoConfig {
-                encoding: Some(UiAccountEncoding::JsonParsed),
-                commitment: Some(rpc_client.commitment()),
-                data_slice: None,
-                min_context_slot: None,
-            };
-            let params = json!([owner.to_string(), filter, config]);
-            let response_accounts: RpcResponse<Vec<RpcKeyedAccount>> = rpc_client
-                .send(RpcRequest::GetTokenAccountsByOwner, params)
-                .await
-                .map_err(|err| anyhow!("预检 token accounts 失败: {err}"))?;
-
-            for keyed in response_accounts.value {
-                let account_pubkey = Pubkey::from_str(&keyed.pubkey).map_err(|err| anyhow!(err))?;
-                if let UiAccountData::Json(parsed) = &keyed.account.data {
-                    let owner_str = parsed
-                        .parsed
-                        .get("info")
-                        .and_then(|info| info.get("owner"))
-                        .and_then(|owner| owner.as_str());
-                    if owner_str.map(Pubkey::from_str).transpose()? != Some(*owner) {
-                        continue;
-                    }
-                    if let Some(mint_str) = parsed
-                        .parsed
-                        .get("info")
-                        .and_then(|info| info.get("mint"))
-                        .and_then(|mint| mint.as_str())
-                    {
-                        let mint = Pubkey::from_str(mint_str).map_err(|err| anyhow!(err))?;
-                        let token_program = Pubkey::from_str(keyed.account.owner.as_str())
-                            .map_err(|err| anyhow!(err))?;
-                        let balance = parsed
-                            .parsed
-                            .get("info")
-                            .and_then(|info| info.get("tokenAmount"))
-                            .and_then(|ta| ta.get("amount"))
-                            .and_then(|amount| amount.as_str())
-                            .and_then(|amount| amount.parse::<u64>().ok());
-                        cached
-                            .entry(mint)
-                            .and_modify(|entry: &mut CachedTokenAccount| {
-                                entry.account = account_pubkey;
-                                entry.token_program = token_program;
-                                if balance.is_some() {
-                                    entry.balance = balance;
-                                }
-                            })
-                            .or_insert(CachedTokenAccount {
-                                account: account_pubkey,
-                                token_program,
-                                balance,
-                            });
-                    }
-                }
-            }
-        }
-
-        Ok(cached)
     }
 }
 

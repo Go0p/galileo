@@ -599,6 +599,8 @@ pub struct BotConfig {
     pub prometheus: PrometheusConfig,
     #[serde(default)]
     pub network: NetworkConfig,
+    #[serde(default)]
+    pub auto_refresh_wallet_minute: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

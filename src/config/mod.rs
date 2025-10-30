@@ -387,6 +387,7 @@ impl Default for cfg::BotConfig {
             dry_run: false,
             prometheus: cfg::PrometheusConfig::default(),
             network: cfg::NetworkConfig::default(),
+            auto_refresh_wallet_minute: 0,
         }
     }
 }

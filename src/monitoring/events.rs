@@ -658,3 +658,45 @@ pub fn copy_queue_workers(wallet: &Pubkey, workers: usize) {
         .set(workers as f64);
     }
 }
+
+pub fn copy_wallet_refresh_success(wallet: &Pubkey, accounts: usize) {
+    info!(
+        target: "monitoring::copy",
+        event = "wallet_refresh",
+        wallet = %wallet,
+        accounts,
+        "wallet cache refreshed"
+    );
+
+    if prometheus_enabled() {
+        counter!(
+            "galileo_copy_wallet_refresh_total",
+            "wallet" => wallet.to_string(),
+            "result" => "success".to_string()
+        )
+        .increment(1);
+        gauge!(
+            "galileo_copy_wallet_accounts",
+            "wallet" => wallet.to_string()
+        )
+        .set(accounts as f64);
+    }
+}
+
+pub fn copy_wallet_refresh_error(wallet: &Pubkey) {
+    warn!(
+        target: "monitoring::copy",
+        event = "wallet_refresh_error",
+        wallet = %wallet,
+        "wallet cache refresh failed"
+    );
+
+    if prometheus_enabled() {
+        counter!(
+            "galileo_copy_wallet_refresh_total",
+            "wallet" => wallet.to_string(),
+            "result" => "error".to_string()
+        )
+        .increment(1);
+    }
+}
