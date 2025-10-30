@@ -11,8 +11,9 @@ global:
   #   - "https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b"
 
   rpc_urls:
-    # - "https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b"
-    - "http://127.0.0.1:8899"
+    - "https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
+    - "https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b"
+    # - "http://127.0.0.1:8899"
   # yellowstone grpc url
   # proxy: "http://192.168.3.3:9999"
   yellowstone_grpc_url: ""
@@ -176,7 +177,7 @@ engine:
       include_setup_ixs: true
       wrap_and_unwrap_sol: false
       routes:
-        # - "dflow"
+        - "dflow"
         # - "jupiter"
         # - "jupiterSelfHosted"
         # - "jupiterEuropa"
@@ -184,7 +185,7 @@ engine:
         # - "fluxbeam"
         # - "raydium"
         # - "hashflow"
-        - "okx"
+        # - "okx"
         # - "clover"
         # - "zeroEx"
         # - "spur"
@@ -304,7 +305,7 @@ blind_strategy:
     ]
   enable_landers: [
       # "staked"
-      # "jito",
+      "jito",
     ]
   base_mints:
     - mint: "So11111111111111111111111111111111111111112"

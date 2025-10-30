@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -646,6 +646,30 @@ fn dedup_pubkeys(keys: &mut Vec<Pubkey>) {
 }
 
 fn dedup_lookup_tables(tables: &mut Vec<AddressLookupTableAccount>) {
-    let mut seen = HashSet::new();
-    tables.retain(|table| seen.insert(table.key));
+    let mut merged: HashMap<Pubkey, Vec<Pubkey>> = HashMap::new();
+    let mut seen_addresses: HashMap<Pubkey, HashSet<Pubkey>> = HashMap::new();
+    let mut order: Vec<Pubkey> = Vec::new();
+
+    for table in std::mem::take(tables) {
+        let entry = merged.entry(table.key).or_insert_with(|| {
+            order.push(table.key);
+            Vec::new()
+        });
+        let addr_set = seen_addresses
+            .entry(table.key)
+            .or_insert_with(HashSet::new);
+        for address in table.addresses {
+            if addr_set.insert(address) {
+                entry.push(address);
+            }
+        }
+    }
+
+    *tables = order
+        .into_iter()
+        .filter_map(|key| merged.remove(&key).map(|addresses| AddressLookupTableAccount {
+            key,
+            addresses,
+        }))
+        .collect();
 }

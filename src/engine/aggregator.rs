@@ -1,5 +1,5 @@
 use rust_decimal::Decimal;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 
 use solana_sdk::instruction::Instruction;
@@ -386,13 +386,46 @@ impl MultiLegInstructions {
     }
 
     pub fn dedup_lookup_tables(&mut self) {
-        let mut seen: HashSet<Pubkey> = HashSet::new();
-        self.address_lookup_table_addresses
-            .retain(|key| seen.insert(*key));
+        let mut merged: HashMap<Pubkey, Vec<Pubkey>> = HashMap::new();
+        let mut seen_addresses: HashMap<Pubkey, HashSet<Pubkey>> = HashMap::new();
+        let mut resolved_order: Vec<Pubkey> = Vec::new();
 
-        let mut seen_accounts: HashSet<Pubkey> = HashSet::new();
-        self.resolved_lookup_tables
-            .retain(|account| seen_accounts.insert(account.key));
+        for account in std::mem::take(&mut self.resolved_lookup_tables) {
+            let entry = merged.entry(account.key).or_insert_with(|| {
+                resolved_order.push(account.key);
+                Vec::new()
+            });
+            let addr_set = seen_addresses
+                .entry(account.key)
+                .or_insert_with(HashSet::new);
+            for address in account.addresses {
+                if addr_set.insert(address) {
+                    entry.push(address);
+                }
+            }
+        }
+
+        let mut final_order: Vec<Pubkey> = Vec::new();
+        let mut seen_keys: HashSet<Pubkey> = HashSet::new();
+        for key in &self.address_lookup_table_addresses {
+            if merged.contains_key(key) && seen_keys.insert(*key) {
+                final_order.push(*key);
+            }
+        }
+        for key in resolved_order {
+            if seen_keys.insert(key) {
+                final_order.push(key);
+            }
+        }
+
+        self.address_lookup_table_addresses = final_order.clone();
+        self.resolved_lookup_tables = final_order
+            .into_iter()
+            .filter_map(|key| merged.remove(&key).map(|addresses| AddressLookupTableAccount {
+                key,
+                addresses,
+            }))
+            .collect();
     }
 }
 
