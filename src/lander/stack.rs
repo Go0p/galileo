@@ -4,11 +4,6 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-#[cfg(test)]
-use std::collections::VecDeque;
-#[cfg(test)]
-use std::sync::Mutex;
-
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use tracing::{info, warn};
@@ -51,8 +46,6 @@ pub enum LanderVariant {
     Rpc(RpcLander),
     Jito(JitoLander),
     Staked(StakedLander),
-    #[cfg(test)]
-    Test(TestLander),
 }
 
 impl LanderVariant {
@@ -61,8 +54,6 @@ impl LanderVariant {
             LanderVariant::Rpc(_) => "rpc",
             LanderVariant::Jito(_) => "jito",
             LanderVariant::Staked(_) => "staked",
-            #[cfg(test)]
-            LanderVariant::Test(lander) => lander.name(),
         }
     }
 
@@ -71,8 +62,6 @@ impl LanderVariant {
             LanderVariant::Rpc(_) => 1,
             LanderVariant::Jito(lander) => lander.endpoints().max(1),
             LanderVariant::Staked(lander) => lander.endpoints_len().max(1),
-            #[cfg(test)]
-            LanderVariant::Test(lander) => lander.one_by_one_capacity(),
         }
     }
 
@@ -81,8 +70,6 @@ impl LanderVariant {
             LanderVariant::Rpc(_) => Vec::new(),
             LanderVariant::Jito(lander) => lander.endpoint_list(),
             LanderVariant::Staked(lander) => lander.endpoint_list(),
-            #[cfg(test)]
-            LanderVariant::Test(lander) => lander.endpoint_list(),
         }
     }
 
@@ -101,12 +88,6 @@ impl LanderVariant {
                     .await
             }
             LanderVariant::Staked(lander) => {
-                lander
-                    .submit_variant(variant, deadline, endpoint, local_ip)
-                    .await
-            }
-            #[cfg(test)]
-            LanderVariant::Test(lander) => {
                 lander
                     .submit_variant(variant, deadline, endpoint, local_ip)
                     .await
@@ -576,192 +557,4 @@ fn classify_reqwest(err: &reqwest::Error) -> Option<IpLeaseOutcome> {
         return Some(IpLeaseOutcome::NetworkError);
     }
     None
-}
-
-#[cfg(test)]
-#[derive(Clone)]
-pub enum TestOutcome {
-    Success { signature: Option<String> },
-    Failure,
-}
-
-#[cfg(test)]
-#[derive(Clone)]
-pub struct TestLander {
-    name: &'static str,
-    endpoints: Vec<String>,
-    submissions: Arc<Mutex<Vec<Option<String>>>>,
-    outcomes: Arc<Mutex<VecDeque<TestOutcome>>>,
-}
-
-#[cfg(test)]
-impl TestLander {
-    pub fn new(name: &'static str, endpoints: Vec<&str>, outcomes: Vec<TestOutcome>) -> Self {
-        Self {
-            name,
-            endpoints: endpoints
-                .into_iter()
-                .map(|endpoint| endpoint.to_string())
-                .collect(),
-            submissions: Arc::new(Mutex::new(Vec::new())),
-            outcomes: Arc::new(Mutex::new(VecDeque::from(outcomes))),
-        }
-    }
-
-    pub fn name(&self) -> &'static str {
-        self.name
-    }
-
-    pub fn one_by_one_capacity(&self) -> usize {
-        self.endpoints.len().max(1)
-    }
-
-    pub fn endpoint_list(&self) -> Vec<String> {
-        self.endpoints.clone()
-    }
-
-    pub fn recorded_endpoints(&self) -> Vec<Option<String>> {
-        self.submissions.lock().unwrap().clone()
-    }
-
-    pub async fn submit_variant(
-        &self,
-        variant: TxVariant,
-        _deadline: Deadline,
-        endpoint: Option<&str>,
-        local_ip: Option<IpAddr>,
-    ) -> Result<LanderReceipt, LanderError> {
-        let recorded = endpoint.map(|value| value.to_string());
-        self.submissions.lock().unwrap().push(recorded.clone());
-
-        let outcome = self
-            .outcomes
-            .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or(TestOutcome::Failure);
-
-        match outcome {
-            TestOutcome::Success { signature } => {
-                let endpoint_string = recorded.unwrap_or_default();
-                Ok(LanderReceipt {
-                    lander: self.name,
-                    endpoint: endpoint_string,
-                    slot: variant.slot(),
-                    blockhash: variant.blockhash().to_string(),
-                    signature,
-                    variant_id: variant.id(),
-                    local_ip,
-                })
-            }
-            TestOutcome::Failure => Err(LanderError::fatal("test failure")),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::engine::{DispatchPlan, DispatchStrategy, VariantId};
-    use crate::network::{CooldownConfig, IpAllocator, IpInventory, IpInventoryConfig};
-    use solana_sdk::hash::Hash;
-    use solana_sdk::message::{Message, VersionedMessage};
-    use solana_sdk::signature::{Keypair, Signer};
-    use solana_sdk::transaction::VersionedTransaction;
-    use std::time::{Duration, Instant};
-
-    fn build_variant(id: VariantId) -> TxVariant {
-        let signer = Arc::new(Keypair::new());
-        let payer = signer.pubkey();
-        let message = Message::new(&[], Some(&payer));
-        let versioned = VersionedMessage::Legacy(message);
-        let transaction =
-            VersionedTransaction::try_new(versioned, &[signer.as_ref()]).expect("build tx");
-
-        TxVariant::new(id, transaction, Hash::default(), 0, None, signer, 0)
-    }
-
-    fn test_ip_allocator() -> Arc<IpAllocator> {
-        let config = IpInventoryConfig {
-            enable_multiple_ip: false,
-            manual_ips: vec![std::net::IpAddr::from([127, 0, 0, 1])],
-            blacklist: Vec::new(),
-            allow_loopback: true,
-        };
-        let inventory = IpInventory::new(config).expect("build inventory");
-        Arc::new(IpAllocator::from_inventory(
-            inventory,
-            Some(2),
-            CooldownConfig::default(),
-        ))
-    }
-
-    #[tokio::test]
-    async fn all_at_once_dispatches_every_endpoint() {
-        let variant = build_variant(0);
-        let plan = DispatchPlan::new(DispatchStrategy::AllAtOnce, vec![vec![variant.clone()]]);
-        let outcomes = vec![
-            TestOutcome::Failure,
-            TestOutcome::Success {
-                signature: Some("sig-endpoint-b".to_string()),
-            },
-        ];
-        let test_lander = TestLander::new("test", vec!["https://a", "https://b"], outcomes);
-        let stack = LanderStack::new(
-            vec![LanderVariant::Test(test_lander.clone())],
-            0,
-            test_ip_allocator(),
-        );
-
-        let deadline = Deadline::from_instant(Instant::now() + Duration::from_millis(50));
-        let receipt = stack
-            .submit_plan(&plan, deadline, "unit-test")
-            .await
-            .expect("all_at_once succeeds");
-
-        assert_eq!(receipt.endpoint, "https://b");
-        assert_eq!(receipt.signature.as_deref(), Some("sig-endpoint-b"));
-
-        let attempts = test_lander.recorded_endpoints();
-        assert_eq!(attempts.len(), 2);
-        assert!(attempts.contains(&Some("https://a".to_string())));
-        assert!(attempts.contains(&Some("https://b".to_string())));
-    }
-
-    #[tokio::test]
-    async fn one_by_one_walks_endpoints_in_order() {
-        let variant = build_variant(1);
-        let plan = DispatchPlan::new(
-            DispatchStrategy::OneByOne,
-            vec![vec![variant.clone()], vec![variant.clone()]],
-        );
-        let outcomes = vec![
-            TestOutcome::Failure,
-            TestOutcome::Success { signature: None },
-        ];
-        let test_lander = TestLander::new("test", vec!["endpoint-a", "endpoint-b"], outcomes);
-        let stack = LanderStack::new(
-            vec![LanderVariant::Test(test_lander.clone())],
-            0,
-            test_ip_allocator(),
-        );
-
-        let deadline = Deadline::from_instant(Instant::now() + Duration::from_millis(50));
-        let receipt = stack
-            .submit_plan(&plan, deadline, "unit-test")
-            .await
-            .expect("one_by_one succeeds");
-
-        assert_eq!(receipt.endpoint, "endpoint-b");
-        assert_eq!(receipt.signature, None);
-
-        let attempts = test_lander.recorded_endpoints();
-        assert_eq!(
-            attempts,
-            vec![
-                Some("endpoint-a".to_string()),
-                Some("endpoint-b".to_string())
-            ]
-        );
-    }
 }

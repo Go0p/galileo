@@ -19,6 +19,7 @@ mod intermedium;
 mod jupiter;
 mod jupiter_parser;
 mod lander;
+mod lighthouse;
 mod monitoring;
 mod multi_leg;
 mod network;

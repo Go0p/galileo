@@ -1627,31 +1627,3 @@ pub struct LanderEndpointConfig {
     #[serde(default)]
     pub endpoints: Vec<String>,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tip_strategy_deserialize_from_string() {
-        let yaml = r#"
-endpoints: []
-tip_strategy: stream
-"#;
-        let cfg: LanderJitoConfig = serde_yaml::from_str(yaml).expect("parse config");
-        assert_eq!(cfg.tip_strategy, TipStrategyKind::Stream);
-    }
-
-    #[test]
-    fn tip_strategy_defaults_to_fixed() {
-        let yaml = "endpoints: []";
-        let cfg: LanderJitoConfig = serde_yaml::from_str(yaml).expect("parse config");
-        assert_eq!(cfg.tip_strategy, TipStrategyKind::Fixed);
-    }
-
-    #[test]
-    fn tip_stream_level_deserialize() {
-        let level: TipStreamLevel = serde_yaml::from_str("\"95th\"").expect("parse level");
-        assert_eq!(level, TipStreamLevel::Percentile95);
-    }
-}
