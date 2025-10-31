@@ -12,12 +12,13 @@ use solana_sdk::pubkey::Pubkey;
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
 use tokio::time::timeout;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::api::titan::{
     Instruction as TitanInstruction, SwapRoute, TitanError,
     manager::{TitanLeg, TitanQuoteUpdate, TitanSubscriptionConfig, subscribe_quote_stream},
 };
+use crate::monitoring::short_mint_str;
 use crate::multi_leg::leg::LegProvider;
 use crate::multi_leg::types::{
     AggregatorKind, LegBuildContext, LegDescriptor, LegPlan, LegQuote, LegSide, QuoteIntent,
@@ -174,17 +175,17 @@ impl TitanWsQuoteSource {
         .await
         .map_err(TitanLegError::from)?;
 
-        info!(
+        debug!(
             target: "multi_leg::titan",
             amount = key.amount,
-            input = %key.pair.input_pubkey,
-            output = %key.pair.output_pubkey,
+            base_mint = %short_mint_str(key.pair.input_mint.as_str()),
+            quote_mint = %short_mint_str(key.pair.output_mint.as_str()),
             "已建立 Titan 报价流"
         );
 
         while let Some(update) = stream.recv().await {
             if let Some((provider, route)) = Self::select_best_route(&update) {
-                info!(
+                debug!(
                     target: "multi_leg::titan",
                     provider = provider,
                     out_amount = route.out_amount,

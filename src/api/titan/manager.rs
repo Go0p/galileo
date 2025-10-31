@@ -4,9 +4,10 @@ use std::sync::Arc;
 use serde_json;
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 use url::Url;
 
+use crate::monitoring::short_mint_str;
 use crate::strategy::types::TradePair;
 
 use super::client::{QuoteStreamItem, TitanWsClient};
@@ -107,10 +108,12 @@ pub async fn subscribe_quote_stream(
         err
     })?;
 
-    info!(
+    let base_display = short_mint_str(pair.input_mint.as_str());
+    let quote_display = short_mint_str(pair.output_mint.as_str());
+    debug!(
         target: "titan::manager",
-        input_mint = %pair.input_mint,
-        output_mint = %pair.output_mint,
+        base_mint = %base_display,
+        quote_mint = %quote_display,
         amount,
         leg = ?leg,
         interval_ms = session.info.interval_ms,
@@ -154,7 +157,7 @@ pub async fn subscribe_quote_stream(
                             "Titan stream ended with error"
                         );
                     } else {
-                        info!(target: "titan::manager", stream_id, "Titan stream ended");
+                        debug!(target: "titan::manager", stream_id, "Titan stream ended");
                     }
                     break;
                 }

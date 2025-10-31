@@ -184,6 +184,12 @@ impl QuoteResponse {
         Ok(Self { payload })
     }
 
+    pub fn strip_lookup_addresses(&mut self) {
+        for route in &mut self.payload.data {
+            route.strip_lookup_addresses();
+        }
+    }
+
     pub fn routes(&self) -> &[Route] {
         &self.payload.data
     }
@@ -221,6 +227,12 @@ impl Route {
 
     pub fn amount_out(&self) -> u64 {
         self.amounts_exact_in.amount_out
+    }
+
+    pub fn strip_lookup_addresses(&mut self) {
+        for entry in &mut self.lookup_table_accounts_bs58 {
+            entry.addresses.clear();
+        }
     }
 }
 
@@ -283,8 +295,7 @@ impl RouteInstructions {
     }
 
     pub fn append_from(&mut self, other: &RouteInstructions) {
-        self.wrap_sol_ixs
-            .extend(other.wrap_sol_ixs.iter().cloned());
+        self.wrap_sol_ixs.extend(other.wrap_sol_ixs.iter().cloned());
         self.swap_ixs.extend(other.swap_ixs.iter().cloned());
         self.unwrap_sol_ixs
             .extend(other.unwrap_sol_ixs.iter().cloned());
@@ -349,8 +360,8 @@ pub struct RawAccountMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use serde_json::json;
+    use std::collections::HashMap;
 
     fn params_map(params: &[(String, String)]) -> HashMap<&str, Vec<String>> {
         let mut map: HashMap<&str, Vec<String>> = HashMap::new();

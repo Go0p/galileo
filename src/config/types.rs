@@ -393,6 +393,8 @@ pub struct KaminoQuoteConfig {
     pub parallelism: QuoteParallelism,
     #[serde(default)]
     pub batch_interval_ms: Option<u64>,
+    #[serde(default)]
+    pub resolve_lookup_tables_via_rpc: bool,
 }
 
 impl Default for KaminoQuoteConfig {
@@ -407,6 +409,7 @@ impl Default for KaminoQuoteConfig {
             cu_limit_multiplier: default_cu_limit_multiplier(),
             parallelism: QuoteParallelism::default(),
             batch_interval_ms: None,
+            resolve_lookup_tables_via_rpc: false,
         }
     }
 }
@@ -730,6 +733,8 @@ pub struct BlindStrategyConfig {
     #[serde(default)]
     pub enable_landers: Vec<String>,
     #[serde(default)]
+    pub auto_scale_to_ip: AutoScaleToIpConfig,
+    #[serde(default)]
     pub base_mints: Vec<BlindBaseMintConfig>,
 }
 
@@ -737,12 +742,8 @@ pub struct BlindStrategyConfig {
 pub struct BlindBaseMintConfig {
     #[serde(default)]
     pub mint: String,
-    #[serde(default, deserialize_with = "deserialize_trade_size_range")]
-    pub trade_size_range: Vec<u64>,
     #[serde(default)]
-    pub trade_range_count: Option<u32>,
-    #[serde(default)]
-    pub trade_range_strategy: Option<String>,
+    pub lanes: Vec<TradeSizeLaneConfig>,
     #[serde(default)]
     #[serde(alias = "min_quote_profit_lamports")]
     pub min_quote_profit: Option<u64>,
@@ -754,6 +755,49 @@ pub struct BlindBaseMintConfig {
     pub route_types: Vec<String>,
     #[serde(default)]
     pub three_hop_mints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct AutoScaleToIpConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default = "default_auto_scale_multiplier")]
+    pub max_multiplier: f64,
+}
+
+fn default_auto_scale_multiplier() -> f64 {
+    3.0
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TradeSizeLaneConfig {
+    #[serde(deserialize_with = "deserialize_u64_value")]
+    pub min: u64,
+    #[serde(deserialize_with = "deserialize_u64_value")]
+    pub max: u64,
+    pub count: u32,
+    #[serde(default)]
+    pub strategy: TradeRangeStrategy,
+    #[serde(default = "default_lane_weight")]
+    pub weight: f64,
+}
+
+fn default_lane_weight() -> f64 {
+    1.0
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TradeRangeStrategy {
+    Linear,
+    Exponential,
+    Random,
+}
+
+impl Default for TradeRangeStrategy {
+    fn default() -> Self {
+        Self::Linear
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -879,6 +923,31 @@ where
     D: Deserializer<'de>,
 {
     deserialize_trade_size_range(deserializer)
+}
+
+fn deserialize_u64_value<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Number(u64),
+        String(String),
+    }
+
+    match Raw::deserialize(deserializer)? {
+        Raw::Number(value) => Ok(value),
+        Raw::String(text) => {
+            let normalized = text.replace('_', "").trim().to_string();
+            if normalized.is_empty() {
+                return Ok(0);
+            }
+            normalized
+                .parse::<u64>()
+                .map_err(|err| D::Error::custom(format!("invalid u64 value `{text}`: {err}")))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

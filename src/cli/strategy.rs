@@ -72,6 +72,7 @@ pub enum StrategyBackend<'a> {
     },
     Kamino {
         api_client: &'a KaminoApiClient,
+        rpc_client: Arc<solana_client::nonblocking::rpc_client::RpcClient>,
     },
     Ultra {
         api_client: &'a UltraApiClient,
@@ -191,8 +192,14 @@ async fn run_blind_engine(
         .await?;
 
     let (only_direct_default, restrict_default) = quote_defaults_tuple;
+    let allocator_summary = ip_allocator.summary();
+    let per_ip_capacity = allocator_summary.per_ip_inflight_limit.unwrap_or(1).max(1);
+    let ip_capacity_hint = allocator_summary
+        .total_slots
+        .max(1)
+        .saturating_mul(per_ip_capacity);
     let trade_pairs = build_blind_trade_pairs(blind_config, &config.galileo.intermedium)?;
-    let trade_profiles = build_blind_trade_profiles(blind_config)?;
+    let trade_profiles = build_blind_trade_profiles(blind_config, ip_capacity_hint)?;
     let multi_leg_context = multi_leg_runtime.as_ref().map(|runtime| {
         let mut ctx = MultiLegEngineContext::from_runtime(Arc::clone(runtime));
         let dflow_defaults = &config.galileo.engine.dflow.swap_config;
@@ -389,7 +396,7 @@ fn build_multi_leg_runtime(
 
     register_ultra_leg(&mut orchestrator, config, identity)?;
     register_dflow_leg(&mut orchestrator, config)?;
-    register_kamino_leg(&mut orchestrator, config)?;
+    register_kamino_leg(&mut orchestrator, config, Arc::clone(&rpc_client))?;
     register_titan_leg(&mut orchestrator, config)?;
 
     if orchestrator.buy_legs().is_empty() {
@@ -582,7 +589,11 @@ fn register_dflow_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
     Ok(())
 }
 
-fn register_kamino_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfig) -> Result<()> {
+fn register_kamino_leg(
+    orchestrator: &mut MultiLegOrchestrator,
+    config: &AppConfig,
+    rpc_client: Arc<solana_client::nonblocking::rpc_client::RpcClient>,
+) -> Result<()> {
     let kamino_cfg = &config.galileo.engine.kamino;
     if !kamino_cfg.enable {
         return Ok(());
@@ -638,6 +649,7 @@ fn register_kamino_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConf
         kamino_client,
         LegSide::from(leg),
         kamino_cfg.quote_config.clone(),
+        rpc_client,
     );
     orchestrator.register_owned_provider(provider);
     Ok(())
@@ -891,12 +903,10 @@ fn resolve_quote_dispatch_config(
             parallelism_override(engine.dflow.quote_config.parallelism),
             batch_interval_duration(engine.dflow.quote_config.batch_interval_ms),
         ),
-        StrategyBackend::Kamino { .. } => {
-            (
-                parallelism_override(engine.kamino.quote_config.parallelism),
-                batch_interval_duration(engine.kamino.quote_config.batch_interval_ms),
-            )
-        }
+        StrategyBackend::Kamino { .. } => (
+            parallelism_override(engine.kamino.quote_config.parallelism),
+            batch_interval_duration(engine.kamino.quote_config.batch_interval_ms),
+        ),
         StrategyBackend::Ultra { .. } => (
             parallelism_override(engine.ultra.quote_config.parallelism),
             batch_interval_duration(engine.ultra.quote_config.batch_interval_ms),
@@ -1210,7 +1220,10 @@ async fn prepare_swap_components(
                 false,
             ))
         }
-        StrategyBackend::Kamino { api_client } => {
+        StrategyBackend::Kamino {
+            api_client,
+            rpc_client,
+        } => {
             info!(target: "strategy", "使用 Kamino 聚合器");
             identity.set_skip_user_accounts_rpc_calls(false);
 
@@ -1218,6 +1231,7 @@ async fn prepare_swap_components(
             let quote_executor =
                 QuoteExecutor::for_kamino((*api_client).clone(), kamino_quote_cfg.clone());
             let swap_preparer = SwapPreparer::for_kamino(
+                rpc_client.clone(),
                 kamino_quote_cfg.clone(),
                 compute_unit_price_mode.clone(),
             );
@@ -1398,8 +1412,28 @@ fn build_pure_trade_pairs(
 
 fn build_blind_trade_profiles(
     config: &config::BlindStrategyConfig,
+    ip_capacity_hint: usize,
 ) -> EngineResult<BTreeMap<Pubkey, TradeProfile>> {
-    let mut per_mint: BTreeMap<Pubkey, TradeProfile> = BTreeMap::new();
+    #[derive(Clone)]
+    struct BaseState {
+        mint: Pubkey,
+        process_delay: Duration,
+        lane_indices: Vec<usize>,
+    }
+
+    #[derive(Clone)]
+    struct LanePlan {
+        min: u64,
+        max: u64,
+        strategy: config::TradeRangeStrategy,
+        weight: f64,
+        final_count: usize,
+        max_count: usize,
+        allow_scale: bool,
+    }
+
+    let mut base_states: Vec<BaseState> = Vec::new();
+    let mut lane_plans: Vec<LanePlan> = Vec::new();
 
     for base in &config.base_mints {
         let mint_str = base.mint.trim();
@@ -1412,22 +1446,206 @@ fn build_blind_trade_profiles(
             ))
         })?;
 
-        let amounts = generate_amounts_for_base(base);
-        if amounts.is_empty() {
-            continue;
+        if base.lanes.is_empty() {
+            return Err(EngineError::InvalidConfig(format!(
+                "盲发策略中 mint `{mint_str}` 未配置任何 lane"
+            )));
         }
+
         let delay_ms = base
             .process_delay
             .unwrap_or(DEFAULT_PROCESS_DELAY_MS)
             .max(1);
         let process_delay = Duration::from_millis(delay_ms);
-        per_mint.insert(
+
+        let mut lane_indices = Vec::with_capacity(base.lanes.len());
+
+        for lane in &base.lanes {
+            if lane.count == 0 {
+                return Err(EngineError::InvalidConfig(format!(
+                    "盲发策略中 mint `{mint_str}` 的 lane `count` 必须大于 0"
+                )));
+            }
+
+            let min = lane.min;
+            let max = lane.max.max(min);
+            if min == 0 && max == 0 {
+                return Err(EngineError::InvalidConfig(format!(
+                    "盲发策略中 mint `{mint_str}` 的 lane min/max 不能同时为 0"
+                )));
+            }
+
+            let base_count = lane.count as usize;
+            let allow_scale = min < max;
+            let max_multiplier = config.auto_scale_to_ip.max_multiplier.max(1.0);
+            let mut max_count = base_count;
+            if config.auto_scale_to_ip.enable && allow_scale {
+                let scaled = ((base_count as f64) * max_multiplier).ceil() as usize;
+                max_count = max_count.max(scaled);
+            }
+            if !allow_scale {
+                max_count = base_count;
+            }
+
+            let weight = if lane.weight.is_sign_negative() {
+                0.0
+            } else {
+                lane.weight
+            };
+
+            let lane_index = lane_plans.len();
+            lane_indices.push(lane_index);
+            lane_plans.push(LanePlan {
+                min,
+                max,
+                strategy: lane.strategy,
+                weight,
+                final_count: base_count,
+                max_count,
+                allow_scale,
+            });
+        }
+
+        base_states.push(BaseState {
             mint,
-            TradeProfile {
-                amounts,
-                process_delay,
-            },
-        );
+            process_delay,
+            lane_indices,
+        });
+    }
+
+    if base_states.is_empty() {
+        return Err(EngineError::InvalidConfig(
+            "盲发策略未配置有效的 base mint".into(),
+        ));
+    }
+
+    let mut total_count: usize = lane_plans.iter().map(|lane| lane.final_count).sum();
+    if total_count == 0 {
+        return Err(EngineError::InvalidConfig(
+            "盲发策略未配置有效的交易规模".into(),
+        ));
+    }
+
+    if config.auto_scale_to_ip.enable && ip_capacity_hint > total_count {
+        let max_possible: usize = lane_plans.iter().map(|lane| lane.max_count).sum();
+        let target = ip_capacity_hint.min(max_possible).max(total_count);
+        if target > total_count {
+            let mut remaining = target - total_count;
+
+            let mut weighted_total: f64 = lane_plans
+                .iter()
+                .filter(|lane| {
+                    lane.allow_scale && lane.final_count < lane.max_count && lane.weight > 0.0
+                })
+                .map(|lane| lane.weight)
+                .sum();
+
+            if weighted_total == 0.0 {
+                weighted_total = lane_plans
+                    .iter()
+                    .filter(|lane| lane.allow_scale && lane.final_count < lane.max_count)
+                    .count() as f64;
+            }
+
+            if weighted_total > 0.0 {
+                for lane in lane_plans.iter_mut() {
+                    if remaining == 0 {
+                        break;
+                    }
+                    if !lane.allow_scale || lane.final_count >= lane.max_count {
+                        continue;
+                    }
+                    let lane_weight = if lane.weight > 0.0 && weighted_total > 0.0 {
+                        lane.weight / weighted_total
+                    } else if weighted_total > 0.0 {
+                        1.0 / weighted_total
+                    } else {
+                        0.0
+                    };
+                    if lane_weight <= 0.0 {
+                        continue;
+                    }
+                    let extra = ((remaining as f64) * lane_weight).floor() as usize;
+                    let extra = extra.min(lane.max_count - lane.final_count);
+                    if extra > 0 {
+                        lane.final_count += extra;
+                        total_count += extra;
+                        remaining = target.saturating_sub(total_count);
+                        if remaining == 0 {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            while remaining > 0 {
+                let mut progressed = false;
+                for lane in lane_plans.iter_mut() {
+                    if remaining == 0 {
+                        break;
+                    }
+                    if !lane.allow_scale || lane.final_count >= lane.max_count {
+                        continue;
+                    }
+                    lane.final_count += 1;
+                    total_count += 1;
+                    remaining -= 1;
+                    progressed = true;
+                }
+                if !progressed {
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut per_mint: BTreeMap<Pubkey, TradeProfile> = BTreeMap::new();
+
+    for base_state in base_states {
+        let mut lane_values: BTreeSet<u64> = BTreeSet::new();
+        for lane_index in base_state.lane_indices {
+            let lane = &lane_plans[lane_index];
+            let values = generate_lane_amounts(lane.min, lane.max, lane.final_count, lane.strategy);
+            for value in values {
+                if value > 0 {
+                    lane_values.insert(value);
+                }
+            }
+        }
+
+        if lane_values.is_empty() {
+            continue;
+        }
+
+        let mut rng = rand::rng();
+        let mut tweaked: BTreeSet<u64> = BTreeSet::new();
+        for amount in lane_values {
+            let basis_points: u16 = rng.random_range(930..=999);
+            let adjusted = (((amount as u128) * basis_points as u128) + 999) / 1_000;
+            let normalized = adjusted.max(1).min(u128::from(u64::MAX)) as u64;
+            tweaked.insert(normalized);
+        }
+
+        let amounts: Vec<u64> = tweaked.into_iter().collect();
+        if amounts.is_empty() {
+            continue;
+        }
+
+        if per_mint
+            .insert(
+                base_state.mint,
+                TradeProfile {
+                    amounts,
+                    process_delay: base_state.process_delay,
+                },
+            )
+            .is_some()
+        {
+            return Err(EngineError::InvalidConfig(format!(
+                "盲发策略中存在重复的 base mint `{}`",
+                base_state.mint
+            )));
+        }
     }
 
     if per_mint.is_empty() {
@@ -1491,51 +1709,49 @@ fn build_pure_trade_profiles(
     Ok(per_mint)
 }
 
-fn generate_amounts_for_base(base: &config::BlindBaseMintConfig) -> Vec<u64> {
-    if base.trade_size_range.is_empty() {
+fn generate_lane_amounts(
+    min: u64,
+    max: u64,
+    count: usize,
+    strategy: config::TradeRangeStrategy,
+) -> Vec<u64> {
+    if count == 0 {
         return Vec::new();
     }
-
-    let mut values: BTreeSet<u64> = base
-        .trade_size_range
-        .iter()
-        .copied()
-        .filter(|value| *value > 0)
-        .collect();
-
-    if values.len() >= 2 {
-        if let Some(count) = base.trade_range_count {
-            if count >= 2 {
-                let mut sorted = values.iter().copied().collect::<Vec<_>>();
-                sorted.sort_unstable();
-                let min = sorted.first().copied().unwrap_or(0);
-                let max = sorted.last().copied().unwrap_or(min);
-                let strategy = base
-                    .trade_range_strategy
-                    .as_deref()
-                    .map(|s| s.to_ascii_lowercase())
-                    .unwrap_or_else(|| "linear".to_string());
-                for amount in generate_amounts(min, max, count, &strategy) {
-                    values.insert(amount);
-                }
-            }
+    if min == max {
+        return vec![min];
+    }
+    let capped = count.min(u32::MAX as usize) as u32;
+    match strategy {
+        config::TradeRangeStrategy::Linear => generate_amounts(min, max, capped, "linear"),
+        config::TradeRangeStrategy::Exponential => {
+            generate_amounts(min, max, capped, "exponential")
         }
+        config::TradeRangeStrategy::Random => generate_random_amounts(min, max, count),
     }
+}
 
-    if values.is_empty() {
-        return Vec::new();
+fn generate_random_amounts(min: u64, max: u64, count: usize) -> Vec<u64> {
+    if min == max {
+        return vec![min];
     }
-
     let mut rng = rand::rng();
-    let mut tweaked: BTreeSet<u64> = BTreeSet::new();
-    for amount in values {
-        let basis_points: u16 = rng.random_range(930..=999);
-        let adjusted = (((amount as u128) * basis_points as u128) + 999) / 1_000;
-        let normalized = adjusted.max(1).min(u128::from(u64::MAX)) as u64;
-        tweaked.insert(normalized);
+    let mut values: BTreeSet<u64> = BTreeSet::new();
+    let mut attempts = 0usize;
+    let max_attempts = count.saturating_mul(10).max(100);
+
+    while values.len() < count && attempts < max_attempts {
+        let sample = rng.random_range(min..=max);
+        values.insert(sample);
+        attempts += 1;
     }
 
-    tweaked.into_iter().collect()
+    if values.len() < count {
+        let fallback = generate_amounts(min, max, count.min(u32::MAX as usize) as u32, "linear");
+        return fallback;
+    }
+
+    values.into_iter().collect()
 }
 
 fn normalize_pure_trade_sizes(values: &[u64]) -> Vec<u64> {

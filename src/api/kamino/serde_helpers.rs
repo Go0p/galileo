@@ -1,10 +1,10 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use serde::Deserialize;
 use serde::Deserializer;
 use serde::de::{Error as DeError, Unexpected, Visitor};
+use serde_json::Value;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
-use serde::Deserialize;
-use serde_json::Value;
 
 pub fn parse_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
@@ -102,7 +102,9 @@ where
 
 use crate::api::kamino::quote::LookupTableEntry;
 
-pub fn parse_lookup_table_accounts<'de, D>(deserializer: D) -> Result<Vec<LookupTableEntry>, D::Error>
+pub fn parse_lookup_table_accounts<'de, D>(
+    deserializer: D,
+) -> Result<Vec<LookupTableEntry>, D::Error>
 where
     D: Deserializer<'de>,
 {

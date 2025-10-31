@@ -15,7 +15,7 @@ use tokio::fs;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::time;
-use tracing::{error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::config::{PureBlindAssetsConfig, PureBlindMarketCacheConfig};
 use crate::dexes::clmm::RAYDIUM_CLMM_PROGRAM_ID;
@@ -74,7 +74,7 @@ pub async fn init_market_cache(
         return Err(anyhow!("pure_blind_strategy.market_cache.path 不能为空"));
     }
     let download_client = if let Some(proxy_url) = &settings.download_proxy {
-        info!(
+        debug!(
             target: "pure_blind::market_cache",
             proxy = %proxy_url,
             "纯盲发市场缓存下载客户端已启用代理"
@@ -180,7 +180,7 @@ impl MarketCacheLoader {
 
         let count = records.len();
         let path = self.settings.local_path.display().to_string();
-        info!(
+        debug!(
             target: "pure_blind::market_cache",
             path = %path,
             count,
@@ -201,7 +201,7 @@ impl MarketCacheLoader {
         }
 
         let target_path = self.settings.local_path.as_path();
-        info!(
+        debug!(
             target: "pure_blind::market_cache",
             url = %self.settings.download_url,
             path = %target_path.display(),
@@ -270,7 +270,7 @@ impl MarketCacheLoader {
             pb.finish_with_message(finish_msg);
         }
 
-        info!(
+        debug!(
             target: "pure_blind::market_cache",
             path = %target_path.display(),
             size_bytes = downloaded,
@@ -418,7 +418,7 @@ impl MarketCacheLoader {
                 .map(|(label, count)| format!("{label} - {count}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            info!(
+            debug!(
                 target: "pure_blind::market_cache",
                 counts = %formatted,
                 "纯盲发市场缓存 DEX 分布"
@@ -433,7 +433,7 @@ impl MarketCacheLoader {
                 .map(|(combo, count)| format!("{combo} - {count}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            info!(
+            debug!(
                 target: "pure_blind::market_cache",
                 combos = %formatted,
                 "纯盲发市场缓存 mint 组合分布"

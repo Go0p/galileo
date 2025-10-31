@@ -31,6 +31,7 @@ enum AggregatorContext {
     },
     Kamino {
         api_client: KaminoApiClient,
+        rpc_client: Arc<solana_client::nonblocking::rpc_client::RpcClient>,
     },
     Ultra {
         api_client: UltraApiClient,
@@ -235,7 +236,12 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 &config.galileo.global.logging,
                 Some(api_client_pool),
             );
-            AggregatorContext::Kamino { api_client }
+            let resolved_rpc = resolve_rpc_client(&config.galileo.global)?;
+            let rpc_client = resolved_rpc.client.clone();
+            AggregatorContext::Kamino {
+                api_client,
+                rpc_client,
+            }
         }
         crate::config::EngineBackend::Ultra => {
             let ultra_cfg = &config.galileo.engine.ultra;
@@ -365,8 +371,14 @@ async fn dispatch(
                 let backend = crate::cli::strategy::StrategyBackend::Dflow { api_client };
                 run_strategy(&config, &backend, StrategyMode::Live).await?;
             }
-            AggregatorContext::Kamino { api_client } => {
-                let backend = crate::cli::strategy::StrategyBackend::Kamino { api_client };
+            AggregatorContext::Kamino {
+                api_client,
+                rpc_client,
+            } => {
+                let backend = crate::cli::strategy::StrategyBackend::Kamino {
+                    api_client,
+                    rpc_client: rpc_client.clone(),
+                };
                 run_strategy(&config, &backend, StrategyMode::Live).await?;
             }
             AggregatorContext::Ultra {
@@ -399,8 +411,14 @@ async fn dispatch(
                 let backend = crate::cli::strategy::StrategyBackend::Dflow { api_client };
                 run_strategy(&config, &backend, StrategyMode::DryRun).await?;
             }
-            AggregatorContext::Kamino { api_client } => {
-                let backend = crate::cli::strategy::StrategyBackend::Kamino { api_client };
+            AggregatorContext::Kamino {
+                api_client,
+                rpc_client,
+            } => {
+                let backend = crate::cli::strategy::StrategyBackend::Kamino {
+                    api_client,
+                    rpc_client: rpc_client.clone(),
+                };
                 run_strategy(&config, &backend, StrategyMode::DryRun).await?;
             }
             AggregatorContext::Ultra {

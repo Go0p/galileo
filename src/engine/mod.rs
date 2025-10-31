@@ -175,12 +175,14 @@ impl MultiLegEngineContext {
 }
 
 struct MultiLegExecution {
+    #[allow(dead_code)]
     descriptor: LegPairDescriptor,
     pair: TradePair,
     trade_size: u64,
     plan: LegPairPlan,
     gross_profit: u64,
     tip_lamports: u64,
+    #[allow(dead_code)]
     tag: Option<String>,
 }
 
@@ -1146,6 +1148,8 @@ where
         let double_quote = DoubleQuote {
             forward: forward_quote,
             reverse: reverse_quote,
+            forward_latency: Some(forward_duration),
+            reverse_latency: reverse_duration,
         };
 
         events::quote_end(
@@ -1343,6 +1347,14 @@ where
                 continue;
             }
 
+            let aggregator_label = format!(
+                "multi_leg:{}->{}",
+                evaluation.descriptor.buy.kind, evaluation.descriptor.sell.kind
+            );
+            let forward_quote = evaluation.plan.buy.quote.clone();
+            let reverse_quote = evaluation.plan.sell.quote.clone();
+            let estimated_profit = evaluation.profit_lamports.min(i128::from(u64::MAX)) as u64;
+            let threshold = self.profit_evaluator.min_threshold();
             let Some(profit) = self
                 .profit_evaluator
                 .evaluate_multi_leg(evaluation.profit_lamports)
@@ -1354,6 +1366,18 @@ where
                     amount = task.amount,
                     profit = evaluation.profit_lamports,
                     "多腿收益低于阈值，丢弃"
+                );
+                events::profit_shortfall(
+                    task.pair.input_mint.as_str(),
+                    aggregator_label.as_str(),
+                    forward_quote.amount_in,
+                    forward_quote.amount_out,
+                    None,
+                    reverse_quote.amount_in,
+                    reverse_quote.amount_out,
+                    None,
+                    estimated_profit,
+                    threshold,
                 );
                 continue;
             };
@@ -1379,6 +1403,20 @@ where
                 );
                 continue;
             }
+
+            events::profit_opportunity(
+                candidate.pair.input_mint.as_str(),
+                aggregator_label.as_str(),
+                forward_quote.amount_in,
+                forward_quote.amount_out,
+                None,
+                reverse_quote.amount_in,
+                reverse_quote.amount_out,
+                None,
+                profit.gross_profit_lamports,
+                candidate.net_profit(),
+                threshold,
+            );
 
             candidates.push(candidate);
         }
@@ -1428,31 +1466,14 @@ where
         let strategy_name = self.strategy.name();
 
         let MultiLegExecution {
-            descriptor,
+            descriptor: _,
             pair,
             trade_size,
             plan,
             gross_profit,
             tip_lamports,
-            tag,
+            tag: _,
         } = execution;
-
-        let net_profit = gross_profit as i128 - tip_lamports as i128;
-
-        info!(
-            target: "engine::multi_leg",
-            strategy = strategy_name,
-            input_mint = %pair.input_mint,
-            output_mint = %pair.output_mint,
-            amount = trade_size,
-            gross_profit,
-            tip = tip_lamports,
-            net_profit,
-            buy = %descriptor.buy.kind,
-            sell = %descriptor.sell.kind,
-            tag = tag.as_deref().unwrap_or(""),
-            "检测到多腿套利机会"
-        );
 
         let mut bundle = assemble_multi_leg_instructions(&plan);
         let mut final_instructions = bundle.flatten_instructions();
@@ -1508,7 +1529,7 @@ where
             .build_with_sequence(&self.identity, &variant, final_instructions, tip_lamports)
             .await?;
 
-        info!(
+        debug!(
             target: "engine::multi_leg",
             strategy = strategy_name,
             slot = prepared.slot,

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use metrics::{counter, histogram};
-use reqwest::{header, StatusCode};
+use reqwest::{StatusCode, header};
 use serde_json::Value;
 use thiserror::Error;
 use tracing::{Level, debug, trace, warn};
@@ -25,6 +25,13 @@ pub use quote::{QuoteRequest, QuoteResponse, Route};
 pub enum KaminoError {
     #[error("failed to call Kamino API: {0}")]
     Http(#[from] reqwest::Error),
+    #[error("request to {endpoint} timed out after {timeout_ms} ms")]
+    Timeout {
+        endpoint: String,
+        timeout_ms: u64,
+        #[source]
+        source: reqwest::Error,
+    },
     #[error("failed to parse response body: {0}")]
     Json(#[from] serde_json::Error),
     #[error("API request to {endpoint} failed with status {status}: {body}")]
@@ -215,17 +222,53 @@ impl KaminoApiClient {
                 .timeout(self.quote_timeout)
                 .query(&query_params),
         )
-            .send()
-            .await
-            .map_err(|err| {
-                self.record_quote_metrics("transport_error", None, None);
+        .send()
+        .await
+        .map_err(|err| {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if err.is_timeout() {
+                let timeout_ms = self.quote_timeout.as_millis() as u64;
+                self.record_quote_metrics("timeout", None, Some(elapsed_ms));
+                warn!(
+                    target: "kamino::quote",
+                    endpoint = %url,
+                    elapsed_ms = format_args!("{elapsed_ms:.3}"),
+                    timeout_ms,
+                    "Kamino 报价请求超时"
+                );
+                KaminoError::Timeout {
+                    endpoint: url.clone(),
+                    timeout_ms,
+                    source: err,
+                }
+            } else {
+                self.record_quote_metrics("transport_error", None, Some(elapsed_ms));
                 KaminoError::Http(err)
-            })?;
+            }
+        })?;
 
         let status = response.status();
         let body = response.text().await.map_err(|err| {
-            self.record_quote_metrics("read_error", None, None);
-            KaminoError::Http(err)
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if err.is_timeout() {
+                let timeout_ms = self.quote_timeout.as_millis() as u64;
+                self.record_quote_metrics("timeout", None, Some(elapsed_ms));
+                warn!(
+                    target: "kamino::quote",
+                    endpoint = %url,
+                    elapsed_ms = format_args!("{elapsed_ms:.3}"),
+                    timeout_ms,
+                    "Kamino 报价读取响应超时"
+                );
+                KaminoError::Timeout {
+                    endpoint: url.clone(),
+                    timeout_ms,
+                    source: err,
+                }
+            } else {
+                self.record_quote_metrics("read_error", None, Some(elapsed_ms));
+                KaminoError::Http(err)
+            }
         })?;
 
         if status == StatusCode::TOO_MANY_REQUESTS {
@@ -260,23 +303,15 @@ impl KaminoApiClient {
         let router = quote.best_route().map(|route| route.router_type.as_str());
         self.record_quote_metrics("ok", router, Some(elapsed));
 
-        if elapsed > self.slow_quote_warn_ms as f64 {
-            let route_info = quote.best_route();
-            warn!(
-                target: "kamino::quote",
-                elapsed_ms = format_args!("{elapsed:.3}"),
-                slow_threshold_ms = self.slow_quote_warn_ms,
-                router = route_info.map(|route| route.router_type.as_str()),
-                "Kamino 报价耗时超过阈值"
-            );
-        } else {
-            trace!(
-                target: "kamino::quote",
-                elapsed_ms = format_args!("{elapsed:.3}"),
-                routes = quote.routes().len(),
-                "Kamino 报价完成"
-            );
-        }
+        trace!(
+            target: "kamino::quote",
+            elapsed_ms = format_args!("{elapsed:.3}"),
+            router = quote
+                .best_route()
+                .map(|route| route.router_type.as_str()),
+            routes = quote.routes().len(),
+            "Kamino 报价完成"
+        );
 
         guard.finish();
         Ok(quote)

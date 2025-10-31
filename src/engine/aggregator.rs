@@ -275,9 +275,7 @@ impl QuotePayloadVariant {
                 .route_plan
                 .extend(rhs.payload.route_plan.iter().cloned()),
             (QuotePayloadVariant::Kamino(lhs), QuotePayloadVariant::Kamino(rhs)) => {
-                lhs.route
-                    .instructions
-                    .append_from(&rhs.route.instructions);
+                lhs.route.instructions.append_from(&rhs.route.instructions);
                 for value in &rhs.route.lookup_table_accounts_bs58 {
                     if let Some(existing) = lhs
                         .route
@@ -293,9 +291,7 @@ impl QuotePayloadVariant {
                             }
                         }
                     } else {
-                        lhs.route
-                            .lookup_table_accounts_bs58
-                            .push(value.clone());
+                        lhs.route.lookup_table_accounts_bs58.push(value.clone());
                     }
                 }
                 lhs.route.response_time_get_quote_ms = lhs
@@ -421,10 +417,11 @@ impl MultiLegInstructions {
         self.address_lookup_table_addresses = final_order.clone();
         self.resolved_lookup_tables = final_order
             .into_iter()
-            .filter_map(|key| merged.remove(&key).map(|addresses| AddressLookupTableAccount {
-                key,
-                addresses,
-            }))
+            .filter_map(|key| {
+                merged
+                    .remove(&key)
+                    .map(|addresses| AddressLookupTableAccount { key, addresses })
+            })
             .collect();
     }
 }
@@ -645,10 +642,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::kamino::Route;
     use crate::api::kamino::quote::{
         AmountsExactIn, AmountsExactOut, LookupTableEntry, RawInstruction, RouteInstructions,
     };
-    use crate::api::kamino::Route;
     use solana_sdk::pubkey::Pubkey;
 
     fn build_route(
@@ -704,20 +701,8 @@ mod tests {
         let output_mint = Pubkey::new_unique();
         let intermediate = Pubkey::new_unique();
 
-        let route_a = build_route(
-            Pubkey::new_unique(),
-            "LookupA",
-            5,
-            100,
-            110,
-        );
-        let route_b = build_route(
-            Pubkey::new_unique(),
-            "LookupB",
-            7,
-            110,
-            120,
-        );
+        let route_a = build_route(Pubkey::new_unique(), "LookupA", 5, 100, 110);
+        let route_b = build_route(Pubkey::new_unique(), "LookupB", 7, 110, 120);
 
         let mut lhs = QuotePayloadVariant::Kamino(KaminoQuotePayload {
             route: route_a,

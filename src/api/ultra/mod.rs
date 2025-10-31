@@ -12,11 +12,12 @@ use reqwest::StatusCode;
 use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
-use tracing::{Level, debug, info, trace, warn};
+use tracing::{Level, debug, trace, warn};
 use url::form_urlencoded;
 
 use crate::config::{BotConfig, LoggingConfig, LoggingProfile};
 use crate::monitoring::metrics::prometheus_enabled;
+use crate::monitoring::short_mint_str;
 use crate::monitoring::{LatencyMetadata, guard_with_level};
 use crate::network::{IpBoundClientPool, ReqwestClientFactoryFn};
 use reqwest::header::HeaderName;
@@ -235,52 +236,27 @@ impl UltraApiClient {
         self.record_order_metrics("success", Some(elapsed_ms), Some(status));
         let log_input_mint = order.input_mint.unwrap_or_default();
         let log_output_mint = order.output_mint.unwrap_or_default();
+        let input_mint_text = log_input_mint.to_string();
+        let output_mint_text = log_output_mint.to_string();
         let log_in_amount = order.in_amount.unwrap_or_default();
         let log_out_amount = order.out_amount.unwrap_or_default();
         let log_swap_mode = order.swap_mode.unwrap_or(SwapMode::ExactIn);
         let log_router = order.router.as_deref().unwrap_or("<none>");
         let log_quote_id = order.quote_id.as_deref().unwrap_or("<none>");
-        let slow_threshold = self.slow_order_warn_ms as f64;
-
-        let message = format_args!(
-            "Ultra /order 完成: input_mint={} in_amount={} out_amount={} elapsed_ms={:.3} router={} swap_mode={:?} quote_id={}",
-            log_input_mint,
-            log_in_amount,
-            log_out_amount,
-            elapsed_ms,
-            log_router,
-            log_swap_mode,
-            log_quote_id
+        let input_display = short_mint_str(&input_mint_text);
+        let output_display = short_mint_str(&output_mint_text);
+        debug!(
+            target: "ultra::order",
+            base_mint = %input_display,
+            quote_mint = %output_display,
+            in_amount = log_in_amount,
+            out_amount = log_out_amount,
+            swap_mode = ?log_swap_mode,
+            router = %log_router,
+            quote_id = log_quote_id,
+            elapsed_ms = format_args!("{elapsed_ms:.3}"),
+            "Ultra /order 成功"
         );
-        if elapsed_ms > slow_threshold {
-            warn!(
-                target: "ultra::order",
-                input_mint = %log_input_mint,
-                output_mint = %log_output_mint,
-                in_amount = log_in_amount,
-                out_amount = log_out_amount,
-                swap_mode = ?log_swap_mode,
-                router = %log_router,
-                quote_id = log_quote_id,
-                elapsed_ms = format_args!("{elapsed_ms:.3}"),
-                "{}",
-                message
-            );
-        } else {
-            info!(
-                target: "ultra::order",
-                input_mint = %log_input_mint,
-                output_mint = %log_output_mint,
-                in_amount = log_in_amount,
-                out_amount = log_out_amount,
-                swap_mode = ?log_swap_mode,
-                router = %log_router,
-                quote_id = log_quote_id,
-                elapsed_ms = format_args!("{elapsed_ms:.3}"),
-                "{}",
-                message
-            );
-        }
 
         Ok(order)
     }
@@ -371,7 +347,7 @@ impl UltraApiClient {
         let elapsed = guard.finish();
         let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
         self.record_execute_metrics("success", Some(elapsed_ms), Some(status));
-        info!(
+        debug!(
             target: "ultra::execute",
             request_id = %request.request_id,
             status = ?execute.status,
@@ -379,16 +355,6 @@ impl UltraApiClient {
             elapsed_ms = format_args!("{elapsed_ms:.3}"),
             "Ultra /execute 响应成功"
         );
-        if elapsed_ms > self.slow_execute_warn_ms as f64 {
-            warn!(
-                target: "ultra::execute",
-                elapsed_ms = format_args!("{elapsed_ms:.3}"),
-                slow_threshold_ms = self.slow_execute_warn_ms,
-                request_id = %request.request_id,
-                status = ?execute.status,
-                "Ultra /execute 耗时超过告警阈值"
-            );
-        }
 
         Ok(execute)
     }

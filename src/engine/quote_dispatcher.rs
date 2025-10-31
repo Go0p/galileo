@@ -237,6 +237,8 @@ impl QuoteDispatcher {
                                             Ok(Some(DoubleQuote {
                                                 forward: forward_quote,
                                                 reverse: reverse_quote,
+                                                forward_latency: forward_duration,
+                                                reverse_latency: reverse_duration,
                                             }))
                                         } else {
                                             Ok(None)
@@ -430,6 +432,7 @@ pub(crate) fn classify_kamino(err: &crate::api::kamino::KaminoError) -> Option<I
         KaminoError::RateLimited { .. } => Some(IpLeaseOutcome::RateLimited),
         KaminoError::ApiStatus { status, .. } => map_status(status),
         KaminoError::Http(inner) => classify_reqwest(inner),
+        KaminoError::Timeout { .. } => Some(IpLeaseOutcome::NetworkError),
         _ => None,
     }
 }

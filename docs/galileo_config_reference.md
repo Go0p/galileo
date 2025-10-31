@@ -80,8 +80,8 @@ jupiter:
 
 ## 套利策略配置
 - `BLIND_QUOTE_STRATEGY.base_mints` → `blind_strategy.base_mints`
-- `BLIND_QUOTE_STRATEGY.*.trade_size_range` → `blind_strategy.base_mints[*].trade_size_range`
-- `BLIND_QUOTE_STRATEGY.*.trade_range_strategy` → `blind_strategy.base_mints[*].trade_range_strategy`
+- `BLIND_QUOTE_STRATEGY.*.trade_size_range` → `blind_strategy.base_mints[*].lanes`
+- `BLIND_QUOTE_STRATEGY.*.trade_range_strategy` → `blind_strategy.base_mints[*].lanes[*].strategy`
 - `BLIND_QUOTE_STRATEGY.*.min_quote_profit` → `blind_strategy.base_mints[*].min_quote_profit`
 - `BACKRUN_STRATEGY.base_mints` → `back_run_strategy.base_mints`
 - `BACKRUN_STRATEGY.*.trade_configs` → `back_run_strategy.base_mints[*].trade_configs`

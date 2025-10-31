@@ -275,6 +275,10 @@ impl QuoteExecutor {
 
                 match client.quote_with_ip(&request, local_ip).await {
                     Ok(response) => {
+                        let mut response = response;
+                        if defaults.resolve_lookup_tables_via_rpc {
+                            response.strip_lookup_addresses();
+                        }
                         if let Some(route) = response.best_route() {
                             debug!(
                                 target: "engine::quote",

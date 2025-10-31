@@ -31,6 +31,20 @@ impl StrategyTick {
 pub struct DoubleQuote {
     pub forward: QuoteResponseVariant,
     pub reverse: QuoteResponseVariant,
+    pub forward_latency: Option<Duration>,
+    pub reverse_latency: Option<Duration>,
+}
+
+impl DoubleQuote {
+    pub fn forward_latency_ms(&self) -> Option<f64> {
+        self.forward_latency
+            .map(|duration| duration.as_secs_f64() * 1_000.0)
+    }
+
+    pub fn reverse_latency_ms(&self) -> Option<f64> {
+        self.reverse_latency
+            .map(|duration| duration.as_secs_f64() * 1_000.0)
+    }
 }
 
 #[derive(Debug, Clone)]

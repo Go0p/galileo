@@ -5,7 +5,7 @@
 ## 1. 背景与约束
 - 当前 `BlindStrategy` 仍依赖 quote → profit → swap 的传统链路，流程中调用 Jupiter API 获取报价与指令。这与“盲发”理念相悖。
 - 新需求强调**不再调用 Jupiter 二进制或 API**，而是使用本地逻辑生成交易。唯一需要复用的是 Jupiter `route_v2` 指令格式（程序 id、前置账户固定），我们负责拼装 `data` 与 `remaining_accounts`。
-- 配置来源仍为 `blind_strategy` 节点。`trade_range_count` 为 `N` 时，需要在一个循环周期内发送 `2N` 笔交易（正向 + 反向各 `N` 笔），并允许随机化顺序。
+- 配置来源仍为 `blind_strategy` 节点。每个 base mint 通过若干 `lane`（`min` / `max` / `count` / `strategy` / `weight`）描述想要探索的区间，调度器会按这些定义生成正向与反向的交易规模，并可按权重自动扩容以压满 IP。
 - 纯盲发配置迁移至独立的 `pure_blind_strategy` 节点：常规盲发仍由 `blind_strategy` 控制，纯盲发的启用、市场缓存与调度策略完全独立。
 - 纯盲发闭环可通过 `pure_blind_strategy.overrides` 声明。每条路线以 `legs` 列表按顺序写出市场（当前支持 SolFiV2、TesseraV、HumidiFi、ZeroFi、ObricV2，可混搭），系统会自动解析资产流向并生成正/反向闭环。若路由需要引用 Address Lookup Table，可在同级声明 `lookup_tables`：
   ```yaml
@@ -68,7 +68,7 @@
 3. **缓存策略**：遵循“无缓存原则”。如需提高性能，可在单个 tick 内复用一次 RPC 结果，但不得跨 tick 保存陈旧数据。
 
 ## 4. 交易调度与随机化
-- **trade size 生成**：沿用 `generate_amounts_for_base()` 逻辑（`src/cli/strategy.rs`），配置中声明的每个档位都会参与；若设置了 `trade_range_count`，会在 `min/max` 间按策略插值补点，然后对所有档位施加 930–999 bp 的轻量扰动。  
+- **trade size 生成**：每个 base mint 由一组 `lane` 定义（`min` / `max` / `count` / `strategy` / `weight`），系统会根据策略在区间内插值或采样，随后施加 930–999 bp 的轻量扰动。若开启 `auto_scale_to_ip`，会按 lane 的权重自动补充额外档位以压满可用 IP。  
 - **批量盲发**：当某个 base mint 达到 `process_delay`，调度器会一次性发送该 mint 的全部 trade size，确保 IP 资源被充分占用。  
 - **顺序随机化**：若需要进一步打散顺序，可在调度层（`StrategyEngine::handle_action` 或专用执行器）对返回的任务 `shuffle`。  
 - **节流控制**：`process_delay` 用于约束同一 base mint 进入下一轮批量调度的最小间隔；`batch_interval_ms` 仅在需要时作为跨批次退避。`sending_cooldown` 暂未在调度层生效，如需开启需补充实现。

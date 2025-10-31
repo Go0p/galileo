@@ -69,7 +69,10 @@ pub enum SwapPreparerBackend {
         defaults: DflowSwapConfig,
     },
     Kamino {
+        rpc: Arc<RpcClient>,
+        alt_cache: AltCache,
         cu_limit_multiplier: f64,
+        resolve_lookup_tables_via_rpc: bool,
     },
     Ultra {
         rpc: Arc<RpcClient>,
@@ -115,13 +118,17 @@ impl SwapPreparer {
     }
 
     pub fn for_kamino(
+        rpc: Arc<RpcClient>,
         defaults: KaminoQuoteConfig,
         compute_unit_price: Option<ComputeUnitPriceMode>,
     ) -> Self {
         let multiplier = sanitize_multiplier(defaults.cu_limit_multiplier).unwrap_or(1.0);
         Self {
             backend: SwapPreparerBackend::Kamino {
+                rpc,
+                alt_cache: AltCache::new(),
                 cu_limit_multiplier: multiplier,
+                resolve_lookup_tables_via_rpc: defaults.resolve_lookup_tables_via_rpc,
             },
             compute_unit_price,
         }
@@ -244,7 +251,10 @@ impl SwapPreparer {
             }
             (
                 SwapPreparerBackend::Kamino {
+                    rpc,
+                    alt_cache,
                     cu_limit_multiplier,
+                    resolve_lookup_tables_via_rpc,
                 },
                 QuotePayloadVariant::Kamino(payload),
             ) => {
@@ -254,6 +264,7 @@ impl SwapPreparer {
                 let mut compute_unit_limit: Option<u32> = None;
                 let mut total_compute_unit_limit: u128 = 0;
                 let mut compute_unit_price: Option<u64> = None;
+                let fetch_lookup_tables = *resolve_lookup_tables_via_rpc;
 
                 for ix in instructions {
                     if ix.program_id == COMPUTE_BUDGET_PROGRAM_ID {
@@ -289,34 +300,36 @@ impl SwapPreparer {
                         Ok(key) => {
                             if seen_keys.insert(key) {
                                 lookup_table_addresses.push(key);
-                                let mut table_addresses = Vec::new();
-                                let mut seen_addr = HashSet::new();
-                                for addr in &entry.addresses {
-                                    let trimmed = addr.trim();
-                                    if trimmed.is_empty() {
-                                        continue;
-                                    }
-                                    match Pubkey::from_str(trimmed) {
-                                        Ok(pubkey) => {
-                                            if seen_addr.insert(pubkey) {
-                                                table_addresses.push(pubkey);
+                                if !fetch_lookup_tables {
+                                    let mut table_addresses = Vec::new();
+                                    let mut seen_addr = HashSet::new();
+                                    for addr in &entry.addresses {
+                                        let trimmed = addr.trim();
+                                        if trimmed.is_empty() {
+                                            continue;
+                                        }
+                                        match Pubkey::from_str(trimmed) {
+                                            Ok(pubkey) => {
+                                                if seen_addr.insert(pubkey) {
+                                                    table_addresses.push(pubkey);
+                                                }
+                                            }
+                                            Err(err) => {
+                                                debug!(
+                                                    target: "engine::swap_preparer",
+                                                    address = trimmed,
+                                                    error = %err,
+                                                    "解析 Kamino lookup table address 失败，忽略"
+                                                );
                                             }
                                         }
-                                        Err(err) => {
-                                            debug!(
-                                                target: "engine::swap_preparer",
-                                                address = trimmed,
-                                                error = %err,
-                                                "解析 Kamino lookup table address 失败，忽略"
-                                            );
-                                        }
                                     }
-                                }
-                                if !table_addresses.is_empty() {
-                                    resolved_lookup_tables.push(AddressLookupTableAccount {
-                                        key,
-                                        addresses: table_addresses,
-                                    });
+                                    if !table_addresses.is_empty() {
+                                        resolved_lookup_tables.push(AddressLookupTableAccount {
+                                            key,
+                                            addresses: table_addresses,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -331,10 +344,30 @@ impl SwapPreparer {
                     }
                 }
 
+                if fetch_lookup_tables && !lookup_table_addresses.is_empty() {
+                    let fetched = alt_cache
+                        .fetch_many(rpc, &lookup_table_addresses)
+                        .await
+                        .map_err(EngineError::from)?;
+                    let mut fetched_map: HashMap<Pubkey, AddressLookupTableAccount> = fetched
+                        .into_iter()
+                        .map(|table| (table.key, table))
+                        .collect();
+                    for key in &lookup_table_addresses {
+                        if let Some(table) = fetched_map.remove(key) {
+                            resolved_lookup_tables.push(table);
+                        } else {
+                            warn!(
+                                target: "engine::swap_preparer",
+                                address = %key,
+                                "通过 RPC 获取 Kamino ALT 失败，继续使用空地址"
+                            );
+                        }
+                    }
+                }
+
                 let raw_limit = if total_compute_unit_limit > 0 {
-                    total_compute_unit_limit
-                        .min(u32::MAX as u128)
-                        .max(1) as u32
+                    total_compute_unit_limit.min(u32::MAX as u128).max(1) as u32
                 } else {
                     compute_unit_limit.unwrap_or(FALLBACK_CU_LIMIT)
                 };
@@ -348,10 +381,8 @@ impl SwapPreparer {
                         "Kamino compute unit limit 已按配置系数调整"
                     );
                 }
-                compute_budget_instructions.insert(
-                    0,
-                    ComputeBudgetInstruction::set_compute_unit_limit(limit),
-                );
+                compute_budget_instructions
+                    .insert(0, ComputeBudgetInstruction::set_compute_unit_limit(limit));
 
                 if let Some(strategy) = &self.compute_unit_price {
                     let price = strategy.sample();
@@ -655,9 +686,7 @@ fn dedup_lookup_tables(tables: &mut Vec<AddressLookupTableAccount>) {
             order.push(table.key);
             Vec::new()
         });
-        let addr_set = seen_addresses
-            .entry(table.key)
-            .or_insert_with(HashSet::new);
+        let addr_set = seen_addresses.entry(table.key).or_insert_with(HashSet::new);
         for address in table.addresses {
             if addr_set.insert(address) {
                 entry.push(address);
@@ -667,9 +696,10 @@ fn dedup_lookup_tables(tables: &mut Vec<AddressLookupTableAccount>) {
 
     *tables = order
         .into_iter()
-        .filter_map(|key| merged.remove(&key).map(|addresses| AddressLookupTableAccount {
-            key,
-            addresses,
-        }))
+        .filter_map(|key| {
+            merged
+                .remove(&key)
+                .map(|addresses| AddressLookupTableAccount { key, addresses })
+        })
         .collect();
 }

@@ -3,6 +3,7 @@ use tracing::debug;
 
 use super::aggregator::{AggregatorKind, QuotePayloadVariant, QuoteResponseVariant};
 use super::types::{DoubleQuote, SwapOpportunity, UltraSwapLegs};
+use crate::monitoring::events;
 
 #[derive(Debug, Clone)]
 pub struct TipConfig {
@@ -43,6 +44,10 @@ impl ProfitEvaluator {
         }
     }
 
+    pub fn min_threshold(&self) -> u64 {
+        self.config.min_profit_threshold_lamports
+    }
+
     pub fn evaluate_multi_leg(&self, gross_profit_lamports: i128) -> Option<MultiLegProfit> {
         if gross_profit_lamports <= 0 {
             return None;
@@ -75,21 +80,56 @@ impl ProfitEvaluator {
             return None;
         }
 
-        let second_out = double_quote.reverse.out_amount() as u128;
+        let aggregator_label = format!("{:?}", double_quote.forward.kind());
+        let forward_in = double_quote.forward.in_amount();
+        let forward_out = double_quote.forward.out_amount();
+        let reverse_in = double_quote.reverse.in_amount();
+        let reverse_out = double_quote.reverse.out_amount();
+        let forward_latency_ms = double_quote.forward_latency_ms();
+        let reverse_latency_ms = double_quote.reverse_latency_ms();
+
+        let second_out = reverse_out as u128;
 
         let profit = second_out.saturating_sub(amount_in as u128);
         let profit_u64 = profit.min(u128::from(u64::MAX)) as u64;
-        if profit_u64 < self.config.min_profit_threshold_lamports {
+        let threshold = self.config.min_profit_threshold_lamports;
+        if profit_u64 < threshold {
             debug!(
                 target: "engine::profit",
                 profit = profit_u64,
-                threshold = self.config.min_profit_threshold_lamports,
+                threshold,
                 "收益低于阈值"
+            );
+            events::profit_shortfall(
+                pair.input_mint.as_str(),
+                &aggregator_label,
+                forward_in,
+                forward_out,
+                forward_latency_ms,
+                reverse_in,
+                reverse_out,
+                reverse_latency_ms,
+                profit_u64,
+                threshold,
             );
             return None;
         }
 
         let tip_lamports = self.tip_calculator.calculate(profit_u64);
+        let net_profit = i128::from(profit_u64) - i128::from(tip_lamports);
+        events::profit_opportunity(
+            pair.input_mint.as_str(),
+            &aggregator_label,
+            forward_in,
+            forward_out,
+            forward_latency_ms,
+            reverse_in,
+            reverse_out,
+            reverse_latency_ms,
+            profit_u64,
+            net_profit,
+            threshold,
+        );
         let merged = merge_quotes(
             &double_quote.forward,
             &double_quote.reverse,

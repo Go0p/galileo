@@ -12,7 +12,7 @@ global:
 
   rpc_urls:
     - "https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
-    - "https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b"
+#    - "https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b"
   # yellowstone grpc url
   proxy: ""
   yellowstone_grpc_url: ""
@@ -104,8 +104,7 @@ engine:
       # Ultra 报价批次间隔（毫秒），0 表示不额外延迟
       batch_interval_ms: 0
     swap_config:
-      dynamic_compute_unit_limit: true
-      wrap_and_unwrap_sol: false
+      cu_limit_multiplier: 0.92
   dflow:
     enable: true
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
@@ -120,19 +119,13 @@ engine:
       only_direct_routes: false
       max_route_length: 3
       # DFlow 报价并发，同 jupiter.quote_config.parallelism 语义
-      # - "auto" 时：调度器会根据 trade size 数量与可用 IP 上限择优并发
-      # - 填入正整数可强制限制并发度（每个波次最多执行多少条 quote）
       parallelism: "auto"
-      # DFlow 报价批次间隔（毫秒）
-      # - 生效于同一批次内的“波次”之间，第一波永远立即发出
-      # - 当 quote 任务数 > 实际并发窗口时，后续波次会在发送前 sleep 此间隔
-      #   例如：effective_parallelism=4，batch_interval_ms=50 ⇒ 第 0~3 条立即发，4~7 条延迟 50ms 再发
-      # - 单 IP 场景下若未放开 per_ip_inflight_limit，此值会成为“串行请求之间的固定间隔”
-      # - 设为 0 则禁用附加退避
+      # DFlow 报价批次间隔（毫秒），0 表示不额外延迟
       batch_interval_ms: 0
     swap_config:
       dynamic_compute_unit_limit: true
       wrap_and_unwrap_sol: false
+      cu_limit_multiplier: 0.94
   titan:
     enable: true
     # 腿方向：Titan 仅支持 buy 腿
@@ -241,10 +234,7 @@ bot:
     blacklist_ips: []
     # 调试时是否允许使用回环地址（127.0.0.1 等）
     allow_loopback: false
-    # 单个 IP 同时允许的并发请求数
-    # - 默认为 null：等价于 1，并根据 batch_interval_ms/调度过程串行处理
-    # - 设为 N>1：调度器可以在同一 IP 上保留 N 条在飞 quote，从而在单 IP 场景也能一次性发射整批 trade size
-    #   （请确保目标 endpoint 能接受同源并发，避免触发频率限制）
+    # 单个 IP 同时允许的并发请求数；null 表示仅受退避逻辑约束
     per_ip_inflight_limit: null
     cooldown_ms:
       # 命中 429 / 限流时的初始冷却时间（毫秒）
@@ -266,7 +256,7 @@ bot:
   # 自动重启 jupiter binary 的时间间隔，单位为分钟，0表示不重启
   auto_restart_minutes: 30
   # 是否通过 geyser 获取 block hash, 否则通过 rpc 获取
-  get_block_hash_by_grpc: false
+  get_block_hash_by_grpc: true
   # 是否允许模拟
   enable_simulation: false
   # 是否在本地终端打印 Jupiter 二进制输出（默认开启，可保持彩色日志）。
@@ -308,28 +298,31 @@ blind_strategy:
   enable_landers: [
       "jito",
     ]
+  # 自动根据 IP 容量扩展各 lane 的交易规模数量，避免手动维护庞大的 trade size 列表。
+  # - 关闭时仅按照每个 lane 的 `count` 生成固定数量的规模。
+  # - 开启时会统计本地可用 IP 数与 `per_ip_inflight_limit`，如果 trade size 总量不足以填满，就按 lane `weight` 分配额外档位。
+  # - `max_multiplier` 用于限制单个 lane 的最大扩容倍数（最终档位不会超过 `count * max_multiplier`）。
+  auto_scale_to_ip:
+    enable: true
+    max_multiplier: 3.0
   base_mints:
     - mint: "So11111111111111111111111111111111111111112"
-      trade_size_range:
-        - 1_500_000_000 # 1.5 SOL
-        - 3_000_000_000 # 3 SOL
-        - 6_000_000_000 # 6 SOL
-        - 10_000_000_000 # 10 SOL
-      # 在范围内将生成多少种不同的交易规模
-      trade_range_count: 3
-      # 目前支持三个值： linear 、 random 、 exponential
-      # exponential 将根据指数值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 77, 315, 668, 1000]
-      # linear 将根据线性值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 200, 400, 600, 800, 1000]
-      # 注意：随机报价比线性报价或固定交易规模报价稍慢。随机报价会依次发送两个报价，
-      # 固定规模报价则会同时发送两个报价。
-      trade_range_strategy: "linear"
+      # 每个 lane 描述一个交易规模区间与生成策略：
+      # - min/max：规模范围（单位 lamports）
+      # - count：初始生成多少个规模；结合 auto_scale 时也作为扩容基数
+      # - strategy：linear / exponential / random
+      # - weight：auto_scale 启用时的扩容权重（可选，默认 1.0）
+      lanes:
+        - min: 1_500_000_000   # 1.5 SOL
+          max: 10_000_000_000  # 10 SOL
+          count: 16
+          strategy: linear
+          weight: 1.0
       # 最小利润
-      min_quote_profit: 17000
+      min_quote_profit: 34000
       # 交易延时
-      # 单位为毫秒。指本轮所有 trade size 批量完成之后，到下一轮调度的最小冷却时间。
-      # 建议用于控制 Quote→Swap→落地链路的节奏：值越大，下一轮触发越慢，可用于规避目标 endpoint 的频率限制；
-      # 若设为 0，则该 mint 在上一批结束后会立即重新调度，需要自行评估 RPC/落地器承载能力。
-      process_delay: 2000
+      # 单位为毫秒。默认值表示机器人将等待 1000 毫秒，然后针对相同代币交易规模的对再次尝试。减少此值将增加立即捕捉价格变化的机会，但会增加读取 RPC 负载。
+      process_delay: 1200
       # 冷却时间
       # 如果找到一个机会并且发送了 tx，则至少等待这个时间（ms）才能发送另一个。
       sending_cooldown: 1000
@@ -345,33 +338,22 @@ blind_strategy:
       three_hop_mints:
         - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     - mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-      trade_size_range:
-        - 60_000_000 # 60 USDC
-        - 100_000_000 # 100 USDC
-        - 190_000_000 # 190 USDC
-        - 270_000_000 # 270 USDC
-        - 310_000_000 # 310 USDC
-        - 430_000_000 # 430 USDC
-        - 520_000_000 # 550 USDC
-        - 600_000_000 # 600 USDC
-        - 700_000_000 # 700 USDC
-        - 800_000_000 # 800 USDC
-        - 900_000_000 # 900 USDC
-        - 1_000_000_000 # 1000 USDC
-      # 在范围内将生成多少种不同的交易规模
-      trade_range_count: 1
-      # 目前支持三个值： linear 、 random 、 exponential
-      # exponential 将根据指数值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 77, 315, 668, 1000]
-      # linear 将根据线性值生成交易规模。例如，对于 10 - 1000 的范围，计数为 5，它将生成如下交易规模：[10, 200, 400, 600, 800, 1000]
-      # 注意：随机报价比线性报价或固定交易规模报价稍慢。随机报价会依次发送两个报价，
-      # 固定规模报价则会同时发送两个报价。
-      trade_range_strategy: "linear"
+      lanes:
+        - min: 60_000_000
+          max: 600_000_000
+          count: 12
+          strategy: linear
+          weight: 1.0
+        - min: 600_000_000
+          max: 3_600_000_000
+          count: 18
+          strategy: exponential
+          weight: 0.8
       # 最小利润
-      min_quote_profit: 17000
+      min_quote_profit: 22000
       # 交易延时
-      # 单位为毫秒。一次性完成当前 mint 的全部 trade size 后，下一轮调度至少等待的冷却时间。
-      # 结合 `batch_interval_ms` 使用：前者掌握波次内节奏，process_delay 决定下一批何时重启。
-      process_delay: 2000
+      # 单位为毫秒。默认值表示机器人将等待 1000 毫秒，然后针对相同代币交易规模的对再次尝试。减少此值将增加立即捕捉价格变化的机会，但会增加读取 RPC 负载。
+      process_delay: 1200
       # 冷却时间
       # 如果找到一个机会并且发送了 tx，则至少等待这个时间（ms）才能发送另一个。
       sending_cooldown: 1000

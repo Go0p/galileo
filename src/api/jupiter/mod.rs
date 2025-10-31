@@ -211,18 +211,6 @@ impl JupiterApiClient {
             api_time_ms = format_args!("{:.3}", quote.time_taken * 1_000.0),
             "报价响应成功"
         );
-        if elapsed_ms > self.slow_quote_warn_ms as f64 {
-            warn!(
-                target: "jupiter::quote",
-                elapsed_ms = format_args!("{elapsed_ms:.3}"),
-                slow_threshold_ms = self.slow_quote_warn_ms,
-                input_mint = %quote.input_mint,
-                output_mint = %quote.output_mint,
-                route_len = quote.route_plan.len(),
-                "报价耗时超过告警阈值"
-            );
-        }
-
         Ok(quote)
     }
 
@@ -348,19 +336,6 @@ impl JupiterApiClient {
             other_ix = instructions.other_instructions.len(),
             "Swap 指令响应成功"
         );
-        if elapsed_ms > self.slow_swap_warn_ms as f64 {
-            warn!(
-                target: "jupiter::swap_instructions",
-                elapsed_ms = format_args!("{elapsed_ms:.3}"),
-                slow_threshold_ms = self.slow_swap_warn_ms,
-                compute_unit_limit = instructions.compute_unit_limit,
-                prioritization_fee_lamports = instructions.prioritization_fee_lamports,
-                setup_ix = instructions.setup_instructions.len(),
-                other_ix = instructions.other_instructions.len(),
-                "Swap 指令耗时超过告警阈值"
-            );
-        }
-
         Ok(instructions)
     }
 

@@ -1,7 +1,13 @@
-use std::{collections::HashSet, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    str::FromStr,
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use reqwest::{Error as ReqwestError, StatusCode};
+use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_compute_budget_interface as compute_budget;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_sdk::{instruction::Instruction, message::AddressLookupTableAccount, pubkey::Pubkey};
@@ -11,6 +17,7 @@ use tracing::debug;
 use crate::api::kamino::{KaminoApiClient, KaminoError, QuoteRequest, QuoteResponse, Route};
 use crate::config::KaminoQuoteConfig;
 use crate::engine::FALLBACK_CU_LIMIT;
+use crate::multi_leg::alt_cache::AltCache;
 use crate::multi_leg::leg::LegProvider;
 use crate::multi_leg::types::{
     AggregatorKind, LegBuildContext, LegDescriptor, LegPlan, LegQuote, LegSide, QuoteIntent,
@@ -18,19 +25,28 @@ use crate::multi_leg::types::{
 use crate::network::{IpLeaseHandle, IpLeaseOutcome};
 
 /// Kamino 聚合器的多腿适配器。
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct KaminoLegProvider {
     client: KaminoApiClient,
     descriptor: LegDescriptor,
     quote_config: KaminoQuoteConfig,
+    rpc: Arc<RpcClient>,
+    alt_cache: AltCache,
 }
 
 impl KaminoLegProvider {
-    pub fn new(client: KaminoApiClient, side: LegSide, quote_config: KaminoQuoteConfig) -> Self {
+    pub fn new(
+        client: KaminoApiClient,
+        side: LegSide,
+        quote_config: KaminoQuoteConfig,
+        rpc: Arc<RpcClient>,
+    ) -> Self {
         Self {
             client,
             descriptor: LegDescriptor::new(AggregatorKind::Kamino, side),
             quote_config,
+            rpc,
+            alt_cache: AltCache::new(),
         }
     }
 
@@ -62,7 +78,13 @@ impl KaminoLegProvider {
         (request, slippage_bps)
     }
 
-    fn into_plan(&self, route: &Route, slippage_bps: u16, context: &LegBuildContext) -> LegPlan {
+    fn into_plan(
+        &self,
+        route: &Route,
+        slippage_bps: u16,
+        context: &LegBuildContext,
+        resolved_map: Option<&HashMap<Pubkey, AddressLookupTableAccount>>,
+    ) -> LegPlan {
         let mut compute_budget_instructions = Vec::new();
         let mut main_instructions = Vec::new();
         let mut compute_unit_limit: Option<u32> = None;
@@ -89,6 +111,7 @@ impl KaminoLegProvider {
             }
         }
 
+        let fetch_lookup_tables = self.quote_config.resolve_lookup_tables_via_rpc;
         let mut lookup_table_addresses = Vec::new();
         let mut resolved_lookup_tables = Vec::new();
         let mut seen_keys = HashSet::new();
@@ -99,37 +122,53 @@ impl KaminoLegProvider {
             }
             match Pubkey::from_str(key_text) {
                 Ok(key) => {
-                    if seen_keys.insert(key) {
-                        lookup_table_addresses.push(key);
-                        let mut table_addresses = Vec::new();
-                        let mut seen_addr = HashSet::new();
-                        for addr in &entry.addresses {
-                            let trimmed = addr.trim();
-                            if trimmed.is_empty() {
+                    if !seen_keys.insert(key) {
+                        continue;
+                    }
+                    lookup_table_addresses.push(key);
+                    if fetch_lookup_tables {
+                        if let Some(map) = resolved_map {
+                            if let Some(table) = map.get(&key) {
+                                resolved_lookup_tables.push(table.clone());
                                 continue;
-                            }
-                            match Pubkey::from_str(trimmed) {
-                                Ok(pubkey) => {
-                                    if seen_addr.insert(pubkey) {
-                                        table_addresses.push(pubkey);
-                                    }
-                                }
-                                Err(err) => {
-                                    debug!(
-                                        target: "multi_leg::kamino",
-                                        address = trimmed,
-                                        error = %err,
-                                        "解析 Kamino lookup table address 失败，忽略"
-                                    );
-                                }
+                            } else {
+                                debug!(
+                                    target: "multi_leg::kamino",
+                                    address = %key,
+                                    "通过 RPC 未获取到 ALT，忽略"
+                                );
                             }
                         }
-                        if !table_addresses.is_empty() {
-                            resolved_lookup_tables.push(AddressLookupTableAccount {
-                                key,
-                                addresses: table_addresses,
-                            });
+                    }
+
+                    let mut table_addresses = Vec::new();
+                    let mut seen_addr = HashSet::new();
+                    for addr in &entry.addresses {
+                        let trimmed = addr.trim();
+                        if trimmed.is_empty() {
+                            continue;
                         }
+                        match Pubkey::from_str(trimmed) {
+                            Ok(pubkey) => {
+                                if seen_addr.insert(pubkey) {
+                                    table_addresses.push(pubkey);
+                                }
+                            }
+                            Err(err) => {
+                                debug!(
+                                    target: "multi_leg::kamino",
+                                    address = trimmed,
+                                    error = %err,
+                                    "解析 Kamino lookup table address 失败，忽略"
+                                );
+                            }
+                        }
+                    }
+                    if !table_addresses.is_empty() {
+                        resolved_lookup_tables.push(AddressLookupTableAccount {
+                            key,
+                            addresses: table_addresses,
+                        });
                     }
                 }
                 Err(err) => {
@@ -144,14 +183,12 @@ impl KaminoLegProvider {
         }
 
         let raw_limit = if total_compute_unit_limit > 0 {
-            total_compute_unit_limit
-                .min(u32::MAX as u128)
-                .max(1) as u32
+            total_compute_unit_limit.min(u32::MAX as u128).max(1) as u32
         } else {
             compute_unit_limit.unwrap_or(FALLBACK_CU_LIMIT)
         };
-        let configured_multiplier = sanitize_multiplier(self.quote_config.cu_limit_multiplier)
-            .unwrap_or(1.0);
+        let configured_multiplier =
+            sanitize_multiplier(self.quote_config.cu_limit_multiplier).unwrap_or(1.0);
         let multiplier = context
             .compute_unit_limit_multiplier
             .and_then(sanitize_multiplier)
@@ -166,10 +203,8 @@ impl KaminoLegProvider {
                 "Kamino 指令 compute unit limit 按系数调整"
             );
         }
-        compute_budget_instructions.insert(
-            0,
-            ComputeBudgetInstruction::set_compute_unit_limit(limit),
-        );
+        compute_budget_instructions
+            .insert(0, ComputeBudgetInstruction::set_compute_unit_limit(limit));
 
         let mut compute_price = compute_unit_price;
 
@@ -221,6 +256,15 @@ impl KaminoLegProvider {
     }
 }
 
+impl fmt::Debug for KaminoLegProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KaminoLegProvider")
+            .field("descriptor", &self.descriptor)
+            .field("quote_config", &self.quote_config)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct KaminoLegQuote {
     response: QuoteResponse,
@@ -246,6 +290,8 @@ pub enum KaminoLegError {
     Api(#[from] KaminoError),
     #[error("Kamino 返回空路线")]
     EmptyRoute,
+    #[error("获取 ALT 账户失败: {0}")]
+    LookupFetch(String),
 }
 
 #[async_trait]
@@ -271,6 +317,10 @@ impl LegProvider for KaminoLegProvider {
 
         match result {
             Ok(response) => {
+                let mut response = response;
+                if self.quote_config.resolve_lookup_tables_via_rpc {
+                    response.strip_lookup_addresses();
+                }
                 if response.best_route().is_none() {
                     Err(KaminoLegError::EmptyRoute)
                 } else {
@@ -295,7 +345,37 @@ impl LegProvider for KaminoLegProvider {
         _lease: Option<&IpLeaseHandle>,
     ) -> Result<Self::Plan, Self::BuildError> {
         let route = quote.best_route().ok_or(KaminoLegError::EmptyRoute)?;
-        Ok(self.into_plan(route, quote.slippage_bps, context))
+        let resolved_map = if self.quote_config.resolve_lookup_tables_via_rpc {
+            let mut keys = Vec::new();
+            for entry in &route.lookup_table_accounts_bs58 {
+                let trimmed = entry.key.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(key) = Pubkey::from_str(trimmed) {
+                    if !keys.contains(&key) {
+                        keys.push(key);
+                    }
+                }
+            }
+            if keys.is_empty() {
+                None
+            } else {
+                let fetched = self
+                    .alt_cache
+                    .fetch_many(&self.rpc, &keys)
+                    .await
+                    .map_err(|err| KaminoLegError::LookupFetch(err.to_string()))?;
+                let map = fetched
+                    .into_iter()
+                    .map(|table| (table.key, table))
+                    .collect::<HashMap<_, _>>();
+                Some(map)
+            }
+        } else {
+            None
+        };
+        Ok(self.into_plan(route, quote.slippage_bps, context, resolved_map.as_ref()))
     }
 }
 
@@ -304,6 +384,7 @@ fn classify_error(err: &KaminoError) -> Option<IpLeaseOutcome> {
         KaminoError::RateLimited { .. } => Some(IpLeaseOutcome::RateLimited),
         KaminoError::ApiStatus { status, .. } => map_status(status),
         KaminoError::Http(inner) => classify_reqwest(inner),
+        KaminoError::Timeout { .. } => Some(IpLeaseOutcome::NetworkError),
         KaminoError::ClientPool(_) => Some(IpLeaseOutcome::NetworkError),
         KaminoError::Json(_) | KaminoError::Schema(_) => Some(IpLeaseOutcome::NetworkError),
     }

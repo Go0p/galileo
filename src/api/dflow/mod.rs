@@ -358,18 +358,6 @@ impl DflowApiClient {
             elapsed_ms = format_args!("{elapsed_ms:.3}"),
             "报价响应成功"
         );
-        if elapsed_ms > self.slow_quote_warn_ms as f64 {
-            warn!(
-                target: "dflow::quote",
-                elapsed_ms = format_args!("{elapsed_ms:.3}"),
-                slow_threshold_ms = self.slow_quote_warn_ms,
-                input_mint = %quote.payload().input_mint,
-                output_mint = %quote.payload().output_mint,
-                route_len = quote.payload().route_plan.len(),
-                "报价耗时超过告警阈值"
-            );
-        }
-
         Ok(quote)
     }
 
@@ -549,15 +537,6 @@ impl DflowApiClient {
             elapsed_ms = format_args!("{elapsed_ms:.3}"),
             "指令响应成功"
         );
-        if elapsed_ms > self.slow_swap_warn_ms as f64 {
-            warn!(
-                target: "dflow::swap_instructions",
-                elapsed_ms = format_args!("{elapsed_ms:.3}"),
-                slow_threshold_ms = self.slow_swap_warn_ms,
-                "指令请求耗时超过告警阈值"
-            );
-        }
-
         Ok(instructions)
     }
 

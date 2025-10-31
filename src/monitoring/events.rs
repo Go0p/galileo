@@ -1,13 +1,14 @@
 use std::net::IpAddr;
 use std::time::Duration;
 
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::engine::{QuoteTask, SwapOpportunity, VariantId};
 use crate::lander::{LanderError, LanderReceipt};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 
+use super::format::short_mint_str;
 use super::metrics::prometheus_enabled;
 use metrics::{counter, gauge, histogram};
 
@@ -226,17 +227,19 @@ pub fn quote_start(
     let input_mint = task.pair.input_mint.as_str();
     let output_mint = task.pair.output_mint.as_str();
     let amount = task.amount;
-    info!(
+    let input_display = short_mint_str(input_mint);
+    let output_display = short_mint_str(output_mint);
+    debug!(
         target: "monitoring::quote",
         strategy,
         batch_id = ?batch_repr,
         local_ip = ?ip_repr,
-        input_mint = %input_mint,
-        output_mint = %output_mint,
+        input_mint = %input_display,
+        output_mint = %output_display,
         amount,
-        "{}",
-        format_args!("报价开始: strategy={} input_mint={} output_mint={} amount={} batch_id={} node={}",
-            strategy, input_mint, output_mint, amount, batch_display, ip_display)
+        "quote_start batch={} node={}",
+        batch_display,
+        ip_display
     );
 }
 
@@ -257,33 +260,38 @@ pub fn quote_end(
     let output_mint = task.pair.output_mint.as_str();
     let amount = task.amount;
 
+    let input_display = short_mint_str(input_mint);
+    let output_display = short_mint_str(output_mint);
+    let result_label = if success { "success" } else { "empty" };
     if success {
-        info!(
+        debug!(
             target: "monitoring::quote",
             strategy,
+            result = result_label,
             latency_ms,
             batch_id = ?batch_repr,
             local_ip = ?ip_repr,
-            input_mint = %input_mint,
-            output_mint = %output_mint,
+            input_mint = %input_display,
+            output_mint = %output_display,
             amount,
-            "{}",
-            format_args!("报价完成: status=success input_mint={} output_mint={} amount={} latency={:.3}ms batch_id={} node={}",
-                input_mint, output_mint, amount, latency_ms, batch_display, ip_display)
+            "quote_end batch={} node={}",
+            batch_display,
+            ip_display
         );
     } else {
         warn!(
             target: "monitoring::quote",
             strategy,
+            result = result_label,
             latency_ms,
             batch_id = ?batch_repr,
             local_ip = ?ip_repr,
-            input_mint = %input_mint,
-            output_mint = %output_mint,
+            input_mint = %input_display,
+            output_mint = %output_display,
             amount,
-            "{}",
-            format_args!("报价完成: status=empty input_mint={} output_mint={} amount={} latency={:.3}ms batch_id={} node={}",
-                input_mint, output_mint, amount, latency_ms, batch_display, ip_display)
+            "quote_end batch={} node={}",
+            batch_display,
+            ip_display
         );
     }
 
@@ -325,39 +333,115 @@ pub fn quote_round_trip(
     let base_mint = task.pair.input_mint.as_str();
     let quote_mint = task.pair.output_mint.as_str();
     let amount_in = task.amount;
-    info!(
+    let base_display = short_mint_str(base_mint);
+    let quote_display = short_mint_str(quote_mint);
+    debug!(
         target: "monitoring::quote",
         strategy,
         aggregator,
         batch_id = ?batch_repr,
         local_ip = ?ip_repr,
-        base_mint = %base_mint,
-        quote_mint = %quote_mint,
+        base_mint = %base_display,
+        quote_mint = %quote_display,
         amount_in,
         first_leg_out,
         round_trip_out,
-        "{}",
-        format_args!("报价回环: aggregator={} base_mint={} quote_mint={} amount_in={} first_leg_out={} round_trip_out={} batch_id={} node={}",
-            aggregator, base_mint, quote_mint, amount_in, first_leg_out, round_trip_out, batch_display, ip_display)
+        "quote_round_trip batch={} node={}",
+        batch_display,
+        ip_display
+    );
+}
+
+pub fn profit_shortfall(
+    base_mint: &str,
+    aggregator: &str,
+    forward_in: u64,
+    forward_out: u64,
+    forward_latency_ms: Option<f64>,
+    reverse_in: u64,
+    reverse_out: u64,
+    reverse_latency_ms: Option<f64>,
+    profit: u64,
+    expected_profit: u64,
+) {
+    let base_display = short_mint_str(base_mint);
+    let forward_latency_str = forward_latency_ms.map(|ms| format!("{ms:.3}"));
+    let reverse_latency_str = reverse_latency_ms.map(|ms| format!("{ms:.3}"));
+    let forward_latency_display = forward_latency_str.as_deref().unwrap_or("-");
+    let reverse_latency_display = reverse_latency_str.as_deref().unwrap_or("-");
+    info!(
+        target: "monitoring::profit",
+        event = "shortfall",
+        aggregator,
+        forward_in,
+        forward_out,
+        forward_latency_ms = forward_latency_display,
+        reverse_in,
+        reverse_out,
+        reverse_latency_ms = reverse_latency_display,
+        profit,
+        expected_profit,
+        "利润不足,base_mint={},aggregator={},forward_quote={{in_amount={},out_amount={},latency_ms={}}},reverse_quote={{in_amount={},out_amount={},latency_ms={}}},profit={},expect_profit={}",
+        base_display,
+        aggregator,
+        forward_in,
+        forward_out,
+        forward_latency_display,
+        reverse_in,
+        reverse_out,
+        reverse_latency_display,
+        profit,
+        expected_profit
+    );
+}
+
+pub fn profit_opportunity(
+    base_mint: &str,
+    aggregator: &str,
+    forward_in: u64,
+    forward_out: u64,
+    forward_latency_ms: Option<f64>,
+    reverse_in: u64,
+    reverse_out: u64,
+    reverse_latency_ms: Option<f64>,
+    profit: u64,
+    net_profit: i128,
+    expected_profit: u64,
+) {
+    let base_display = short_mint_str(base_mint);
+    let forward_latency_str = forward_latency_ms.map(|ms| format!("{ms:.3}"));
+    let reverse_latency_str = reverse_latency_ms.map(|ms| format!("{ms:.3}"));
+    let forward_latency_display = forward_latency_str.as_deref().unwrap_or("-");
+    let reverse_latency_display = reverse_latency_str.as_deref().unwrap_or("-");
+    info!(
+        target: "monitoring::profit",
+        event = "opportunity",
+        aggregator,
+        forward_in,
+        forward_out,
+        forward_latency_ms = forward_latency_display,
+        reverse_in,
+        reverse_out,
+        reverse_latency_ms = reverse_latency_display,
+        profit,
+        net_profit,
+        expected_profit,
+        "利润达标,base_mint={},aggregator={},forward_quote={{in_amount={},out_amount={},latency_ms={}}},reverse_quote={{in_amount={},out_amount={},latency_ms={}}},profit={},net_profit={},expect_profit={}",
+        base_display,
+        aggregator,
+        forward_in,
+        forward_out,
+        forward_latency_display,
+        reverse_in,
+        reverse_out,
+        reverse_latency_display,
+        profit,
+        net_profit,
+        expected_profit
     );
 }
 
 pub fn profit_detected(strategy: &str, opportunity: &SwapOpportunity) {
-    let input_mint = opportunity.pair.input_mint.as_str();
-    let output_mint = opportunity.pair.output_mint.as_str();
-    let amount_in = opportunity.amount_in;
-    let profit = opportunity.profit_lamports;
-    let net_profit = opportunity.net_profit();
-    info!(
-        target: "monitoring::profit",
-        strategy,
-        "{}",
-        format_args!(
-            "检测到套利机会: strategy={} input_mint={} output_mint={} amount_in={} profit={} net_profit={}",
-            strategy, input_mint, output_mint, amount_in, profit, net_profit
-        )
-    );
-
     if prometheus_enabled() {
         counter!(
             "galileo_opportunity_detected_total",
@@ -384,18 +468,19 @@ pub fn swap_fetched(
     let input_mint = opportunity.pair.input_mint.as_str();
     let output_mint = opportunity.pair.output_mint.as_str();
     let amount_in = opportunity.amount_in;
-    info!(
+    let input_display = short_mint_str(input_mint);
+    let output_display = short_mint_str(output_mint);
+    debug!(
         target: "monitoring::swap",
         strategy,
-        input_mint = %input_mint,
-        output_mint = %output_mint,
+        input_mint = %input_display,
+        output_mint = %output_display,
         amount_in,
         compute_unit_limit,
         prioritization_fee,
         local_ip = ?ip_repr,
-        "{}",
-        format_args!("Swap 指令就绪: strategy={} input_mint={} output_mint={} amount={} compute_unit_limit={} prioritization_fee={} node={}",
-            strategy, input_mint, output_mint, amount_in, compute_unit_limit, prioritization_fee, ip_display)
+        "swap_ready node={}",
+        ip_display
     );
 
     if prometheus_enabled() {
@@ -478,21 +563,20 @@ pub fn transaction_built(
     let input_mint = opportunity.pair.input_mint.as_str();
     let output_mint = opportunity.pair.output_mint.as_str();
     let amount_in = opportunity.amount_in;
-    info!(
+    let input_display = short_mint_str(input_mint);
+    let output_display = short_mint_str(output_mint);
+    debug!(
         target: "monitoring::transaction",
         strategy,
-        input_mint = %input_mint,
-        output_mint = %output_mint,
+        input_mint = %input_display,
+        output_mint = %output_display,
         amount_in,
         slot,
         blockhash,
         last_valid_block_height,
         local_ip = ?ip_repr,
-        "{}",
-        format_args!("交易构建完成: strategy={} input_mint={} output_mint={} amount={} slot={} blockhash={} last_valid={} node={}",
-            strategy, input_mint, output_mint, amount_in, slot, blockhash,
-            last_valid_block_height.map(|v| v.to_string()).unwrap_or_else(|| "unknown".to_string()),
-            ip_display)
+        "transaction_built node={}",
+        ip_display
     );
 
     if prometheus_enabled() {
@@ -515,7 +599,7 @@ pub fn lander_attempt(
 ) {
     let ip_repr = local_ip.map(|value| value.to_string());
     let ip_display = ip_repr.as_deref().unwrap_or("unknown");
-    info!(
+    debug!(
         target: "monitoring::lander",
         strategy,
         dispatch,
@@ -523,16 +607,8 @@ pub fn lander_attempt(
         variant,
         attempt,
         local_ip = ?ip_repr,
-        "{}",
-        format_args!(
-            "落地器尝试: 策略={} 调度={} 落地器={} 变体={} 尝试={} 节点={}",
-            strategy,
-            dispatch,
-            name,
-            variant,
-            attempt,
-            ip_display
-        )
+        "lander_attempt node={}",
+        ip_display
     );
 
     if prometheus_enabled() {
@@ -553,7 +629,7 @@ pub fn lander_success(strategy: &str, dispatch: &str, attempt: usize, receipt: &
     let ip_repr = receipt.local_ip.map(|value| value.to_string());
     let ip_display = ip_repr.as_deref().unwrap_or("unknown");
     let signature = receipt.signature.as_deref().unwrap_or_default();
-    info!(
+    debug!(
         target: "monitoring::lander",
         strategy,
         dispatch,
@@ -565,20 +641,8 @@ pub fn lander_success(strategy: &str, dispatch: &str, attempt: usize, receipt: &
         blockhash = %receipt.blockhash,
         signature = signature,
         local_ip = ?ip_repr,
-        "{}",
-        format_args!(
-            "落地器成功: 策略={} 调度={} 落地器={} 变体={} 尝试={} Slot={} Blockhash={} Endpoint={} 签名={} 节点={}",
-            strategy,
-            dispatch,
-            receipt.lander,
-            receipt.variant_id,
-            attempt,
-            receipt.slot,
-            receipt.blockhash,
-            receipt.endpoint,
-            signature,
-            ip_display
-        )
+        "lander_success node={}",
+        ip_display
     );
 
     if prometheus_enabled() {

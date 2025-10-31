@@ -408,6 +408,7 @@ impl Default for cfg::BlindStrategyConfig {
             enable_dexs: Vec::new(),
             exclude_dexes: Vec::new(),
             enable_landers: Vec::new(),
+            auto_scale_to_ip: cfg::AutoScaleToIpConfig::default(),
             base_mints: Vec::new(),
         }
     }
