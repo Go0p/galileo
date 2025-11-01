@@ -12,6 +12,7 @@ use solana_sdk::transaction::Transaction;
 use tracing::{info, warn};
 
 use super::{EngineError, EngineIdentity, EngineResult};
+use crate::lighthouse::program::LIGHTHOUSE_PROGRAM_ID;
 use crate::flashloan::FlashloanError;
 use crate::flashloan::marginfi::{
     MarginfiAccountRegistry, MarginfiFlashloanPreparation, build_initialize_instruction,
@@ -37,6 +38,7 @@ static SYSTEM_PROGRAM_ID: Lazy<Pubkey> = Lazy::new(|| {
 
 const MAX_RPC_BATCH_SIZE: usize = 100;
 const CREATION_BATCH_SIZE: usize = 20;
+const MAX_MEMORY_ID: u16 = u8::MAX as u16;
 
 fn derive_associated_token_address(
     owner: &Pubkey,
@@ -195,6 +197,36 @@ impl AccountPrechecker {
         }
 
         Ok((summary, flashloan_preparation))
+    }
+
+    pub async fn detect_lighthouse_memory_accounts(
+        &self,
+        identity: &EngineIdentity,
+    ) -> EngineResult<Vec<u8>> {
+        let mut pubkeys = Vec::with_capacity(MAX_MEMORY_ID as usize + 1);
+        let mut ids = Vec::with_capacity(MAX_MEMORY_ID as usize + 1);
+        for raw_id in 0..=MAX_MEMORY_ID {
+            let memory_id = raw_id as u8;
+            let (pda, _) = Pubkey::find_program_address(
+                &[b"memory", identity.pubkey.as_ref(), &[memory_id]],
+                &LIGHTHOUSE_PROGRAM_ID,
+            );
+            pubkeys.push(pda);
+            ids.push(memory_id);
+        }
+
+        let accounts = self.fetch_accounts(&pubkeys).await?;
+        let mut existing: Vec<u8> = Vec::new();
+        for (pubkey, memory_id) in pubkeys.into_iter().zip(ids.into_iter()) {
+            if accounts
+                .get(&pubkey)
+                .and_then(|value| value.as_ref())
+                .is_some()
+            {
+                existing.push(memory_id);
+            }
+        }
+        Ok(existing)
     }
 
     fn collect_candidates(

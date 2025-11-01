@@ -11,9 +11,9 @@ global:
   #   - "https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b"
 
   rpc_urls:
-    - "https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
-    - "https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b"
-    # - "http://127.0.0.1:8899"
+    # - "https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
+    # - "https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b"
+    - "http://127.0.0.1:8899"
   # yellowstone grpc url
   # proxy: "http://192.168.3.3:9999"
   yellowstone_grpc_url: ""
@@ -50,8 +50,8 @@ global:
 engine:
   # 可选值：jupiter / dflow / ultra / multi-legs / kamino / none
   # backend: "none"
-  backend: "kamino"
-  # backend: "multi-legs"
+  # backend: "kamino"
+  backend: "multi-legs"
   # backend: "multi-legs"
   # backend: "dflow"
   jupiter:
@@ -89,9 +89,9 @@ engine:
       dynamic_compute_unit_limit: true
       wrap_and_unwrap_sol: false
   ultra:
-    enable: false
+    enable: true
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
-    leg: "buy"
+    leg: "sell"
     api_quote_base: "https://ultra-api.jup.ag"
     api_swap_base: "https://ultra-api.jup.ag"
     api_proxy: "http://192.168.124.4:9999"
@@ -128,7 +128,7 @@ engine:
       wrap_and_unwrap_sol: false
       cu_limit_multiplier: 0.92
   titan:
-    enable: false
+    enable: true
     # 腿方向：Titan 仅支持 buy 腿
     leg: "buy"
     # Titan 推流首条报价超时时间（毫秒），超过后视为异常并重新调度
@@ -140,7 +140,7 @@ engine:
     ws_proxy: ""
     # Titan 目前要求使用内置账户发起报价，如需自定义可在拿到白名单后修改
     default_pubkey: 
-    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjE2NjYyMDksImV4cCI6MTc2MTY2NzEwOSwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.FQ0GjAUfJRM52Ea2NfIYeSENozov0gOfHbVX7AsFRfY"
+    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjE5ODM2NDIsImV4cCI6MTc2MTk4NDU0Miwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.Vez2ne5CsMKT0bXSlF4RNt_VOiz5bBg1bDbIjtKDIJE"
     # Titan , Okx , Metis , Pyth
     swap_config:
       # dexes: 
@@ -159,14 +159,14 @@ engine:
     # 每次更新最多返回的报价数量。
     num_quotes: 2
   kamino:
-    enable: true
+    enable: false
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
     leg: "sell"
     api_quote_base: "https://api.kamino.finance"
     api_swap_base: "https://api.kamino.finance"
-    api_proxy: "http://192.168.3.3:9999"
+    api_proxy: "http://192.168.124.4:9999"
     quote_config:
-      cu_limit_multiplier: 0.92
+      cu_limit_multiplier: 2.1
       # Kamino 报价并发，同 jupiter.quote_config.parallelism 语义
       parallelism: "auto"
       # Kamino 报价批次间隔（毫秒），0 表示不额外延迟
@@ -188,8 +188,8 @@ engine:
         # - "per"
         # - "fluxbeam"
         # - "raydium"
-        # - "hashflow"
-        - "okx"
+        - "hashflow"
+        # - "okx"
         # - "clover"
         # - "zeroEx"
         # - "spur"
@@ -253,6 +253,11 @@ bot:
       rate_limited_start: 500
       # 连接超时 / 网络异常时的初始冷却时间（毫秒）
       timeout_start: 250
+  light_house:
+    enable: true
+    profit_guard_mints:
+      - So11111111111111111111111111111111111111112   # WSOL
+      # - EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v # USDC
   # 是否启用 prometheus
   prometheus:
     enable: true
@@ -309,57 +314,57 @@ blind_strategy:
     ]
   enable_landers: [
       # "staked"
-      "jito",
+      # "jito",
     ]
   # 自动根据 IP 容量扩展各 lane 的交易规模数量，避免手动维护庞大的 trade size 列表。
   auto_scale_to_ip:
     enable: false
     max_multiplier: 3.0
   base_mints:
-    - mint: "So11111111111111111111111111111111111111112"
-      # 每个 lane 描述一个交易规模区间与生成策略：
-      # - min/max：规模范围（单位 lamports）
-      # - count：初始生成多少个规模；结合 auto_scale 时也作为扩容基数
-      # - strategy：linear / exponential / random
-      # - weight：auto_scale 启用时的扩容权重（可选，默认 1.0）
-      lanes:
-        - min: 1_000_000_000
-          max: 6_000_000_000
-          count: 1
-          strategy: linear
-      # 最小利润
-      min_quote_profit: 100
-      # 交易延时
-      # 单位为毫秒。默认值表示机器人将等待 1000 毫秒，然后针对相同代币交易规模的对再次尝试。减少此值将增加立即捕捉价格变化的机会，但会增加读取 RPC 负载。
-      process_delay: 2000
-      # 冷却时间
-      # 如果找到一个机会并且发送了 tx，则至少等待这个时间（ms）才能发送另一个。
-      sending_cooldown: 1000
-      # 路由类型
-      # 2hop ：这意味着只有像 A -> B -> A 这样的路由才会被考虑。如果您还将 use_direct_route_only 设置为 false，则 A->B 和 B->A 之间可能存在其他铸币厂。
-      # 3hop ：这意味着只会考虑像 A -> B -> C -> A 这样的路线。您需要设置除了所有中间铸币厂之外，还希望在中间包含哪些额外的铸币厂。
-      # 最常见的用例是使用 SOL 和 USDC 为路线报价，例如 SOL -> USDC -> X -> SOL。3hop 会产生与将 use_direct_route_only 设置为 false 类似的结果，但报价时间要快得多
-      # 使用 3hop 时还需要定义 three_hop_mints
-      route_types:
-        - "2hop"
-        - "3hop"
-      # 三跳交易中，中间的铸币厂
-      three_hop_mints:
-        - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-    # - mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    # - mint: "So11111111111111111111111111111111111111112"
+    #   # 每个 lane 描述一个交易规模区间与生成策略：
+    #   # - min/max：规模范围（单位 lamports）
+    #   # - count：初始生成多少个规模；结合 auto_scale 时也作为扩容基数
+    #   # - strategy：linear / exponential / random
+    #   # - weight：auto_scale 启用时的扩容权重（可选，默认 1.0）
     #   lanes:
-    #     - min: 600_000_000
-    #       max: 1_200_000_000
-    #       count: 4
+    #     - min: 1_000_000_000
+    #       max: 6_000_000_000
+    #       count: 1
     #       strategy: linear
+    #   # 最小利润
     #   min_quote_profit: 10000
-    #   process_delay: 1000
+    #   # 交易延时
+    #   # 单位为毫秒。默认值表示机器人将等待 1000 毫秒，然后针对相同代币交易规模的对再次尝试。减少此值将增加立即捕捉价格变化的机会，但会增加读取 RPC 负载。
+    #   process_delay: 2000
+    #   # 冷却时间
+    #   # 如果找到一个机会并且发送了 tx，则至少等待这个时间（ms）才能发送另一个。
     #   sending_cooldown: 1000
+    #   # 路由类型
+    #   # 2hop ：这意味着只有像 A -> B -> A 这样的路由才会被考虑。如果您还将 use_direct_route_only 设置为 false，则 A->B 和 B->A 之间可能存在其他铸币厂。
+    #   # 3hop ：这意味着只会考虑像 A -> B -> C -> A 这样的路线。您需要设置除了所有中间铸币厂之外，还希望在中间包含哪些额外的铸币厂。
+    #   # 最常见的用例是使用 SOL 和 USDC 为路线报价，例如 SOL -> USDC -> X -> SOL。3hop 会产生与将 use_direct_route_only 设置为 false 类似的结果，但报价时间要快得多
+    #   # 使用 3hop 时还需要定义 three_hop_mints
     #   route_types:
     #     - "2hop"
     #     - "3hop"
+    #   # 三跳交易中，中间的铸币厂
     #   three_hop_mints:
-    #     - "So11111111111111111111111111111111111111112"
+    #     - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    - mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+      lanes:
+        - min: 600_000_000
+          max: 1_200_000_000
+          count: 1
+          strategy: linear
+      min_quote_profit: 1000
+      process_delay: 1000
+      sending_cooldown: 1000
+      route_types:
+        - "2hop"
+        - "3hop"
+      three_hop_mints:
+        - "So11111111111111111111111111111111111111112"
 
 
 # 纯盲发策略（与 blind_strategy 并行配置，互不影响）

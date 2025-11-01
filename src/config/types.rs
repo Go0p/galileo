@@ -623,6 +623,8 @@ pub struct BotConfig {
     pub network: NetworkConfig,
     #[serde(default)]
     pub auto_refresh_wallet_minute: u64,
+    #[serde(default)]
+    pub light_house: LightHouseBotConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -689,6 +691,16 @@ fn default_rate_limited_cooldown_ms() -> u64 {
 
 fn default_timeout_cooldown_ms() -> u64 {
     250
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LightHouseBotConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub profit_guard_mints: Vec<String>,
+    #[serde(default)]
+    pub memory_slots: Option<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

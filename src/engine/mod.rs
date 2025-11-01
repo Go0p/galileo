@@ -29,7 +29,7 @@ pub use types::{ExecutionPlan, QuoteTask, StrategyTick, SwapOpportunity, TradePr
 
 use self::types::DoubleQuote;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::mem;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -39,6 +39,8 @@ use serde_json::Value;
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::pubkey::Pubkey;
 use tracing::{debug, error, info, trace, warn};
+
+use spl_associated_token_account::get_associated_token_address;
 
 use crate::api::dflow::DflowError;
 use crate::api::jupiter::SwapInstructionsResponse;
@@ -54,6 +56,7 @@ use crate::dexes::zerofi::ZeroFiAdapter;
 use crate::flashloan::FlashloanOutcome;
 use crate::flashloan::marginfi::MarginfiFlashloanManager;
 use crate::lander::{Deadline, LanderStack};
+use crate::lighthouse::build_token_amount_guard;
 use crate::monitoring::events;
 use crate::multi_leg::orchestrator::{LegPairDescriptor, LegPairPlan};
 use crate::multi_leg::runtime::{MultiLegRuntime, PairPlanBatchResult, PairPlanRequest};
@@ -78,6 +81,7 @@ const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
 pub const FALLBACK_CU_LIMIT: u32 = 230_000;
 const COMPUTE_BUDGET_PROGRAM_ID: Pubkey =
     solana_sdk::pubkey!("ComputeBudget111111111111111111111111111111");
+const BASE_TX_FEE_LAMPORTS: u64 = 5_000;
 
 struct LegCombination {
     buy_index: usize,
@@ -230,6 +234,14 @@ impl MintSchedule {
     }
 }
 
+#[derive(Clone, Default)]
+pub struct LighthouseSettings {
+    pub enable: bool,
+    pub profit_guard_mints: Vec<Pubkey>,
+    pub memory_slots: Option<u8>,
+    pub existing_memory_ids: Vec<u8>,
+}
+
 #[derive(Clone)]
 pub struct EngineSettings {
     pub landing_timeout: Duration,
@@ -240,6 +252,7 @@ pub struct EngineSettings {
     compute_unit_price_mode: Option<ComputeUnitPriceMode>,
     pub quote_parallelism: Option<u16>,
     pub quote_batch_interval: Duration,
+    pub lighthouse: LighthouseSettings,
 }
 
 impl EngineSettings {
@@ -253,6 +266,7 @@ impl EngineSettings {
             compute_unit_price_mode: None,
             quote_parallelism: None,
             quote_batch_interval: Duration::ZERO,
+            lighthouse: LighthouseSettings::default(),
         }
     }
 
@@ -281,6 +295,11 @@ impl EngineSettings {
         self
     }
 
+    pub fn with_lighthouse(mut self, lighthouse: LighthouseSettings) -> Self {
+        self.lighthouse = lighthouse;
+        self
+    }
+
     pub fn with_quote_parallelism(mut self, parallelism: Option<u16>) -> Self {
         self.quote_parallelism = parallelism;
         self
@@ -297,6 +316,80 @@ impl EngineSettings {
             .map(|mode| mode.sample())
             .filter(|price| *price > 0)
     }
+}
+
+struct LighthouseRuntime {
+    enabled: bool,
+    guard_mints: HashSet<Pubkey>,
+    memory_slots: usize,
+    available_ids: Vec<u8>,
+    cursor: usize,
+}
+
+const MIN_LIGHTHOUSE_MEMORY_SLOTS: usize = 1;
+const MAX_LIGHTHOUSE_MEMORY_SLOTS: usize = 128;
+
+impl LighthouseRuntime {
+    fn new(settings: &LighthouseSettings, ip_capacity_hint: usize) -> Self {
+        let guard_mints: HashSet<Pubkey> = settings.profit_guard_mints.iter().copied().collect();
+        let enabled = settings.enable && !guard_mints.is_empty();
+
+        let mut available_ids: Vec<u8> = settings.existing_memory_ids.clone();
+        available_ids.sort_unstable();
+        available_ids.dedup();
+
+        let derived_slots = if !available_ids.is_empty() {
+            available_ids.len()
+        } else {
+            ip_capacity_hint
+                .max(MIN_LIGHTHOUSE_MEMORY_SLOTS)
+                .min(MAX_LIGHTHOUSE_MEMORY_SLOTS)
+        };
+        let configured_slots = settings
+            .memory_slots
+            .map(|value| usize::from(value.max(1)));
+        let slot_count = configured_slots.unwrap_or(derived_slots);
+        let memory_slots = slot_count
+            .max(available_ids.len())
+            .max(MIN_LIGHTHOUSE_MEMORY_SLOTS)
+            .min(MAX_LIGHTHOUSE_MEMORY_SLOTS);
+
+        Self {
+            enabled,
+            guard_mints,
+            memory_slots,
+            available_ids,
+            cursor: 0,
+        }
+    }
+
+    fn should_guard(&self, mint: &Pubkey) -> bool {
+        self.enabled && self.guard_mints.contains(mint)
+    }
+
+    fn next_memory_id(&mut self) -> u8 {
+        if !self.enabled {
+            return 0;
+        }
+        if self.available_ids.is_empty() {
+            let id = 0u8;
+            if self.memory_slots > 1 {
+                self.available_ids.reserve(self.memory_slots.saturating_sub(1));
+            }
+            self.available_ids.push(id);
+            return id;
+        }
+
+        let idx = if self.available_ids.len() == 1 {
+            0
+        } else {
+            let current = self.cursor % self.available_ids.len();
+            self.cursor = (self.cursor + 1) % self.available_ids.len();
+            current
+        };
+        self.available_ids[idx]
+    }
+
 }
 
 pub struct StrategyEngine<S>
@@ -320,6 +413,7 @@ where
     variant_planner: TxVariantPlanner,
     next_batch_id: u64,
     multi_leg: Option<MultiLegEngineContext>,
+    lighthouse: LighthouseRuntime,
 }
 
 impl<S> StrategyEngine<S>
@@ -348,10 +442,21 @@ where
             settings.quote_parallelism,
             settings.quote_batch_interval,
         );
+        let allocator_summary = ip_allocator.summary();
+        let per_ip_capacity = allocator_summary
+            .per_ip_inflight_limit
+            .unwrap_or(1)
+            .max(1);
+        let ip_capacity_hint = allocator_summary
+            .total_slots
+            .max(1)
+            .saturating_mul(per_ip_capacity);
         let trade_profiles = trade_profiles
             .into_iter()
             .map(|(mint, profile)| (mint, MintSchedule::from_profile(profile)))
             .collect();
+        let lighthouse_runtime = LighthouseRuntime::new(&settings.lighthouse, ip_capacity_hint);
+
         Self {
             strategy,
             landers,
@@ -370,6 +475,7 @@ where
             variant_planner: TxVariantPlanner::new(),
             next_batch_id: 1,
             multi_leg,
+            lighthouse: lighthouse_runtime,
         }
     }
 
@@ -587,6 +693,9 @@ where
             );
         }
 
+        let guard_required = BASE_TX_FEE_LAMPORTS;
+        self.apply_profit_guard(&source_mint, guard_required, &mut final_instructions)?;
+
         let prepared = self
             .tx_builder
             .build_with_sequence(&self.identity, &response_variant, final_instructions, 0)
@@ -640,6 +749,14 @@ where
             self.settings.cu_multiplier
         };
         (base * multiplier).round() as u32
+    }
+
+    fn jito_tip_budget(&self, _base_tip: u64) -> u64 {
+        if !self.landers.has_jito() {
+            return 0;
+        }
+        // 当前仅支持固定 tip 策略，其余类型（range/stream）暂不计入守护
+        self.landers.fixed_jito_tip().unwrap_or(0)
     }
 
     fn build_route_plan(
@@ -1522,6 +1639,18 @@ where
             }
         }
 
+        let prioritization_fee = bundle
+            .prioritization_fee_lamports
+            .as_ref()
+            .copied()
+            .unwrap_or_default();
+        let jito_tip_budget = self.jito_tip_budget(tip_lamports);
+        // 优先费 + 固定 Jito 小费（若配置）+ 基础网络费 = 必须覆盖的支出
+        let guard_required = BASE_TX_FEE_LAMPORTS
+            .saturating_add(prioritization_fee)
+            .saturating_add(jito_tip_budget);
+        self.apply_profit_guard(&pair.input_pubkey, guard_required, &mut final_instructions)?;
+
         let variant = SwapInstructionsVariant::MultiLeg(bundle);
 
         let prepared = self
@@ -1728,6 +1857,17 @@ where
             );
         }
 
+        let jito_tip_budget = self.jito_tip_budget(opportunity.tip_lamports);
+        // 优先费 + 固定 Jito 小费（若配置）+ 基础网络费 = 必须覆盖的支出
+        let guard_required = BASE_TX_FEE_LAMPORTS
+            .saturating_add(prioritization_fee)
+            .saturating_add(jito_tip_budget);
+        self.apply_profit_guard(
+            &opportunity.pair.input_pubkey,
+            guard_required,
+            &mut final_instructions,
+        )?;
+
         let prepared = self
             .tx_builder
             .build_with_sequence(
@@ -1826,6 +1966,35 @@ where
             );
         }
         Ok(next_wait)
+    }
+
+    fn apply_profit_guard(
+        &mut self,
+        base_mint: &Pubkey,
+        required_delta: u64,
+        instructions: &mut Vec<Instruction>,
+    ) -> EngineResult<()> {
+        if required_delta == 0 || !self.lighthouse.should_guard(base_mint) {
+            return Ok(());
+        }
+
+        let token_account = get_associated_token_address(&self.identity.pubkey, base_mint);
+        let memory_id = self.lighthouse.next_memory_id();
+        let guard = build_token_amount_guard(
+            self.identity.pubkey,
+            token_account,
+            memory_id,
+            required_delta,
+        );
+
+        let insert_pos = instructions
+            .iter()
+            .take_while(|ix| ix.program_id == COMPUTE_BUDGET_PROGRAM_ID)
+            .count();
+        instructions.insert(insert_pos, guard.memory_write);
+        instructions.push(guard.assert_delta);
+
+        Ok(())
     }
 }
 

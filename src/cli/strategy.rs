@@ -20,9 +20,9 @@ use crate::config::{AppConfig, IntermediumConfig, LegRole, QuoteParallelism};
 use crate::copy_strategy;
 use crate::engine::{
     AccountPrechecker, BuilderConfig, ComputeUnitPriceMode, EngineError, EngineIdentity,
-    EngineResult, EngineSettings, FALLBACK_CU_LIMIT, MultiLegEngineContext, ProfitConfig,
-    ProfitEvaluator, QuoteConfig, QuoteExecutor, Scheduler, StrategyEngine, SwapPreparer,
-    TipConfig, TradeProfile, TransactionBuilder,
+    EngineResult, EngineSettings, LighthouseSettings, MultiLegEngineContext,
+    ProfitConfig, ProfitEvaluator, QuoteConfig, QuoteExecutor, Scheduler, StrategyEngine,
+    SwapPreparer, TipConfig, TradeProfile, TransactionBuilder,
 };
 use crate::flashloan::marginfi::{MarginfiAccountRegistry, MarginfiFlashloanManager};
 use crate::jupiter::{JupiterBinaryManager, JupiterError};
@@ -342,6 +342,25 @@ async fn run_blind_engine(
     let (quote_parallelism, quote_batch_interval) =
         resolve_quote_dispatch_config(&config.galileo.engine, backend);
 
+    let mut lighthouse_settings = parse_lighthouse_settings(&config.galileo.bot.light_house)?;
+    if lighthouse_settings.enable {
+        let mut existing_memory_ids = prechecker
+            .detect_lighthouse_memory_accounts(&identity)
+            .await
+            .map_err(|err| anyhow!(err))?;
+        existing_memory_ids.sort_unstable();
+        existing_memory_ids.dedup();
+        if !existing_memory_ids.is_empty() {
+            info!(
+                target: "strategy::lighthouse",
+                count = existing_memory_ids.len(),
+                "检测到 {} 个已有 Lighthouse memory 账户，将优先复用",
+                existing_memory_ids.len()
+            );
+        }
+        lighthouse_settings.existing_memory_ids = existing_memory_ids;
+    }
+
     let engine_settings = EngineSettings::new(quote_config)
         .with_quote_parallelism(quote_parallelism)
         .with_quote_batch_interval(quote_batch_interval)
@@ -349,7 +368,8 @@ async fn run_blind_engine(
         .with_landing_timeout(landing_timeout)
         .with_dry_run(dry_run)
         .with_cu_multiplier(1.0)
-        .with_compute_unit_price_mode(compute_unit_price_mode.clone());
+        .with_compute_unit_price_mode(compute_unit_price_mode.clone())
+        .with_lighthouse(lighthouse_settings);
 
     let strategy_engine = StrategyEngine::new(
         BlindStrategy::new(),
@@ -653,6 +673,42 @@ fn register_kamino_leg(
     );
     orchestrator.register_owned_provider(provider);
     Ok(())
+}
+
+fn parse_lighthouse_settings(cfg: &config::LightHouseBotConfig) -> Result<LighthouseSettings> {
+    if !cfg.enable {
+        return Ok(LighthouseSettings::default());
+    }
+
+    let mut mints = Vec::with_capacity(cfg.profit_guard_mints.len());
+    for mint_text in &cfg.profit_guard_mints {
+        let trimmed = mint_text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let pubkey = Pubkey::from_str(trimmed).map_err(|err| {
+            anyhow!(
+                "light_house.profit_guard_mints 中的 mint `{}` 无效: {err}",
+                trimmed
+            )
+        })?;
+        mints.push(pubkey);
+    }
+
+    if mints.is_empty() {
+        return Ok(LighthouseSettings::default());
+    }
+
+    let memory_slots = cfg
+        .memory_slots
+        .and_then(|value| if value == 0 { None } else { Some(value) });
+
+    Ok(LighthouseSettings {
+        enable: true,
+        profit_guard_mints: mints,
+        memory_slots,
+        existing_memory_ids: Vec::new(),
+    })
 }
 
 fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfig) -> Result<()> {
@@ -1778,44 +1834,15 @@ fn normalize_pure_trade_sizes(values: &[u64]) -> Vec<u64> {
 
 fn build_blind_profit_config(
     config: &config::BlindStrategyConfig,
-    lander_settings: &config::LanderSettings,
-    compute_unit_price_mode: &Option<ComputeUnitPriceMode>,
+    _lander_settings: &config::LanderSettings,
+    _compute_unit_price_mode: &Option<ComputeUnitPriceMode>,
 ) -> ProfitConfig {
-    let min_profit_from_routes = config
+    let threshold = config
         .base_mints
         .iter()
         .filter_map(|mint| mint.min_quote_profit)
         .min()
         .unwrap_or(0);
-
-    let compute_unit_fee = compute_unit_price_mode
-        .as_ref()
-        .map(|mode| match mode {
-            ComputeUnitPriceMode::Fixed(value) => compute_unit_fee_lamports(*value),
-            ComputeUnitPriceMode::Random { min, max } => {
-                let upper = (*min).max(*max);
-                compute_unit_fee_lamports(upper)
-            }
-        })
-        .unwrap_or(0);
-
-    let tip_fee = lander_settings
-        .jito
-        .as_ref()
-        .and_then(|cfg| {
-            if let Some(fixed) = cfg.fixed_tip {
-                Some(fixed)
-            } else if !cfg.range_tips.is_empty() {
-                cfg.range_tips.iter().copied().max()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
-
-    let required_profit_floor = compute_unit_fee.saturating_add(tip_fee);
-
-    let threshold = min_profit_from_routes.max(required_profit_floor);
 
     ProfitConfig {
         min_profit_threshold_lamports: threshold,
@@ -1825,45 +1852,14 @@ fn build_blind_profit_config(
 }
 
 fn build_pure_profit_config(
-    lander_settings: &config::LanderSettings,
-    compute_unit_price_mode: &Option<ComputeUnitPriceMode>,
+    _lander_settings: &config::LanderSettings,
+    _compute_unit_price_mode: &Option<ComputeUnitPriceMode>,
 ) -> ProfitConfig {
-    let compute_unit_fee = compute_unit_price_mode
-        .as_ref()
-        .map(|mode| match mode {
-            ComputeUnitPriceMode::Fixed(value) => compute_unit_fee_lamports(*value),
-            ComputeUnitPriceMode::Random { min, max } => {
-                let upper = (*min).max(*max);
-                compute_unit_fee_lamports(upper)
-            }
-        })
-        .unwrap_or(0);
-
-    let tip_fee = lander_settings
-        .jito
-        .as_ref()
-        .and_then(|cfg| {
-            if let Some(fixed) = cfg.fixed_tip {
-                Some(fixed)
-            } else if !cfg.range_tips.is_empty() {
-                cfg.range_tips.iter().copied().max()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
-
     ProfitConfig {
-        min_profit_threshold_lamports: compute_unit_fee.saturating_add(tip_fee),
+        min_profit_threshold_lamports: 0,
         max_tip_lamports: 0,
         tip: TipConfig::default(),
     }
-}
-
-fn compute_unit_fee_lamports(price_micro_lamports: u64) -> u64 {
-    let limit = FALLBACK_CU_LIMIT as u128;
-    let numerator = (price_micro_lamports as u128).saturating_mul(limit);
-    ((numerator + 999_999) / 1_000_000).min(u128::from(u64::MAX)) as u64
 }
 
 fn build_blind_quote_config(

@@ -108,6 +108,10 @@ impl JitoLander {
         self.endpoints.clone()
     }
 
+    pub fn fixed_tip_lamports(&self) -> Option<u64> {
+        self.tip_selector.fixed_tip()
+    }
+
     fn http_client(&self, local_ip: Option<IpAddr>) -> Result<Client, LanderError> {
         if let Some(ip) = local_ip {
             if let Some(pool) = &self.client_pool {
@@ -504,6 +508,10 @@ impl TipSelector {
                 Some(MIN_JITO_TIP_LAMPORTS)
             }
         }
+    }
+
+    fn fixed_tip(&self) -> Option<u64> {
+        matches!(self.strategy, TipStrategyKind::Fixed).then_some(self.fixed_tip)
     }
 
     fn pick_range_tip(&self) -> Option<u64> {

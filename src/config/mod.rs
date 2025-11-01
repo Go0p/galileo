@@ -388,6 +388,7 @@ impl Default for cfg::BotConfig {
             prometheus: cfg::PrometheusConfig::default(),
             network: cfg::NetworkConfig::default(),
             auto_refresh_wallet_minute: 0,
+            light_house: cfg::LightHouseBotConfig::default(),
         }
     }
 }

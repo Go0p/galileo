@@ -7,7 +7,7 @@ lander:
   sending_strategy: "AllAtOnce"
 
   # 固定优先费 单位是 lamports
-  fixed_compute_unit_price: 100
+  fixed_compute_unit_price: 0
   # 随机优先费范围 单位是 lamports
   random_compute_unit_price_range:
     - 3000
@@ -38,7 +38,7 @@ lander:
     tip_strategy: "fixed"
 
     # 使用固定的 lamports 作为小费
-    fixed_tip: 2000
+    fixed_tip: 2444
     # 随机小费，随机在 range_tips 中选择一个（仅当 tip_strategy=range 生效）
     range_tips: [3000,5000]
 

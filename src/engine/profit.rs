@@ -16,8 +16,8 @@ impl Default for TipConfig {
     fn default() -> Self {
         Self {
             enable_random: false,
-            static_tip_percentage: 0.5,
-            random_percentage: vec![0.5],
+            static_tip_percentage: 0.0,
+            random_percentage: vec![0.0],
         }
     }
 }
