@@ -8,47 +8,16 @@
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 from pathlib import Path
-from typing import Iterable, Iterator, List
+from typing import List
 
 TARGET_PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
 
 
-def gather_program_ids(tx: dict) -> Iterator[str]:
-    """遍历交易中所有显式指令的 programId。"""
-    transaction = tx.get("transaction") or {}
-    message = transaction.get("message") or {}
-
-    instructions = message.get("instructions") or []
-    for inst in instructions:
-        program_id = inst.get("programId")
-        if program_id:
-            yield program_id
-
-    # v0 交易的 compiledInstructions 会转成带 programId 的对象
-    compiled = message.get("compiledInstructions") or []
-    for inst in compiled:
-        program_id = inst.get("programId")
-        if program_id:
-            yield program_id
-
-    meta = tx.get("meta") or {}
-    inner = meta.get("innerInstructions") or []
-    for container in inner:
-        for inst in container.get("instructions") or []:
-            program_id = inst.get("programId")
-            if program_id:
-                yield program_id
-
-
-def contains_target_program(tx: dict, target: str) -> bool:
+def contains_target_program(raw_json: str, target: str) -> bool:
     target_upper = target.upper()
-    for program_id in gather_program_ids(tx):
-        if program_id.upper() == target_upper:
-            return True
-    return False
+    return target_upper in raw_json.upper()
 
 
 def list_json_files(path: Path) -> List[Path]:
@@ -98,13 +67,8 @@ def main() -> int:
     rejects: List[Path] = []
 
     for path in files:
-        try:
-            content = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            print(f"跳过无法解析的文件: {path}")
-            continue
-
-        if contains_target_program(content, args.program):
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+        if contains_target_program(raw, args.program):
             matches.append(path)
         else:
             rejects.append(path)
