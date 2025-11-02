@@ -5,10 +5,9 @@ use solana_sdk::pubkey::Pubkey;
 use thiserror::Error;
 use tracing::debug;
 
-use crate::api::jupiter::quote::RoutePlanStep;
 use crate::api::ultra::{
     UltraApiClient, UltraError,
-    order::{OrderRequest, OrderResponse, Router},
+    order::{OrderRequest, OrderResponse, RoutePlanStep, Router},
 };
 use crate::config::UltraQuoteConfig;
 use crate::engine::multi_leg::leg::LegProvider;

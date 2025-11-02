@@ -12,11 +12,8 @@ use crate::api::dflow::{
     ComputeUnitPriceMicroLamports as DflowComputeUnitPriceMicroLamports, DflowApiClient,
     SwapInstructionsRequest as DflowSwapInstructionsRequest,
 };
-use crate::api::jupiter::{
-    ComputeUnitPriceMicroLamports, JupiterApiClient, SwapInstructionsRequest,
-};
 use crate::cache::AltCache;
-use crate::config::{DflowSwapConfig, JupiterSwapConfig, KaminoQuoteConfig, UltraSwapConfig};
+use crate::config::{DflowSwapConfig, KaminoQuoteConfig, UltraSwapConfig};
 use crate::engine::ultra::{
     UltraAdapter, UltraAdapterError, UltraContext, UltraFinalizedSwap, UltraLookupResolver,
     UltraPreparationParams, UltraPreparedSwap,
@@ -60,10 +57,6 @@ impl ComputeUnitPriceMode {
 
 #[derive(Clone)]
 pub enum SwapPreparerBackend {
-    Jupiter {
-        client: JupiterApiClient,
-        defaults: JupiterSwapConfig,
-    },
     Dflow {
         client: DflowApiClient,
         defaults: DflowSwapConfig,
@@ -89,20 +82,6 @@ pub struct SwapPreparer {
 }
 
 impl SwapPreparer {
-    pub fn for_jupiter(
-        client: JupiterApiClient,
-        request_defaults: JupiterSwapConfig,
-        compute_unit_price: Option<ComputeUnitPriceMode>,
-    ) -> Self {
-        Self {
-            backend: SwapPreparerBackend::Jupiter {
-                client,
-                defaults: request_defaults,
-            },
-            compute_unit_price,
-        }
-    }
-
     pub fn for_dflow(
         client: DflowApiClient,
         request_defaults: DflowSwapConfig,
@@ -173,40 +152,6 @@ impl SwapPreparer {
         let local_ip = Some(lease.ip());
 
         let variant = match (&self.backend, payload) {
-            (
-                SwapPreparerBackend::Jupiter { client, defaults },
-                QuotePayloadVariant::Jupiter(inner),
-            ) => {
-                let mut request = SwapInstructionsRequest::from_payload(inner, identity.pubkey);
-
-                request.wrap_and_unwrap_sol = defaults.wrap_and_unwrap_sol;
-                request.dynamic_compute_unit_limit = defaults.dynamic_compute_unit_limit;
-                request.use_shared_accounts = Some(identity.use_shared_accounts());
-                request.skip_user_accounts_rpc_calls = identity.skip_user_accounts_rpc_calls();
-                if let Some(fee) = identity.fee_account() {
-                    match solana_sdk::pubkey::Pubkey::from_str(fee) {
-                        Ok(pubkey) => request.fee_account = Some(pubkey),
-                        Err(err) => {
-                            warn!(
-                                target = "engine::swap_preparer",
-                                fee_account = fee,
-                                error = %err,
-                                "手续费账户解析失败，忽略配置"
-                            );
-                        }
-                    }
-                }
-                if let Some(strategy) = &self.compute_unit_price {
-                    let price = strategy.sample();
-                    if price > 0 {
-                        request.compute_unit_price_micro_lamports =
-                            Some(ComputeUnitPriceMicroLamports::MicroLamports(price));
-                    }
-                }
-
-                let response = client.swap_instructions(&request, local_ip).await?;
-                SwapInstructionsVariant::Jupiter(response)
-            }
             (
                 SwapPreparerBackend::Dflow { client, defaults },
                 QuotePayloadVariant::Dflow(inner),
@@ -476,25 +421,14 @@ impl SwapPreparer {
 
                 SwapInstructionsVariant::Ultra(finalized)
             }
-            (SwapPreparerBackend::Jupiter { .. }, QuotePayloadVariant::Dflow(_))
-            | (SwapPreparerBackend::Jupiter { .. }, QuotePayloadVariant::Ultra(_))
-            | (SwapPreparerBackend::Jupiter { .. }, QuotePayloadVariant::Kamino(_))
-            | (SwapPreparerBackend::Dflow { .. }, QuotePayloadVariant::Jupiter(_))
-            | (SwapPreparerBackend::Dflow { .. }, QuotePayloadVariant::Ultra(_))
-            | (SwapPreparerBackend::Dflow { .. }, QuotePayloadVariant::Kamino(_))
-            | (SwapPreparerBackend::Ultra { .. }, QuotePayloadVariant::Jupiter(_))
-            | (SwapPreparerBackend::Ultra { .. }, QuotePayloadVariant::Dflow(_))
-            | (SwapPreparerBackend::Ultra { .. }, QuotePayloadVariant::Kamino(_))
-            | (SwapPreparerBackend::Kamino { .. }, QuotePayloadVariant::Jupiter(_))
-            | (SwapPreparerBackend::Kamino { .. }, QuotePayloadVariant::Dflow(_))
-            | (SwapPreparerBackend::Kamino { .. }, QuotePayloadVariant::Ultra(_)) => {
-                return Err(EngineError::InvalidConfig(
-                    "套利机会聚合器类型与落地器不匹配".into(),
-                ));
-            }
             (SwapPreparerBackend::Disabled, _) => {
                 return Err(EngineError::InvalidConfig(
                     "swap backend 已禁用，无法构造指令".into(),
+                ));
+            }
+            _ => {
+                return Err(EngineError::InvalidConfig(
+                    "套利机会聚合器类型与落地器不匹配".into(),
                 ));
             }
         };

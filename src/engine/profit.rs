@@ -33,14 +33,16 @@ pub struct ProfitConfig {
 pub struct ProfitEvaluator {
     config: ProfitConfig,
     tip_calculator: TipCalculator,
+    multi_ip_enabled: bool,
 }
 
 impl ProfitEvaluator {
-    pub fn new(config: ProfitConfig) -> Self {
+    pub fn new(config: ProfitConfig, multi_ip_enabled: bool) -> Self {
         let tip_calculator = TipCalculator::new(&config.tip, config.max_tip_lamports);
         Self {
             config,
             tip_calculator,
+            multi_ip_enabled,
         }
     }
 
@@ -129,6 +131,10 @@ impl ProfitEvaluator {
             profit_u64,
             net_profit,
             threshold,
+            self.multi_ip_enabled,
+            double_quote.forward_ip,
+            double_quote.reverse_ip,
+            double_quote.total_latency_ms(),
         );
         let merged = merge_quotes(
             &double_quote.forward,
@@ -212,8 +218,7 @@ fn merge_quotes(
     tip_lamports: u64,
 ) -> QuotePayloadVariant {
     match (forward.kind(), reverse.kind()) {
-        (AggregatorKind::Jupiter, AggregatorKind::Jupiter)
-        | (AggregatorKind::Dflow, AggregatorKind::Dflow)
+        (AggregatorKind::Dflow, AggregatorKind::Dflow)
         | (AggregatorKind::Ultra, AggregatorKind::Ultra)
         | (AggregatorKind::Kamino, AggregatorKind::Kamino) => {
             let mut merged = forward.clone_payload();

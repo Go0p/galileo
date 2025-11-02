@@ -47,45 +47,11 @@ global:
     timezone_offset_hours: 8
 
 engine:
-  # 可选值：jupiter / dflow / ultra / multi-legs /none
+  # 可选值：dflow / ultra / multi-legs / none
   backend: "dflow"
   # backend: "ultra"
   # backend: "multi-legs"
   # backend: "dflow"
-  jupiter:
-    enable: false
-    api_proxy: ""
-    args_included_dexes: [
-        # TesseraV
-        "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH",
-        # SolFiV2
-        "SV2EYYJyRz2YhfXwXnhNAevDEui5Q6yrfyo13WtupPF",
-        # HumidiFi
-        "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp",
-        # Aquifer
-        "AQU1FRd7papthgdrwPTTq5JacJh8YtwEXaBfKU3bTz45",
-      ]
-    quote_config:
-      # 设置为 true 时，机器人将仅寻找两跳（A -> B -> A）交易。设置为 true 将缩短跳转报价时间，加快落地速度。设置为 false 将获得更多机会，但需要更多报价时间。
-      only_direct_routes: false
-      # 仅当 use_direct_route_only 为 false 时，此设置才会生效。
-      # 将中间代币限制为具有稳定流动性的顶级代币集合。这将有助于降低兑换时潜在的高滑点错误率，并将对定价的影响降至最低。
-      # 当您将 use_direct_route_only 设置为 false 时，这可以帮助加快 jupiter 的报价时间。不过，正如它所说，它也会限制在您的路线中使用的额外 mint。
-      restrict_intermediate_tokens: true
-      # QuoteDispatcher 并发配置："auto" 按 trade size + IP 容量自动取最小值，也可填写正整数强制并发
-      parallelism: "auto"
-      # 报价批次发送间隔（毫秒），用于在批次之间加额外退避；0 表示禁用
-      batch_interval_ms: 0
-    swap_config:
-      # 跳过用户账户相关 RPC 调用，以减少重复拉取。
-      # 设置为 false 时，不会有 setupInstructions 等创建 ATA 的指令
-      # 设置为 true 时，会有 setupInstructions 等创建 ATA 的指令
-      skip_user_accounts_rpc_calls: false
-      # 启用后，它将进行交换模拟以获取使用的计算单元并将其设置在 ComputeBudget 的计算单元限制中
-      # 这会导致一个额外的 RPC 调用来模拟这个交易
-      # 我们建议启用此功能以正确估计计算单元并减少所需的优先费用或有更高的机会被纳入区块
-      dynamic_compute_unit_limit: true
-      wrap_and_unwrap_sol: false
   ultra:
     enable: true
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
@@ -99,10 +65,20 @@ engine:
       # taker: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
       exclude_routers: []
       priority_fee_lamports: 10
-      # Ultra 报价并发，同 jupiter.quote_config.parallelism 语义
-      parallelism: "auto"
-      # Ultra 报价批次间隔（毫秒），0 表示不额外延迟
-      batch_interval_ms: 0
+      cadence:
+        # default: 默认 quote 节奏
+        default:
+          # group_parallelism: 单波次内允许同时执行的 quote 组数量
+          group_parallelism: auto
+          # intra_group_spacing_ms: 相邻 quote 组启动的最小间隔（毫秒）
+          intra_group_spacing_ms: 0
+          # wave_cooldown_ms: 一波执行完后等待下一波的时间（毫秒）
+          wave_cooldown_ms: 0
+        # per_base_mint: 针对特定 base mint 覆盖默认节奏（可选）
+        #   So11111111111111111111111111111111111111112:
+        #     group_parallelism: 1
+        #     intra_group_spacing_ms: 200
+        #     wave_cooldown_ms: 1000
     swap_config:
       cu_limit_multiplier: 0.92
   dflow:
@@ -118,10 +94,16 @@ engine:
       use_auto_slippage: false
       only_direct_routes: false
       max_route_length: 3
-      # DFlow 报价并发，同 jupiter.quote_config.parallelism 语义
-      parallelism: "auto"
-      # DFlow 报价批次间隔（毫秒），0 表示不额外延迟
-      batch_interval_ms: 0
+      cadence:
+        default:
+          group_parallelism: auto
+          intra_group_spacing_ms: 0
+          wave_cooldown_ms: 0
+        # per_base_mint: 可覆盖指定 base mint 的节奏
+        #   So11111111111111111111111111111111111111112:
+        #     group_parallelism: 1
+        #     intra_group_spacing_ms: 200
+        #     wave_cooldown_ms: 1000
     swap_config:
       dynamic_compute_unit_limit: true
       wrap_and_unwrap_sol: false
@@ -172,9 +154,6 @@ engine:
       wrap_and_unwrap_sol: false
       routes:
         - "dflow"
-        - "jupiter"
-        - "jupiterSelfHosted"
-        - "jupiterEuropa"
         - "per"
         - "fluxbeam"
         - "raydium"
@@ -215,7 +194,10 @@ intermedium:
 
 bot:
   # 是否测试模式
-  dry_run: false
+  dry_run:
+    enable: false
+    # dry-run 模式下的 RPC 覆盖地址，可指向本地节点或沙箱
+    rpc_url: ""
   cpu_affinity:
     # 开启后，bot 会将 Tokio runtime 线程绑定到指定 CPU 核，避免与验证节点争抢
     enable: false
@@ -241,26 +223,19 @@ bot:
       rate_limited_start: 500
       # 连接超时 / 网络异常时的初始冷却时间（毫秒）
       timeout_start: 250
-  # 是否启用 prometheus
   prometheus:
     enable: false
     listen: "127.0.0.1:9898"
-  # 设置为 true 时，不会在本地启动 Jupiter API。当你想在同一台机器上运行多个机器人时，这很有用。
-  disable_local_binary: false
   # 是否禁止启动机器人
   disable_running: false
   # 超时时间：报价 / 指令 / 落地（单位：毫秒）
   quote_ms: 2000
   swap_ms: 10000
   landing_ms: 5000
-  # 自动重启 jupiter binary 的时间间隔，单位为分钟，0表示不重启
-  auto_restart_minutes: 30
   # 是否通过 geyser 获取 block hash, 否则通过 rpc 获取
   get_block_hash_by_grpc: true
   # 是否允许模拟
   enable_simulation: false
-  # 是否在本地终端打印 Jupiter 二进制输出（默认开启，可保持彩色日志）。
-  show_jupiter_logs: true
 
 flashloan:
   marginfi:
@@ -322,7 +297,6 @@ blind_strategy:
       min_quote_profit: 34000
       # 交易延时
       # 单位为毫秒。默认值表示机器人将等待 1000 毫秒，然后针对相同代币交易规模的对再次尝试。减少此值将增加立即捕捉价格变化的机会，但会增加读取 RPC 负载。
-      process_delay: 1200
       # 冷却时间
       # 如果找到一个机会并且发送了 tx，则至少等待这个时间（ms）才能发送另一个。
       sending_cooldown: 1000
@@ -353,7 +327,6 @@ blind_strategy:
       min_quote_profit: 22000
       # 交易延时
       # 单位为毫秒。默认值表示机器人将等待 1000 毫秒，然后针对相同代币交易规模的对再次尝试。减少此值将增加立即捕捉价格变化的机会，但会增加读取 RPC 负载。
-      process_delay: 1200
       # 冷却时间
       # 如果找到一个机会并且发送了 tx，则至少等待这个时间（ms）才能发送另一个。
       sending_cooldown: 1000
@@ -378,7 +351,6 @@ pure_blind_strategy:
   enable_landers: []
 
   market_cache:
-    # Jupiter markets.json 快照
     path: "./cache/pure_markets.json"              
     # 自动拉取更新时用
     download_url: "https://cache.jup.ag/markets?v=4" 
@@ -401,13 +373,11 @@ pure_blind_strategy:
       - mint: "So11111111111111111111111111111111111111112"
         trade_sizes: [5_000_000_000, 10_000_000_000]   # lamports
         # 限制发送的频率，单位为毫秒
-        process_delay: 1000
         # 路由类型，是 3 跳还是 2 跳
         route_type: "2hop"
       - mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
         trade_sizes: [1_000_000_000, 2_000_000_000]
         # 限制发送的频率，单位为毫秒
-        process_delay: 1000
         # 路由类型，是 3 跳还是 2 跳
         route_type: "3hop"
     intermediates:
@@ -482,7 +452,7 @@ copy_strategy:
 # 2. 如果交易导致池子价格波动超过 min_price_impact_pct，机器人会尝试创建交易来回滚它
 # 3. 机器人将使用您在 TRADE_CONFIGS 中定义的交易规模，根据您正在运行的交易，随机生成一个介于
 #    MIN_TRADE_BP 和 MAX_TRADE_BP 之间的交易规模。或者，您也可以在此处定义一个 FIXED_SIZE 作为交易规模。
-# 4. 机器人将引通过 jupiter-swap-api quote 另一笔规模，创建一个完整的套利交易 tx
+# 4. 机器人将通过聚合器报价另一笔规模，创建一个完整的套利交易 tx
 # 5. 如果交易有利润，且利润高于 MIN_QUOTE_PROFIT，机器人就会将其发送出去
 back_run_strategy:
   enable: false

@@ -23,7 +23,7 @@ use solana_rpc_client::http_sender::HttpSender;
 pub fn build_rpc_resources(
     config: &AppConfig,
 ) -> Result<(Arc<RpcClient>, Arc<RpcEndpointRotator>)> {
-    let resolved = resolve_rpc_client(&config.galileo.global)?;
+    let resolved = resolve_rpc_client(&config.galileo.global, None)?;
     Ok((resolved.client.clone(), resolved.endpoints))
 }
 

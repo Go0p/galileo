@@ -9,7 +9,6 @@ use crate::api::dflow::DflowError;
 use crate::api::kamino::KaminoError;
 use crate::api::ultra::UltraError;
 use crate::engine::plugins::flashloan::FlashloanError;
-use crate::jupiter::error::JupiterError;
 use crate::network::NetworkError;
 
 #[derive(Debug, Error)]
@@ -18,8 +17,6 @@ pub enum EngineError {
     InvalidConfig(String),
     #[error("数值解析失败: {0}")]
     ParseAmount(#[from] ParseIntError),
-    #[error("Jupiter API 错误: {0}")]
-    Jupiter(#[from] JupiterError),
     #[error("DFlow API 错误: {0}")]
     Dflow(#[from] DflowError),
     #[error("Kamino API 错误: {0}")]

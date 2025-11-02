@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use crate::engine::assembly::decorators::{
     ComputeBudgetDecorator, FlashloanDecorator, GuardBudgetDecorator, ProfitGuardDecorator,
+    TipDecorator,
 };
 use crate::engine::assembly::{
     AssemblyContext, DecoratorChain, InstructionBundle, attach_lighthouse,
@@ -281,6 +282,10 @@ where
                 profit.gross_profit_lamports,
                 candidate.net_profit(),
                 threshold,
+                false,
+                None,
+                None,
+                None,
             );
 
             candidates.push(candidate);
@@ -369,16 +374,24 @@ where
             variant.resolved_lookup_tables().to_vec(),
         );
 
+        let mut jito_tip_plan = self.landers.draw_jito_tip_plan();
+        let mut effective_tip = tip_lamports;
+        if let Some(plan) = jito_tip_plan.as_ref() {
+            if plan.lamports > 0 {
+                effective_tip = plan.lamports;
+            } else {
+                jito_tip_plan = None;
+            }
+        }
+
         let flashloan_opportunity = SwapOpportunity {
             pair: pair.clone(),
             amount_in: trade_size,
             profit_lamports: gross_profit,
-            tip_lamports,
+            tip_lamports: effective_tip,
             merged_quote: None,
             ultra_legs: None,
         };
-
-        let jito_tip_budget = self.jito_tip_budget(tip_lamports);
 
         let mut assembly_ctx = AssemblyContext::new(&self.identity);
         assembly_ctx.base_mint = Some(&pair.input_pubkey);
@@ -387,8 +400,9 @@ where
         assembly_ctx.compute_unit_price = None;
         assembly_ctx.guard_required = BASE_TX_FEE_LAMPORTS;
         assembly_ctx.prioritization_fee = prioritization_fee;
-        assembly_ctx.tip_lamports = tip_lamports;
-        assembly_ctx.jito_tip_budget = jito_tip_budget;
+        assembly_ctx.tip_lamports = effective_tip;
+        assembly_ctx.jito_tip_budget = self.jito_tip_budget(effective_tip);
+        assembly_ctx.jito_tip_plan = jito_tip_plan.clone();
         assembly_ctx.variant = Some(&mut variant);
         assembly_ctx.opportunity = Some(&flashloan_opportunity);
         assembly_ctx.flashloan_manager = self.flashloan.as_ref();
@@ -397,6 +411,7 @@ where
         let mut decorators = DecoratorChain::new();
         decorators.register(FlashloanDecorator);
         decorators.register(ComputeBudgetDecorator);
+        decorators.register(TipDecorator);
         decorators.register(GuardBudgetDecorator);
         decorators.register(ProfitGuardDecorator);
 
@@ -420,7 +435,7 @@ where
                 sell_kind = %descriptor.sell.kind,
                 amount = trade_size,
                 borrow_amount = meta.borrow_amount,
-                tip_lamports,
+                tip_lamports = effective_tip,
                 protocol = meta.protocol.as_str(),
                 "多腿组合使用闪电贷"
             );
@@ -428,7 +443,13 @@ where
 
         let prepared = self
             .tx_builder
-            .build_with_sequence(&self.identity, &variant, final_instructions, tip_lamports)
+            .build_with_sequence(
+                &self.identity,
+                &variant,
+                final_instructions,
+                effective_tip,
+                jito_tip_plan.clone(),
+            )
             .await?;
 
         debug!(
@@ -446,9 +467,8 @@ where
                 slot = prepared.slot,
                 blockhash = %prepared.blockhash,
                 landers = self.landers.count(),
-                "dry-run 模式：多腿交易已构建，跳过落地"
+                "dry-run 模式：多腿交易将提交至覆盖的 RPC 端点"
             );
-            return Ok(());
         }
 
         let dispatch_strategy = self.settings.dispatch_strategy;

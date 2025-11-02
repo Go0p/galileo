@@ -5,7 +5,7 @@ mod swap;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use solana_sdk::pubkey::Pubkey;
 use tracing::{debug, error, info, trace};
@@ -15,9 +15,9 @@ use crate::engine::planner::{DispatchStrategy, TxVariantPlanner};
 use crate::engine::plugins::flashloan::MarginfiFlashloanManager;
 use crate::engine::runtime::{LighthouseRuntime, multi_leg::MultiLegEngineContext};
 use crate::engine::{
-    ComputeUnitPriceMode, EngineError, EngineIdentity, EngineResult, ProfitEvaluator, QuoteConfig,
-    QuoteDispatcher, QuoteExecutor, Scheduler, StrategyTick, SwapPreparer, TradeProfile,
-    TransactionBuilder,
+    ComputeUnitPriceMode, EngineError, EngineIdentity, EngineResult, ProfitEvaluator, QuoteCadence,
+    QuoteConfig, QuoteDispatcher, QuoteExecutor, Scheduler, StrategyTick, SwapPreparer,
+    TradeProfile, TransactionBuilder,
 };
 use crate::lander::LanderStack;
 use crate::network::IpAllocator;
@@ -29,39 +29,21 @@ pub(super) const BASE_TX_FEE_LAMPORTS: u64 = 5_000;
 #[derive(Clone)]
 pub(crate) struct MintSchedule {
     amounts: Vec<u64>,
-    process_delay: Duration,
-    next_ready: Instant,
 }
 
 impl MintSchedule {
     pub(crate) fn from_profile(profile: TradeProfile) -> Self {
         Self {
             amounts: profile.amounts,
-            process_delay: profile.process_delay,
-            next_ready: Instant::now(),
         }
     }
 
-    pub(crate) fn take_ready_batch(&mut self, now: Instant) -> Option<Vec<u64>> {
-        if self.amounts.is_empty() || now < self.next_ready {
-            return None;
-        }
-        self.next_ready = now + self.process_delay;
-        Some(self.amounts.clone())
+    pub(crate) fn is_empty(&self) -> bool {
+        self.amounts.is_empty()
     }
 
-    pub(crate) fn has_amounts(&self) -> bool {
-        !self.amounts.is_empty()
-    }
-
-    pub(crate) fn is_ready(&self, now: Instant) -> bool {
-        now >= self.next_ready
-    }
-
-    pub(crate) fn time_until_ready(&self, now: Instant) -> Duration {
-        self.next_ready
-            .checked_duration_since(now)
-            .unwrap_or(Duration::ZERO)
+    pub(crate) fn clone_amounts(&self) -> Vec<u64> {
+        self.amounts.clone()
     }
 }
 
@@ -71,6 +53,27 @@ pub struct LighthouseSettings {
     pub profit_guard_mints: Vec<Pubkey>,
     pub memory_slots: Option<u8>,
     pub existing_memory_ids: Vec<u8>,
+    pub sol_price_feed: Option<SolPriceFeedSettings>,
+}
+
+#[derive(Clone)]
+pub struct SolPriceFeedSettings {
+    pub url: String,
+    pub refresh: Duration,
+}
+
+impl Default for SolPriceFeedSettings {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            refresh: Duration::from_secs(1),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct ConsoleSummarySettings {
+    pub enable: bool,
 }
 
 #[derive(Clone)]
@@ -81,9 +84,9 @@ pub struct EngineSettings {
     pub dispatch_strategy: DispatchStrategy,
     pub cu_multiplier: f64,
     compute_unit_price_mode: Option<ComputeUnitPriceMode>,
-    pub quote_parallelism: Option<u16>,
-    pub quote_batch_interval: Duration,
+    pub quote_cadence: QuoteCadence,
     pub lighthouse: LighthouseSettings,
+    pub console_summary: ConsoleSummarySettings,
 }
 
 impl EngineSettings {
@@ -95,9 +98,9 @@ impl EngineSettings {
             dispatch_strategy: DispatchStrategy::default(),
             cu_multiplier: 1.0,
             compute_unit_price_mode: None,
-            quote_parallelism: None,
-            quote_batch_interval: Duration::ZERO,
+            quote_cadence: QuoteCadence::default(),
             lighthouse: LighthouseSettings::default(),
+            console_summary: ConsoleSummarySettings::default(),
         }
     }
 
@@ -131,13 +134,13 @@ impl EngineSettings {
         self
     }
 
-    pub fn with_quote_parallelism(mut self, parallelism: Option<u16>) -> Self {
-        self.quote_parallelism = parallelism;
+    pub fn with_console_summary(mut self, console_summary: ConsoleSummarySettings) -> Self {
+        self.console_summary = console_summary;
         self
     }
 
-    pub fn with_quote_batch_interval(mut self, interval: Duration) -> Self {
-        self.quote_batch_interval = interval;
+    pub fn with_quote_cadence(mut self, cadence: QuoteCadence) -> Self {
+        self.quote_cadence = cadence;
         self
     }
 
@@ -194,11 +197,8 @@ where
         trade_profiles: BTreeMap<Pubkey, TradeProfile>,
         multi_leg: Option<MultiLegEngineContext>,
     ) -> Self {
-        let quote_dispatcher = QuoteDispatcher::new(
-            Arc::clone(&ip_allocator),
-            settings.quote_parallelism,
-            settings.quote_batch_interval,
-        );
+        let quote_dispatcher =
+            QuoteDispatcher::new(Arc::clone(&ip_allocator), settings.quote_cadence.clone());
         let allocator_summary = ip_allocator.summary();
         let per_ip_capacity = allocator_summary.per_ip_inflight_limit.unwrap_or(1).max(1);
         let ip_capacity_hint = allocator_summary
@@ -263,11 +263,14 @@ where
         }
     }
 
-    async fn handle_action(&mut self, action: Action) -> EngineResult<()> {
+    async fn handle_action(&mut self, action: Action) -> EngineResult<Option<Duration>> {
         match action {
-            Action::Idle => Ok(()),
-            Action::Quote(batches) => self.run_quote_batches(batches).await,
-            Action::DispatchBlind(batch) => self.process_blind_batch(batch).await,
+            Action::Idle => Ok(None),
+            Action::Quote(batches) => self.run_quote_batches(batches).await.map(Some),
+            Action::DispatchBlind(batch) => {
+                self.process_blind_batch(batch).await?;
+                Ok(None)
+            }
         }
     }
 
@@ -285,31 +288,26 @@ where
             action,
             next_ready_in,
         } = self.strategy.on_market_event(&event, ctx);
-        let next_wait = next_ready_in.unwrap_or_else(|| self.earliest_schedule_delay());
-        if let Err(err) = self.handle_action(action).await {
-            error!(
-                target: "engine",
-                error = %err,
-                "策略 tick 执行失败，将继续运行"
-            );
-        }
-        Ok(next_wait)
+        let strategy_wait = next_ready_in.unwrap_or(Duration::ZERO);
+        let cadence_wait = match self.handle_action(action).await {
+            Ok(delay) => delay.unwrap_or(Duration::ZERO),
+            Err(err) => {
+                error!(
+                    target: "engine",
+                    error = %err,
+                    "策略 tick 执行失败，将继续运行"
+                );
+                Duration::ZERO
+            }
+        };
+
+        Ok(strategy_wait.max(cadence_wait))
     }
 
-    fn earliest_schedule_delay(&self) -> Duration {
-        let now = Instant::now();
-        self.trade_profiles
-            .values()
-            .map(|schedule| schedule.time_until_ready(now))
-            .min()
-            .unwrap_or(Duration::ZERO)
-    }
-
-    fn jito_tip_budget(&self, base_tip: u64) -> u64 {
+    fn jito_tip_budget(&self, tip_lamports: u64) -> u64 {
         if !self.landers.has_jito() {
             return 0;
         }
-        let fixed_tip = self.landers.fixed_jito_tip().unwrap_or(0);
-        fixed_tip.saturating_add(base_tip)
+        tip_lamports
     }
 }

@@ -210,7 +210,14 @@ impl CopyWalletRunner {
         let wallet_pubkey = Pubkey::from_str(wallet.address.trim())
             .map_err(|err| anyhow!("wallet address `{}` 解析失败: {err}", wallet.address))?;
 
-        let enable_landers = if wallet.source.enable_landers.is_empty() {
+        let enable_landers = if dry_run {
+            tracing::info!(
+                target: "strategy::copy",
+                wallet = %wallet_pubkey,
+                "dry-run 模式：落地器强制使用 RPC"
+            );
+            vec!["rpc".to_string()]
+        } else if wallet.source.enable_landers.is_empty() {
             vec!["rpc".to_string()]
         } else {
             wallet
@@ -843,7 +850,7 @@ impl CopyWalletRunner {
         let final_sequence = bundle.flatten();
         let prepared = self
             .tx_builder
-            .build_with_sequence(&self.identity, &variant, final_sequence, 0)
+            .build_with_sequence(&self.identity, &variant, final_sequence, 0, None)
             .await
             .map_err(|err| anyhow!("构建复制交易失败: {err}"))?;
 
@@ -868,9 +875,8 @@ impl CopyWalletRunner {
                 wallet = %self.wallet_pubkey,
                 signature = %signature,
                 variants,
-                "dry-run 模式，跳过落地提交"
+                "dry-run 模式：复制交易将提交至覆盖的 RPC 端点"
             );
-            return Ok(());
         }
 
         let deadline = Deadline::from_instant(Instant::now() + self.landing_timeout);

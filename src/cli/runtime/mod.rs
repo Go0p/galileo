@@ -4,27 +4,18 @@ use anyhow::{Result, anyhow};
 use tracing::{info, warn};
 
 use crate::api::dflow::DflowApiClient;
-use crate::api::jupiter::JupiterApiClient;
 use crate::api::kamino::KaminoApiClient;
 use crate::api::ultra::UltraApiClient;
 use crate::cli::args::{Cli, Command};
 use crate::cli::context::{
-    build_launch_overrides, init_configs, resolve_global_http_proxy, resolve_instruction_memo,
-    resolve_jupiter_api_proxy, resolve_jupiter_base_url, resolve_jupiter_defaults,
-    resolve_rpc_client, should_bypass_proxy,
+    init_configs, resolve_global_http_proxy, resolve_instruction_memo, resolve_rpc_client,
 };
-use crate::cli::jupiter::handle_jupiter_cmd;
 use crate::cli::lander::handle_lander_cmd;
 use crate::cli::strategy::{StrategyMode, run_strategy};
-use crate::config::AppConfig;
 use crate::config::launch::resources::{build_http_client_pool, build_http_client_with_options};
-use crate::jupiter::JupiterBinaryManager;
+use crate::config::{AppConfig, StrategyToggle};
 
 enum AggregatorContext {
-    Jupiter {
-        manager: JupiterBinaryManager,
-        api_client: JupiterApiClient,
-    },
     Dflow {
         api_client: DflowApiClient,
     },
@@ -45,80 +36,20 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             .map_err(|err| anyhow!(err))?;
     }
 
+    let blind_enabled = config
+        .galileo
+        .bot
+        .strategy_enabled(StrategyToggle::BlindStrategy);
+    let pure_enabled = config
+        .galileo
+        .bot
+        .strategy_enabled(StrategyToggle::PureBlindStrategy);
+    let copy_enabled = config
+        .galileo
+        .bot
+        .strategy_enabled(StrategyToggle::CopyStrategy);
+
     let aggregator = match config.galileo.engine.backend {
-        crate::config::EngineBackend::Jupiter => {
-            let jupiter_cfg =
-                resolve_jupiter_defaults(config.jupiter.clone(), &config.galileo.global)?;
-            let needs_jupiter = command_needs_jupiter(&cli.command, &config);
-
-            let launch_overrides =
-                build_launch_overrides(&config.galileo.engine.jupiter, &config.galileo.intermedium);
-            let base_url = resolve_jupiter_base_url(&config.galileo.bot, &jupiter_cfg);
-            let api_proxy = resolve_jupiter_api_proxy(&config.galileo.engine)
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty());
-            let global_proxy = resolve_global_http_proxy(&config.galileo.global)
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty());
-            let bypass_proxy = should_bypass_proxy(&base_url);
-
-            if let Some(proxy_url) = api_proxy.clone() {
-                if needs_jupiter {
-                    info!(
-                        target: "jupiter",
-                        proxy = %proxy_url,
-                        "Jupiter API 请求将通过配置的代理发送"
-                    );
-                }
-            } else if let Some(proxy_url) = global_proxy.clone() {
-                if needs_jupiter {
-                    info!(
-                        target: "jupiter",
-                        proxy = %proxy_url,
-                        "Jupiter API 请求将通过 global.proxy 发送"
-                    );
-                }
-            } else if bypass_proxy && needs_jupiter {
-                info!(
-                    target: "jupiter",
-                    base_url = %base_url,
-                    "Jupiter API 请求绕过 HTTP 代理"
-                );
-            }
-
-            let user_agent = crate::jupiter::updater::USER_AGENT;
-            let api_http_client = build_http_client_with_options(
-                api_proxy.as_deref(),
-                global_proxy.clone(),
-                bypass_proxy,
-                None,
-                Some(user_agent),
-            )?;
-            let api_client_pool = build_http_client_pool(
-                api_proxy.clone(),
-                global_proxy.clone(),
-                bypass_proxy,
-                Some(user_agent.to_string()),
-            );
-            let manager = JupiterBinaryManager::new(
-                jupiter_cfg,
-                launch_overrides,
-                config.galileo.bot.disable_local_binary,
-                config.galileo.bot.show_jupiter_logs,
-                needs_jupiter,
-            )?;
-            let api_client = JupiterApiClient::with_ip_pool(
-                api_http_client,
-                base_url,
-                &config.galileo.bot,
-                &config.galileo.global.logging,
-                Some(api_client_pool),
-            );
-            AggregatorContext::Jupiter {
-                manager,
-                api_client,
-            }
-        }
         crate::config::EngineBackend::Dflow => {
             let quote_base = config
                 .galileo
@@ -171,7 +102,7 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 api_http_client,
                 quote_base,
                 swap_base,
-                &config.galileo.bot,
+                &config.galileo.engine.time_out,
                 &config.galileo.global.logging,
                 Some(api_client_pool),
             );
@@ -179,11 +110,6 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         }
         crate::config::EngineBackend::Kamino => {
             let kamino_cfg = &config.galileo.engine.kamino;
-            if !kamino_cfg.enable {
-                return Err(anyhow!(
-                    "Kamino backend 已选择，但 engine.kamino.enable = false"
-                ));
-            }
             let quote_base = kamino_cfg
                 .api_quote_base
                 .as_ref()
@@ -231,11 +157,11 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 api_http_client,
                 quote_base,
                 swap_base,
-                &config.galileo.bot,
+                &config.galileo.engine.time_out,
                 &config.galileo.global.logging,
                 Some(api_client_pool),
             );
-            let resolved_rpc = resolve_rpc_client(&config.galileo.global)?;
+            let resolved_rpc = resolve_rpc_client(&config.galileo.global, None)?;
             let rpc_client = resolved_rpc.client.clone();
             AggregatorContext::Kamino {
                 api_client,
@@ -244,11 +170,6 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         }
         crate::config::EngineBackend::Ultra => {
             let ultra_cfg = &config.galileo.engine.ultra;
-            if !ultra_cfg.enable {
-                return Err(anyhow!(
-                    "Ultra backend 已选择，但 engine.ultra.enable = false"
-                ));
-            }
             let api_base = ultra_cfg
                 .api_quote_base
                 .as_ref()
@@ -258,7 +179,7 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             if api_base.is_empty() {
                 return Err(anyhow!("ultra.api_quote_base 不能为空"));
             }
-            let resolved_rpc = resolve_rpc_client(&config.galileo.global)?;
+            let resolved_rpc = resolve_rpc_client(&config.galileo.global, None)?;
             let rpc_client = resolved_rpc.client.clone();
             let ultra_proxy = ultra_cfg
                 .api_proxy
@@ -293,7 +214,7 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let api_client = UltraApiClient::with_ip_pool(
                 http_client,
                 api_base,
-                &config.galileo.bot,
+                &config.galileo.engine.time_out,
                 &config.galileo.global.logging,
                 Some(http_pool),
             );
@@ -304,12 +225,12 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         }
         crate::config::EngineBackend::MultiLegs => AggregatorContext::None,
         crate::config::EngineBackend::None => {
-            if config.galileo.blind_strategy.enable {
+            if blind_enabled {
                 return Err(anyhow!(
-                    "engine.backend=none 仅支持纯盲发或 copy 策略，请关闭 blind_strategy.enable"
+                    "engine.backend=none 仅支持纯盲发或 copy 策略，请从 bot.strategies.enabled 中移除 blind_strategy"
                 ));
             }
-            if !config.galileo.pure_blind_strategy.enable && !config.galileo.copy_strategy.enable {
+            if !pure_enabled && !copy_enabled {
                 warn!(
                     target: "runner",
                     "engine.backend=none 生效，但 pure_blind_strategy 与 copy_strategy 均未启用"
@@ -329,23 +250,6 @@ async fn dispatch(
 ) -> Result<()> {
     // 统一的命令分发入口，便于后续按子命令拆分到专门模块。
     match command {
-        Command::Jupiter(cmd) => match &aggregator {
-            AggregatorContext::Jupiter { manager, .. } => {
-                handle_jupiter_cmd(cmd, manager).await?;
-            }
-            AggregatorContext::Dflow { .. } => {
-                return Err(anyhow!("DFlow 后端不支持 Jupiter 子命令"));
-            }
-            AggregatorContext::Kamino { .. } => {
-                return Err(anyhow!("Kamino 后端不支持 Jupiter 子命令"));
-            }
-            AggregatorContext::Ultra { .. } => {
-                return Err(anyhow!("Ultra 后端不支持 Jupiter 子命令"));
-            }
-            AggregatorContext::None => {
-                return Err(anyhow!("engine.backend=none 下无法使用 Jupiter 子命令"));
-            }
-        },
         Command::Lander(cmd) => {
             handle_lander_cmd(
                 cmd,
@@ -356,16 +260,6 @@ async fn dispatch(
             .await?;
         }
         Command::Run => match &aggregator {
-            AggregatorContext::Jupiter {
-                manager,
-                api_client,
-            } => {
-                let backend = crate::cli::strategy::StrategyBackend::Jupiter {
-                    manager,
-                    api_client,
-                };
-                run_strategy(&config, &backend, StrategyMode::Live).await?;
-            }
             AggregatorContext::Dflow { api_client } => {
                 let backend = crate::cli::strategy::StrategyBackend::Dflow { api_client };
                 run_strategy(&config, &backend, StrategyMode::Live).await?;
@@ -396,16 +290,6 @@ async fn dispatch(
             }
         },
         Command::StrategyDryRun => match &aggregator {
-            AggregatorContext::Jupiter {
-                manager,
-                api_client,
-            } => {
-                let backend = crate::cli::strategy::StrategyBackend::Jupiter {
-                    manager,
-                    api_client,
-                };
-                run_strategy(&config, &backend, StrategyMode::DryRun).await?;
-            }
             AggregatorContext::Dflow { api_client } => {
                 let backend = crate::cli::strategy::StrategyBackend::Dflow { api_client };
                 run_strategy(&config, &backend, StrategyMode::DryRun).await?;
@@ -438,15 +322,8 @@ async fn dispatch(
         Command::Init(args) => {
             init_configs(args)?;
         }
+        Command::Wallet(_) => {}
     }
 
     Ok(())
-}
-
-fn command_needs_jupiter(command: &Command, config: &AppConfig) -> bool {
-    match command {
-        Command::Run | Command::StrategyDryRun => !config.galileo.pure_blind_strategy.enable,
-        Command::Jupiter(_) => true,
-        _ => false,
-    }
 }

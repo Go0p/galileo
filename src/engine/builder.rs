@@ -24,6 +24,7 @@ use crate::rpc::yellowstone::YellowstoneBlockhashClient;
 use super::aggregator::SwapInstructionsVariant;
 use super::error::{EngineError, EngineResult};
 use super::identity::EngineIdentity;
+use super::types::JitoTipPlan;
 
 #[derive(Clone)]
 pub struct BuilderConfig {
@@ -89,6 +90,7 @@ pub struct PreparedTransaction {
     pub tip_lamports: u64,
     pub instructions: Vec<Instruction>,
     pub lookup_accounts: Vec<AddressLookupTableAccount>,
+    pub jito_tip_plan: Option<JitoTipPlan>,
 }
 
 #[derive(Clone)]
@@ -154,8 +156,9 @@ impl TransactionBuilder {
         identity: &EngineIdentity,
         instructions: &SwapInstructionsVariant,
         tip_lamports: u64,
+        jito_tip_plan: Option<JitoTipPlan>,
     ) -> EngineResult<PreparedTransaction> {
-        self.build_with_options(identity, instructions, None, tip_lamports)
+        self.build_with_options(identity, instructions, None, tip_lamports, jito_tip_plan)
             .await
     }
 
@@ -165,9 +168,16 @@ impl TransactionBuilder {
         instructions: &SwapInstructionsVariant,
         sequence: Vec<Instruction>,
         tip_lamports: u64,
+        jito_tip_plan: Option<JitoTipPlan>,
     ) -> EngineResult<PreparedTransaction> {
-        self.build_with_options(identity, instructions, Some(sequence), tip_lamports)
-            .await
+        self.build_with_options(
+            identity,
+            instructions,
+            Some(sequence),
+            tip_lamports,
+            jito_tip_plan,
+        )
+        .await
     }
 
     async fn build_with_options(
@@ -176,6 +186,7 @@ impl TransactionBuilder {
         instructions: &SwapInstructionsVariant,
         override_sequence: Option<Vec<Instruction>>,
         tip_lamports: u64,
+        jito_tip_plan: Option<JitoTipPlan>,
     ) -> EngineResult<PreparedTransaction> {
         let lease = self
             .ip_allocator
@@ -193,6 +204,7 @@ impl TransactionBuilder {
                 instructions,
                 override_sequence,
                 tip_lamports,
+                jito_tip_plan.clone(),
                 &rpc,
             )
             .await;
@@ -214,6 +226,7 @@ impl TransactionBuilder {
         instructions: &SwapInstructionsVariant,
         override_sequence: Option<Vec<Instruction>>,
         tip_lamports: u64,
+        jito_tip_plan: Option<JitoTipPlan>,
         rpc: &Arc<RpcClient>,
     ) -> EngineResult<PreparedTransaction> {
         let lookup_accounts = if let Some(resolved) = Self::resolved_tables(instructions) {
@@ -282,6 +295,7 @@ impl TransactionBuilder {
             tip_lamports,
             instructions,
             lookup_accounts,
+            jito_tip_plan,
         })
     }
 

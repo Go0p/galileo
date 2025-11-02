@@ -14,6 +14,7 @@ use crate::dexes::{
     framework::{DexMarketMeta, DexMetaProvider, SwapFlow},
     humidifi::{HUMIDIFI_PROGRAM_ID, HumidiFiAdapter},
     obric_v2::{OBRIC_V2_PROGRAM_ID, ObricV2Adapter},
+    saros::{SAROS_PROGRAM_ID, SarosAdapter},
     solfi_v2::{SOLFI_V2_PROGRAM_ID, SolFiV2Adapter},
     tessera_v::{TESSERA_V_PROGRAM_ID, TesseraVAdapter},
     whirlpool::{ORCA_WHIRLPOOL_PROGRAM_ID, WhirlpoolAdapter},
@@ -1158,6 +1159,23 @@ impl<'a> PureBlindRouteBuilder<'a> {
             });
         }
 
+        if account.owner == SAROS_PROGRAM_ID {
+            let adapter = SarosAdapter::shared();
+            let meta = adapter
+                .fetch_market_meta(self.rpc_client, market, account)
+                .await
+                .map_err(|err| {
+                    EngineError::InvalidConfig(format!("Saros 市场 {market} 解码失败: {err}"))
+                })?;
+            return Ok(ResolvedMarketMeta {
+                dex: BlindDex::Saros,
+                market,
+                base_asset: BlindAsset::new(meta.base_mint(), meta.base_token_program()),
+                quote_asset: BlindAsset::new(meta.quote_mint(), meta.quote_token_program()),
+                meta: BlindMarketMeta::Saros(meta),
+            });
+        }
+
         if account.owner == SOLFI_V2_PROGRAM_ID {
             let adapter = SolFiV2Adapter::shared();
             let meta = adapter
@@ -1387,7 +1405,7 @@ impl Strategy for PureBlindStrategy {
 
                 for route in &self.routes {
                     if let Some(first_step) = route.forward.first() {
-                        if let Some(amounts) = ctx.take_amounts_if_ready(&first_step.input.mint) {
+                        if let Some(amounts) = ctx.take_amounts(&first_step.input.mint) {
                             if amounts.is_empty() {
                                 continue;
                             }
@@ -1433,7 +1451,7 @@ impl Strategy for PureBlindStrategy {
 
                 StrategyDecision {
                     action: Action::DispatchBlind(batch),
-                    next_ready_in: ctx.next_ready_delay(),
+                    next_ready_in: None,
                 }
             }
         }

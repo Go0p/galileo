@@ -7,20 +7,21 @@ use anyhow::{Result, anyhow};
 use tracing::{debug, info, warn};
 
 use crate::api::dflow::DflowApiClient;
-use crate::api::jupiter::JupiterApiClient;
 use crate::api::kamino::KaminoApiClient;
 use crate::api::titan::TitanSubscriptionConfig;
 use crate::api::ultra::UltraApiClient;
 use crate::cache::AltCache;
 use crate::cli::context::{
-    resolve_global_http_proxy, resolve_instruction_memo, resolve_rpc_client,
+    DryRunMode, resolve_global_http_proxy, resolve_instruction_memo, resolve_rpc_client,
 };
 use crate::config;
 use crate::config::launch::resources::{
     build_http_client_pool, build_http_client_with_options, build_ip_allocator,
     build_rpc_client_pool,
 };
-use crate::config::{AppConfig, IntermediumConfig, LegRole, QuoteParallelism};
+use crate::config::{
+    AppConfig, EngineLegBackend, FlashloanProduct, IntermediumConfig, LegRole, StrategyToggle,
+};
 use crate::engine::multi_leg::{
     orchestrator::MultiLegOrchestrator,
     providers::{
@@ -34,12 +35,12 @@ use crate::engine::multi_leg::{
 };
 use crate::engine::plugins::flashloan::{MarginfiAccountRegistry, MarginfiFlashloanManager};
 use crate::engine::{
-    AccountPrechecker, BuilderConfig, ComputeUnitPriceMode, EngineError, EngineIdentity,
-    EngineResult, EngineSettings, LighthouseSettings, MultiLegEngineContext, ProfitConfig,
-    ProfitEvaluator, QuoteConfig, QuoteExecutor, Scheduler, StrategyEngine, SwapPreparer,
-    TipConfig, TradeProfile, TransactionBuilder,
+    AccountPrechecker, BuilderConfig, ComputeUnitPriceMode, ConsoleSummarySettings, EngineError,
+    EngineIdentity, EngineResult, EngineSettings, LighthouseSettings, MultiLegEngineContext,
+    ProfitConfig, ProfitEvaluator, QuoteCadence, QuoteConfig, QuoteExecutor, Scheduler,
+    SolPriceFeedSettings, StrategyEngine, SwapPreparer, TipConfig, TradeProfile,
+    TransactionBuilder,
 };
-use crate::jupiter::{JupiterBinaryManager, JupiterError};
 use crate::lander::LanderFactory;
 use crate::monitoring::events;
 use crate::network::IpAllocator;
@@ -59,10 +60,6 @@ pub enum StrategyMode {
 }
 
 pub enum StrategyBackend<'a> {
-    Jupiter {
-        manager: &'a JupiterBinaryManager,
-        api_client: &'a JupiterApiClient,
-    },
     Dflow {
         api_client: &'a DflowApiClient,
     },
@@ -77,86 +74,99 @@ pub enum StrategyBackend<'a> {
     None,
 }
 
-const DEFAULT_PROCESS_DELAY_MS: u64 = 200;
-
 /// 主策略入口，按配置在盲发与 copy 之间切换。
 pub async fn run_strategy(
     config: &AppConfig,
     backend: &StrategyBackend<'_>,
     mode: StrategyMode,
 ) -> Result<()> {
-    let dry_run = matches!(mode, StrategyMode::DryRun) || config.galileo.bot.dry_run;
+    let dry_run_mode = DryRunMode::from_sources(
+        matches!(mode, StrategyMode::DryRun),
+        &config.galileo.bot.dry_run,
+    )?;
 
-    if config.galileo.copy_strategy.enable {
-        if config.galileo.blind_strategy.enable || config.galileo.pure_blind_strategy.enable {
+    let blind_enabled = config
+        .galileo
+        .bot
+        .strategy_enabled(StrategyToggle::BlindStrategy);
+    let pure_enabled = config
+        .galileo
+        .bot
+        .strategy_enabled(StrategyToggle::PureBlindStrategy);
+    let copy_enabled = config
+        .galileo
+        .bot
+        .strategy_enabled(StrategyToggle::CopyStrategy);
+
+    if copy_enabled {
+        if blind_enabled || pure_enabled {
             warn!(
                 target: "strategy",
-                "copy_strategy 启用，将忽略 blind/pure 配置"
+                "copy_strategy 已启用，其余策略配置将被忽略"
             );
         }
-        return run_copy_strategy(config, backend, mode).await;
+        return run_copy_strategy(config, backend, &dry_run_mode).await;
     }
 
     match config.galileo.engine.backend {
         crate::config::EngineBackend::MultiLegs => {
-            if !config.galileo.blind_strategy.enable {
+            if !blind_enabled {
                 return Err(anyhow!(
-                    "multi-legs 模式暂需 blind_strategy.enable = true 以提供 trade pair 配置"
+                    "multi-legs 模式暂需在 bot.strategies.enabled 中启用 blind_strategy 以提供 trade pair 配置"
                 ));
             }
-            run_blind_engine(config, backend, dry_run, true).await
+            run_blind_engine(config, backend, &dry_run_mode, true).await
         }
         crate::config::EngineBackend::None => {
-            if config.galileo.blind_strategy.enable {
+            if blind_enabled {
                 return Err(anyhow!(
-                    "engine.backend=none 仅支持纯盲发或 copy 策略，请关闭 blind_strategy.enable"
+                    "engine.backend=none 仅支持纯盲发或 copy 策略，请从 bot.strategies.enabled 中移除 blind_strategy"
                 ));
             }
-            let pure_config = &config.galileo.pure_blind_strategy;
-            if !pure_config.enable {
+            if !pure_enabled {
                 warn!(
                     target: "strategy",
                     "纯盲发策略未启用，且 copy_strategy 也为关闭状态，直接退出"
                 );
                 return Ok(());
             }
-            run_pure_blind_engine(config, backend, dry_run).await
+            run_pure_blind_engine(config, backend, &dry_run_mode).await
         }
-        _ => {
-            let blind_config = &config.galileo.blind_strategy;
-            let pure_config = &config.galileo.pure_blind_strategy;
-
-            match (blind_config.enable, pure_config.enable) {
-                (false, false) => {
-                    warn!(target: "strategy", "盲发策略未启用，直接退出");
-                    Ok(())
-                }
-                (true, true) => Err(anyhow!(
-                    "blind_strategy.enable 与 pure_blind_strategy.enable 不能同时为 true"
-                )),
-                (true, false) => run_blind_engine(config, backend, dry_run, false).await,
-                (false, true) => run_pure_blind_engine(config, backend, dry_run).await,
+        _ => match (blind_enabled, pure_enabled) {
+            (false, false) => {
+                warn!(target: "strategy", "盲发策略未启用，直接退出");
+                Ok(())
             }
-        }
+            (true, true) => Err(anyhow!(
+                "bot.strategies.enabled 中 blind_strategy 与 pure_blind_strategy 不能同时启用"
+            )),
+            (true, false) => run_blind_engine(config, backend, &dry_run_mode, false).await,
+            (false, true) => run_pure_blind_engine(config, backend, &dry_run_mode).await,
+        },
     }
 }
 
 async fn run_blind_engine(
     config: &AppConfig,
     backend: &StrategyBackend<'_>,
-    dry_run: bool,
+    dry_run: &DryRunMode,
     multi_leg_mode: bool,
 ) -> Result<()> {
     let blind_config = &config.galileo.blind_strategy;
+    let dry_run_enabled = dry_run.is_enabled();
 
-    if !blind_config.enable {
+    if !config
+        .galileo
+        .bot
+        .strategy_enabled(StrategyToggle::BlindStrategy)
+    {
         warn!(target: "strategy", "盲发策略未启用，直接退出");
         return Ok(());
     }
 
     let compute_unit_price_mode = derive_compute_unit_price_mode(&config.lander.lander);
 
-    let resolved_rpc = resolve_rpc_client(&config.galileo.global)?;
+    let resolved_rpc = resolve_rpc_client(&config.galileo.global, dry_run.rpc_override())?;
     let rpc_client = resolved_rpc.client.clone();
     let rpc_endpoints = resolved_rpc.endpoints.clone();
     let mut identity =
@@ -173,24 +183,22 @@ async fn run_blind_engine(
             Arc::clone(&ip_allocator),
             alt_cache.clone(),
         )?);
-        log_multi_leg_init(runtime.as_ref(), dry_run);
+        log_multi_leg_init(runtime.as_ref(), dry_run_enabled);
         Some(runtime)
     } else {
         None
     };
 
-    let (quote_executor, swap_preparer, quote_defaults_tuple, jupiter_started) =
-        prepare_swap_components(
-            config,
-            backend,
-            &mut identity,
-            &compute_unit_price_mode,
-            true,
-            alt_cache.clone(),
-        )
-        .await?;
+    let (quote_executor, swap_preparer, quote_defaults_tuple) = prepare_swap_components(
+        config,
+        backend,
+        &mut identity,
+        &compute_unit_price_mode,
+        alt_cache.clone(),
+    )
+    .await?;
 
-    let (only_direct_default, restrict_default) = quote_defaults_tuple;
+    let (only_direct_default, _) = quote_defaults_tuple;
     let allocator_summary = ip_allocator.summary();
     let per_ip_capacity = allocator_summary.per_ip_inflight_limit.unwrap_or(1).max(1);
     let ip_capacity_hint = allocator_summary
@@ -226,14 +234,13 @@ async fn run_blind_engine(
         &config.lander.lander,
         &compute_unit_price_mode,
     );
-    let quote_config =
-        build_blind_quote_config(blind_config, only_direct_default, restrict_default);
+    let quote_config = build_blind_quote_config(blind_config, only_direct_default);
     tracing::info!(
         target: "engine::config",
         dex_whitelist = ?quote_config.dex_whitelist,
         "盲发策略 DEX 白名单"
     );
-    let landing_timeout = resolve_landing_timeout(&config.galileo.bot);
+    let landing_timeout = resolve_landing_timeout(&config.galileo.engine.time_out);
 
     let builder_config =
         BuilderConfig::new(resolve_instruction_memo(&config.galileo.global.instruction))
@@ -242,7 +249,11 @@ async fn run_blind_engine(
                 config.galileo.global.yellowstone_grpc_token.clone(),
                 config.galileo.bot.get_block_hash_by_grpc,
             );
-    let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+    let global_proxy = if dry_run_enabled {
+        None
+    } else {
+        resolve_global_http_proxy(&config.galileo.global)
+    };
     let rpc_client_pool = build_rpc_client_pool(rpc_endpoints.clone(), global_proxy.clone());
     let mut submission_builder = reqwest::Client::builder();
     if let Some(proxy_url) = global_proxy.as_ref() {
@@ -264,14 +275,15 @@ async fn run_blind_engine(
 
     let marginfi_cfg = &config.galileo.flashloan.marginfi;
     let marginfi_accounts = parse_marginfi_accounts(marginfi_cfg)?;
+    let flashloan_enabled = config
+        .galileo
+        .bot
+        .flashloan_enabled(FlashloanProduct::Marginfi);
+    let prefer_wallet_balance = config.galileo.bot.flashloan.prefer_wallet_balance;
 
     let prechecker = AccountPrechecker::new(rpc_client.clone(), marginfi_accounts.clone());
     let (summary, flashloan_precheck) = prechecker
-        .ensure_accounts(
-            &identity,
-            &trade_pairs,
-            config.galileo.flashloan.marginfi.enable,
-        )
+        .ensure_accounts(&identity, &trade_pairs, flashloan_enabled)
         .await
         .map_err(|err| anyhow!(err))?;
     let skipped = summary.total_mints.saturating_sub(summary.processed_mints);
@@ -304,8 +316,13 @@ async fn run_blind_engine(
         }
     }
 
-    let mut flashloan_manager =
-        MarginfiFlashloanManager::new(marginfi_cfg, rpc_client.clone(), marginfi_accounts.clone());
+    let mut flashloan_manager = MarginfiFlashloanManager::new(
+        marginfi_cfg,
+        flashloan_enabled,
+        prefer_wallet_balance,
+        rpc_client.clone(),
+        marginfi_accounts.clone(),
+    );
     let mut flashloan_precheck = flashloan_precheck;
     if let Some(prep) = flashloan_precheck.clone() {
         flashloan_manager.adopt_preparation(prep);
@@ -327,11 +344,21 @@ async fn run_blind_engine(
     );
     let default_landers = ["rpc"];
 
+    let requested_landers: Vec<String> = if dry_run_enabled {
+        info!(
+            target: "strategy",
+            "dry-run 模式：落地器列表已覆盖为仅使用 RPC"
+        );
+        vec!["rpc".to_string()]
+    } else {
+        blind_config.enable_landers.clone()
+    };
+
     let lander_stack = Arc::new(
         lander_factory
             .build_stack(
                 &config.lander.lander,
-                &blind_config.enable_landers,
+                &requested_landers,
                 &default_landers,
                 0,
                 Arc::clone(&ip_allocator),
@@ -339,8 +366,7 @@ async fn run_blind_engine(
             .map_err(|err| anyhow!(err))?,
     );
 
-    let (quote_parallelism, quote_batch_interval) =
-        resolve_quote_dispatch_config(&config.galileo.engine, backend);
+    let quote_cadence = resolve_quote_cadence(&config.galileo.engine, backend);
 
     let mut lighthouse_settings = parse_lighthouse_settings(&config.galileo.bot.light_house)?;
     if lighthouse_settings.enable {
@@ -361,15 +387,19 @@ async fn run_blind_engine(
         lighthouse_settings.existing_memory_ids = existing_memory_ids;
     }
 
+    let console_summary_settings = ConsoleSummarySettings {
+        enable: config.galileo.engine.console_summary.enable,
+    };
+
     let engine_settings = EngineSettings::new(quote_config)
-        .with_quote_parallelism(quote_parallelism)
-        .with_quote_batch_interval(quote_batch_interval)
+        .with_quote_cadence(quote_cadence)
         .with_dispatch_strategy(config.lander.lander.sending_strategy)
         .with_landing_timeout(landing_timeout)
-        .with_dry_run(dry_run)
+        .with_dry_run(dry_run_enabled)
         .with_cu_multiplier(1.0)
         .with_compute_unit_price_mode(compute_unit_price_mode.clone())
-        .with_lighthouse(lighthouse_settings);
+        .with_lighthouse(lighthouse_settings)
+        .with_console_summary(console_summary_settings);
 
     let strategy_engine = StrategyEngine::new(
         BlindStrategy::new(),
@@ -377,7 +407,7 @@ async fn run_blind_engine(
         identity,
         ip_allocator,
         quote_executor,
-        ProfitEvaluator::new(profit_config),
+        ProfitEvaluator::new(profit_config, config.galileo.bot.network.enable_multiple_ip),
         swap_preparer,
         tx_builder,
         Scheduler::new(),
@@ -390,18 +420,6 @@ async fn run_blind_engine(
     drive_engine(strategy_engine)
         .await
         .map_err(|err| anyhow!(err))?;
-
-    if jupiter_started {
-        if let StrategyBackend::Jupiter { manager, .. } = backend {
-            if let Err(err) = manager.stop().await {
-                warn!(
-                    target: "strategy",
-                    error = %err,
-                    "停止 Jupiter 二进制失败"
-                );
-            }
-        }
-    }
 
     Ok(())
 }
@@ -488,13 +506,25 @@ fn register_ultra_leg(
     identity: &EngineIdentity,
 ) -> Result<()> {
     let ultra_cfg = &config.galileo.engine.ultra;
-    if !ultra_cfg.enable {
-        return Ok(());
-    }
-
     let leg = ultra_cfg
         .leg
         .ok_or_else(|| anyhow!("ultra.leg 必须在 multi-legs 模式下配置"))?;
+
+    let leg_allowed = match leg {
+        LegRole::Buy => config
+            .galileo
+            .bot
+            .engines
+            .buy_leg_enabled(EngineLegBackend::Ultra),
+        LegRole::Sell => config
+            .galileo
+            .bot
+            .engines
+            .sell_leg_enabled(EngineLegBackend::Ultra),
+    };
+    if !leg_allowed {
+        return Ok(());
+    }
     let api_base = ultra_cfg
         .api_quote_base
         .as_ref()
@@ -527,7 +557,7 @@ fn register_ultra_leg(
     let ultra_client = UltraApiClient::with_ip_pool(
         http_client,
         api_base,
-        &config.galileo.bot,
+        &config.galileo.engine.time_out,
         &config.galileo.global.logging,
         Some(http_pool),
     );
@@ -561,13 +591,25 @@ fn register_ultra_leg(
 
 fn register_dflow_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfig) -> Result<()> {
     let dflow_cfg = &config.galileo.engine.dflow;
-    if !dflow_cfg.enable {
-        return Ok(());
-    }
-
     let leg = dflow_cfg
         .leg
         .ok_or_else(|| anyhow!("dflow.leg 必须在 multi-legs 模式下配置"))?;
+
+    let leg_allowed = match leg {
+        LegRole::Buy => config
+            .galileo
+            .bot
+            .engines
+            .buy_leg_enabled(EngineLegBackend::Dflow),
+        LegRole::Sell => config
+            .galileo
+            .bot
+            .engines
+            .sell_leg_enabled(EngineLegBackend::Dflow),
+    };
+    if !leg_allowed {
+        return Ok(());
+    }
     let quote_base = dflow_cfg
         .api_quote_base
         .as_ref()
@@ -606,7 +648,7 @@ fn register_dflow_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
         http_client,
         quote_base,
         swap_base,
-        &config.galileo.bot,
+        &config.galileo.engine.time_out,
         &config.galileo.global.logging,
         Some(http_pool),
     );
@@ -630,13 +672,25 @@ fn register_kamino_leg(
     alt_cache: AltCache,
 ) -> Result<()> {
     let kamino_cfg = &config.galileo.engine.kamino;
-    if !kamino_cfg.enable {
-        return Ok(());
-    }
-
     let leg = kamino_cfg
         .leg
         .ok_or_else(|| anyhow!("kamino.leg 必须在 multi-legs 模式下配置"))?;
+
+    let leg_allowed = match leg {
+        LegRole::Buy => config
+            .galileo
+            .bot
+            .engines
+            .buy_leg_enabled(EngineLegBackend::Kamino),
+        LegRole::Sell => config
+            .galileo
+            .bot
+            .engines
+            .sell_leg_enabled(EngineLegBackend::Kamino),
+    };
+    if !leg_allowed {
+        return Ok(());
+    }
     let quote_base = kamino_cfg
         .api_quote_base
         .as_ref()
@@ -675,7 +729,7 @@ fn register_kamino_leg(
         http_client,
         quote_base,
         swap_base,
-        &config.galileo.bot,
+        &config.galileo.engine.time_out,
         &config.galileo.global.logging,
         Some(http_pool),
     );
@@ -719,17 +773,35 @@ fn parse_lighthouse_settings(cfg: &config::LightHouseBotConfig) -> Result<Lighth
         .memory_slots
         .and_then(|value| if value == 0 { None } else { Some(value) });
 
+    let sol_price_feed = cfg.sol_price_feed.as_ref().and_then(|feed| {
+        let url = feed.url.trim();
+        if url.is_empty() {
+            None
+        } else {
+            Some(SolPriceFeedSettings {
+                url: url.to_string(),
+                refresh: Duration::from_millis(feed.refresh_ms.max(1)),
+            })
+        }
+    });
+
     Ok(LighthouseSettings {
         enable: true,
         profit_guard_mints: mints,
         memory_slots,
         existing_memory_ids: Vec::new(),
+        sol_price_feed,
     })
 }
 
 fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfig) -> Result<()> {
     let titan_cfg = &config.galileo.engine.titan;
-    if !titan_cfg.enable {
+    if !config
+        .galileo
+        .bot
+        .engines
+        .buy_leg_enabled(EngineLegBackend::Titan)
+    {
         return Ok(());
     }
 
@@ -831,78 +903,63 @@ fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
     Ok(())
 }
 
-fn resolve_quote_dispatch_config(
+fn resolve_quote_cadence(
     engine: &config::EngineConfig,
     backend: &StrategyBackend<'_>,
-) -> (Option<u16>, Duration) {
+) -> QuoteCadence {
     match backend {
-        StrategyBackend::Jupiter { .. } => (
-            parallelism_override(engine.jupiter.quote_config.parallelism),
-            batch_interval_duration(engine.jupiter.quote_config.batch_interval_ms),
-        ),
-        StrategyBackend::Dflow { .. } => (
-            parallelism_override(engine.dflow.quote_config.parallelism),
-            batch_interval_duration(engine.dflow.quote_config.batch_interval_ms),
-        ),
-        StrategyBackend::Kamino { .. } => (
-            parallelism_override(engine.kamino.quote_config.parallelism),
-            batch_interval_duration(engine.kamino.quote_config.batch_interval_ms),
-        ),
-        StrategyBackend::Ultra { .. } => (
-            parallelism_override(engine.ultra.quote_config.parallelism),
-            batch_interval_duration(engine.ultra.quote_config.batch_interval_ms),
-        ),
-        StrategyBackend::None => (parallelism_override(QuoteParallelism::Auto), Duration::ZERO),
+        StrategyBackend::Dflow { .. } => {
+            QuoteCadence::from_config(&engine.dflow.quote_config.cadence)
+        }
+        StrategyBackend::Kamino { .. } => {
+            QuoteCadence::from_config(&engine.kamino.quote_config.cadence)
+        }
+        StrategyBackend::Ultra { .. } => {
+            QuoteCadence::from_config(&engine.ultra.quote_config.cadence)
+        }
+        StrategyBackend::None => QuoteCadence::default(),
     }
-}
-
-fn parallelism_override(value: QuoteParallelism) -> Option<u16> {
-    match value {
-        QuoteParallelism::Auto => None,
-        QuoteParallelism::Fixed(limit) => Some(limit.max(1)),
-    }
-}
-
-fn batch_interval_duration(value: Option<u64>) -> Duration {
-    value.map(Duration::from_millis).unwrap_or(Duration::ZERO)
 }
 
 async fn run_pure_blind_engine(
     config: &AppConfig,
     backend: &StrategyBackend<'_>,
-    dry_run: bool,
+    dry_run: &DryRunMode,
 ) -> Result<()> {
     let pure_config = &config.galileo.pure_blind_strategy;
-    if !pure_config.enable {
+    if !config
+        .galileo
+        .bot
+        .strategy_enabled(StrategyToggle::PureBlindStrategy)
+    {
         warn!(target: "strategy", "纯盲发策略未启用，直接退出");
         return Ok(());
     }
 
+    let dry_run_enabled = dry_run.is_enabled();
     let compute_unit_price_mode = derive_compute_unit_price_mode(&config.lander.lander);
 
-    let resolved_rpc = resolve_rpc_client(&config.galileo.global)?;
+    let resolved_rpc = resolve_rpc_client(&config.galileo.global, dry_run.rpc_override())?;
     let rpc_client = resolved_rpc.client.clone();
     let rpc_endpoints = resolved_rpc.endpoints.clone();
     let mut identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
     let alt_cache = AltCache::new();
 
-    let (quote_executor, swap_preparer, _unused_defaults, jupiter_started) =
-        prepare_swap_components(
-            config,
-            backend,
-            &mut identity,
-            &compute_unit_price_mode,
-            false,
-            alt_cache.clone(),
-        )
-        .await?;
+    let (quote_executor, swap_preparer, _unused_defaults) = prepare_swap_components(
+        config,
+        backend,
+        &mut identity,
+        &compute_unit_price_mode,
+        alt_cache.clone(),
+    )
+    .await?;
 
     let trade_pairs = build_pure_trade_pairs(pure_config)?;
     let trade_profiles = build_pure_trade_profiles(pure_config)?;
     let profit_config = build_pure_profit_config(&config.lander.lander, &compute_unit_price_mode);
     let quote_config = build_pure_quote_config();
-    let landing_timeout = resolve_landing_timeout(&config.galileo.bot);
+    let landing_timeout = resolve_landing_timeout(&config.galileo.engine.time_out);
     let ip_allocator = build_ip_allocator(&config.galileo.bot.network)?;
 
     let builder_config =
@@ -912,7 +969,11 @@ async fn run_pure_blind_engine(
                 config.galileo.global.yellowstone_grpc_token.clone(),
                 config.galileo.bot.get_block_hash_by_grpc,
             );
-    let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+    let global_proxy = if dry_run_enabled {
+        None
+    } else {
+        resolve_global_http_proxy(&config.galileo.global)
+    };
     let rpc_client_pool = build_rpc_client_pool(rpc_endpoints.clone(), global_proxy.clone());
     let mut submission_builder = reqwest::Client::builder();
     if let Some(proxy_url) = global_proxy.as_ref() {
@@ -951,14 +1012,15 @@ async fn run_pure_blind_engine(
 
     let marginfi_cfg = &config.galileo.flashloan.marginfi;
     let marginfi_accounts = parse_marginfi_accounts(marginfi_cfg)?;
+    let flashloan_enabled = config
+        .galileo
+        .bot
+        .flashloan_enabled(FlashloanProduct::Marginfi);
+    let prefer_wallet_balance = config.galileo.bot.flashloan.prefer_wallet_balance;
 
     let prechecker = AccountPrechecker::new(rpc_client.clone(), marginfi_accounts.clone());
     let (summary, flashloan_precheck) = prechecker
-        .ensure_accounts(
-            &identity,
-            &trade_pairs,
-            config.galileo.flashloan.marginfi.enable,
-        )
+        .ensure_accounts(&identity, &trade_pairs, flashloan_enabled)
         .await
         .map_err(|err| anyhow!(err))?;
     let skipped = summary.total_mints.saturating_sub(summary.processed_mints);
@@ -991,8 +1053,13 @@ async fn run_pure_blind_engine(
         }
     }
 
-    let mut flashloan_manager =
-        MarginfiFlashloanManager::new(marginfi_cfg, rpc_client.clone(), marginfi_accounts.clone());
+    let mut flashloan_manager = MarginfiFlashloanManager::new(
+        marginfi_cfg,
+        flashloan_enabled,
+        prefer_wallet_balance,
+        rpc_client.clone(),
+        marginfi_accounts.clone(),
+    );
     let mut flashloan_precheck = flashloan_precheck;
     if let Some(prep) = flashloan_precheck.clone() {
         flashloan_manager.adopt_preparation(prep);
@@ -1014,11 +1081,21 @@ async fn run_pure_blind_engine(
     );
     let default_landers = ["rpc"];
 
+    let requested_landers: Vec<String> = if dry_run_enabled {
+        info!(
+            target: "strategy",
+            "dry-run 模式：纯盲发落地器已覆盖为仅使用 RPC"
+        );
+        vec!["rpc".to_string()]
+    } else {
+        pure_config.enable_landers.clone()
+    };
+
     let lander_stack = Arc::new(
         lander_factory
             .build_stack(
                 &config.lander.lander,
-                &pure_config.enable_landers,
+                &requested_landers,
                 &default_landers,
                 0,
                 Arc::clone(&ip_allocator),
@@ -1026,17 +1103,19 @@ async fn run_pure_blind_engine(
             .map_err(|err| anyhow!(err))?,
     );
 
-    let (quote_parallelism, quote_batch_interval) =
-        resolve_quote_dispatch_config(&config.galileo.engine, backend);
+    let quote_cadence = resolve_quote_cadence(&config.galileo.engine, backend);
+    let console_summary_settings = ConsoleSummarySettings {
+        enable: config.galileo.engine.console_summary.enable,
+    };
 
     let engine_settings = EngineSettings::new(quote_config)
-        .with_quote_parallelism(quote_parallelism)
-        .with_quote_batch_interval(quote_batch_interval)
+        .with_quote_cadence(quote_cadence)
         .with_dispatch_strategy(config.lander.lander.sending_strategy)
         .with_landing_timeout(landing_timeout)
-        .with_dry_run(dry_run)
+        .with_dry_run(dry_run_enabled)
         .with_cu_multiplier(pure_config.cu_multiplier)
-        .with_compute_unit_price_mode(compute_unit_price_mode.clone());
+        .with_compute_unit_price_mode(compute_unit_price_mode.clone())
+        .with_console_summary(console_summary_settings);
 
     let routes = PureBlindRouteBuilder::new(pure_config, rpc_client.as_ref(), &market_cache_handle)
         .build()
@@ -1049,7 +1128,7 @@ async fn run_pure_blind_engine(
         identity,
         ip_allocator,
         quote_executor,
-        ProfitEvaluator::new(profit_config),
+        ProfitEvaluator::new(profit_config, config.galileo.bot.network.enable_multiple_ip),
         swap_preparer,
         tx_builder,
         Scheduler::new(),
@@ -1063,18 +1142,6 @@ async fn run_pure_blind_engine(
         .await
         .map_err(|err| anyhow!(err))?;
 
-    if jupiter_started {
-        if let StrategyBackend::Jupiter { manager, .. } = backend {
-            if let Err(err) = manager.stop().await {
-                warn!(
-                    target: "strategy",
-                    error = %err,
-                    "停止 Jupiter 二进制失败"
-                );
-            }
-        }
-    }
-
     Ok(())
 }
 
@@ -1083,71 +1150,11 @@ async fn prepare_swap_components(
     backend: &StrategyBackend<'_>,
     identity: &mut EngineIdentity,
     compute_unit_price_mode: &Option<ComputeUnitPriceMode>,
-    start_local_jupiter: bool,
     alt_cache: AltCache,
-) -> Result<(QuoteExecutor, SwapPreparer, (bool, bool), bool)> {
+) -> Result<(QuoteExecutor, SwapPreparer, (bool, bool))> {
     match backend {
-        StrategyBackend::Jupiter {
-            manager,
-            api_client,
-        } => {
-            let mut jupiter_started = false;
-            if start_local_jupiter {
-                if !manager.disable_local_binary {
-                    match manager.start(false).await {
-                        Ok(()) => {
-                            info!(target: "strategy", "已启动本地 Jupiter 二进制");
-                            jupiter_started = true;
-                        }
-                        Err(JupiterError::AlreadyRunning) => {
-                            info!(target: "strategy", "本地 Jupiter 二进制已在运行");
-                            jupiter_started = true;
-                        }
-                        Err(err) => return Err(err.into()),
-                    }
-                } else {
-                    info!(
-                        target: "strategy",
-                        "已禁用本地 Jupiter 二进制，将使用远端 API"
-                    );
-                }
-            } else {
-                info!(
-                    target: "strategy",
-                    "跳过本地 Jupiter 二进制启动（纯盲发模式）"
-                );
-            }
-
-            identity.set_skip_user_accounts_rpc_calls(
-                config
-                    .galileo
-                    .engine
-                    .jupiter
-                    .swap_config
-                    .skip_user_accounts_rpc_calls,
-            );
-
-            let quote_defaults_cfg = config.galileo.engine.jupiter.quote_config.clone();
-            let swap_defaults_cfg = config.galileo.engine.jupiter.swap_config.clone();
-            let quote_executor =
-                QuoteExecutor::for_jupiter((*api_client).clone(), quote_defaults_cfg.clone());
-            let swap_preparer = SwapPreparer::for_jupiter(
-                (*api_client).clone(),
-                swap_defaults_cfg.clone(),
-                compute_unit_price_mode.clone(),
-            );
-            Ok((
-                quote_executor,
-                swap_preparer,
-                (
-                    quote_defaults_cfg.only_direct_routes,
-                    quote_defaults_cfg.restrict_intermediate_tokens,
-                ),
-                jupiter_started,
-            ))
-        }
         StrategyBackend::Dflow { api_client } => {
-            info!(target: "strategy", "使用 DFlow 聚合器，不启动本地 Jupiter 二进制");
+            info!(target: "strategy", "使用 DFlow 聚合器");
             identity.set_skip_user_accounts_rpc_calls(false);
 
             let dflow_quote_cfg = config.galileo.engine.dflow.quote_config.clone();
@@ -1162,7 +1169,6 @@ async fn prepare_swap_components(
                 quote_executor,
                 swap_preparer,
                 (dflow_quote_cfg.only_direct_routes, true),
-                false,
             ))
         }
         StrategyBackend::Kamino {
@@ -1181,7 +1187,7 @@ async fn prepare_swap_components(
                 compute_unit_price_mode.clone(),
                 alt_cache.clone(),
             );
-            Ok((quote_executor, swap_preparer, (false, false), false))
+            Ok((quote_executor, swap_preparer, (false, false)))
         }
         StrategyBackend::Ultra {
             api_client,
@@ -1197,13 +1203,13 @@ async fn prepare_swap_components(
                 compute_unit_price_mode.clone(),
                 alt_cache.clone(),
             );
-            Ok((quote_executor, swap_preparer, (true, true), false))
+            Ok((quote_executor, swap_preparer, (true, true)))
         }
         StrategyBackend::None => {
             identity.set_skip_user_accounts_rpc_calls(false);
             let quote_executor = QuoteExecutor::disabled();
             let swap_preparer = SwapPreparer::disabled();
-            Ok((quote_executor, swap_preparer, (true, true), false))
+            Ok((quote_executor, swap_preparer, (true, true)))
         }
     }
 }
@@ -1364,7 +1370,6 @@ fn build_blind_trade_profiles(
     #[derive(Clone)]
     struct BaseState {
         mint: Pubkey,
-        process_delay: Duration,
         lane_indices: Vec<usize>,
     }
 
@@ -1398,12 +1403,6 @@ fn build_blind_trade_profiles(
                 "盲发策略中 mint `{mint_str}` 未配置任何 lane"
             )));
         }
-
-        let delay_ms = base
-            .process_delay
-            .unwrap_or(DEFAULT_PROCESS_DELAY_MS)
-            .max(1);
-        let process_delay = Duration::from_millis(delay_ms);
 
         let mut lane_indices = Vec::with_capacity(base.lanes.len());
 
@@ -1453,11 +1452,7 @@ fn build_blind_trade_profiles(
             });
         }
 
-        base_states.push(BaseState {
-            mint,
-            process_delay,
-            lane_indices,
-        });
+        base_states.push(BaseState { mint, lane_indices });
     }
 
     if base_states.is_empty() {
@@ -1579,13 +1574,7 @@ fn build_blind_trade_profiles(
         }
 
         if per_mint
-            .insert(
-                base_state.mint,
-                TradeProfile {
-                    amounts,
-                    process_delay: base_state.process_delay,
-                },
-            )
+            .insert(base_state.mint, TradeProfile { amounts })
             .is_some()
         {
             return Err(EngineError::InvalidConfig(format!(
@@ -1628,23 +1617,12 @@ fn build_pure_trade_profiles(
             ))
         })?;
 
-        let amounts = normalize_pure_trade_sizes(&base.trade_sizes);
+        let amounts = normalize_pure_lane_amounts(&base.lanes);
         if amounts.is_empty() {
             continue;
         }
 
-        let delay_ms = base
-            .process_delay
-            .unwrap_or(DEFAULT_PROCESS_DELAY_MS)
-            .max(1);
-        let process_delay = Duration::from_millis(delay_ms);
-        per_mint.insert(
-            mint,
-            TradeProfile {
-                amounts,
-                process_delay,
-            },
-        );
+        per_mint.insert(mint, TradeProfile { amounts });
     }
 
     if per_mint.is_empty() {
@@ -1701,19 +1679,29 @@ fn generate_random_amounts(min: u64, max: u64, count: usize) -> Vec<u64> {
     values.into_iter().collect()
 }
 
-fn normalize_pure_trade_sizes(values: &[u64]) -> Vec<u64> {
-    if values.is_empty() {
+fn normalize_pure_lane_amounts(lanes: &[config::TradeSizeLaneConfig]) -> Vec<u64> {
+    if lanes.is_empty() {
         return Vec::new();
     }
 
-    let unique: BTreeSet<u64> = values.iter().copied().filter(|value| *value > 0).collect();
-    if unique.is_empty() {
+    let mut lane_values: BTreeSet<u64> = BTreeSet::new();
+    for lane in lanes {
+        let count = lane.count.max(1) as usize;
+        let values = generate_lane_amounts(lane.min, lane.max, count, lane.strategy);
+        for value in values {
+            if value > 0 {
+                lane_values.insert(value);
+            }
+        }
+    }
+
+    if lane_values.is_empty() {
         return Vec::new();
     }
 
     let mut rng = rand::rng();
     let mut tweaked: BTreeSet<u64> = BTreeSet::new();
-    for amount in unique {
+    for amount in lane_values {
         let basis_points: u16 = rng.random_range(930..=999);
         let adjusted = (((amount as u128) * basis_points as u128) + 999) / 1_000;
         let normalized = adjusted.max(1).min(u128::from(u64::MAX)) as u64;
@@ -1756,7 +1744,6 @@ fn build_pure_profit_config(
 fn build_blind_quote_config(
     config: &config::BlindStrategyConfig,
     only_direct_routes_default: bool,
-    restrict_intermediate_tokens_default: bool,
 ) -> QuoteConfig {
     let has_three_hop = config.base_mints.iter().any(|mint| {
         mint.route_types
@@ -1772,8 +1759,6 @@ fn build_blind_quote_config(
     QuoteConfig {
         slippage_bps: 0,
         only_direct_routes,
-        restrict_intermediate_tokens: restrict_intermediate_tokens_default,
-        quote_max_accounts: None,
         dex_whitelist: config.enable_dexs.clone(),
         dex_blacklist: config.exclude_dexes.clone(),
     }
@@ -1783,8 +1768,6 @@ fn build_pure_quote_config() -> QuoteConfig {
     QuoteConfig {
         slippage_bps: 0,
         only_direct_routes: true,
-        restrict_intermediate_tokens: true,
-        quote_max_accounts: None,
         dex_whitelist: Vec::new(),
         dex_blacklist: Vec::new(),
     }
@@ -1820,8 +1803,8 @@ fn generate_amounts(min: u64, max: u64, count: u32, strategy: &str) -> Vec<u64> 
     }
 }
 
-fn resolve_landing_timeout(bot: &config::BotConfig) -> Duration {
-    let ms = bot.landing_ms.unwrap_or(2_000).max(1);
+fn resolve_landing_timeout(timeouts: &config::EngineTimeoutConfig) -> Duration {
+    let ms = timeouts.landing_ms.max(1);
     Duration::from_millis(ms)
 }
 

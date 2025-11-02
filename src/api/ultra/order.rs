@@ -11,9 +11,48 @@ use solana_sdk::pubkey::Pubkey;
 
 use super::serde_helpers::{field_as_string, option_field_as_string};
 
-pub use crate::api::jupiter::quote::RoutePlanStep;
-pub use crate::api::jupiter::quote::SwapInfo;
-pub use crate::api::jupiter::quote::SwapMode;
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwapMode {
+    #[serde(rename = "ExactIn", alias = "exactIn")]
+    ExactIn,
+    #[serde(rename = "ExactOut", alias = "exactOut")]
+    ExactOut,
+}
+
+impl Default for SwapMode {
+    fn default() -> Self {
+        Self::ExactIn
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SwapInfo {
+    #[serde(with = "field_as_string")]
+    pub amm_key: Pubkey,
+    pub label: String,
+    #[serde(with = "field_as_string")]
+    pub input_mint: Pubkey,
+    #[serde(with = "field_as_string")]
+    pub output_mint: Pubkey,
+    #[serde(with = "field_as_string")]
+    pub in_amount: u64,
+    #[serde(with = "field_as_string")]
+    pub out_amount: u64,
+    #[serde(with = "field_as_string")]
+    pub fee_amount: u64,
+    #[serde(with = "field_as_string")]
+    pub fee_mint: Pubkey,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutePlanStep {
+    pub swap_info: SwapInfo,
+    pub percent: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bps: Option<u16>,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct RouterLabels(String);

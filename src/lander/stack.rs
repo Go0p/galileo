@@ -8,7 +8,7 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use tracing::{info, warn};
 
-use crate::engine::{DispatchPlan, DispatchStrategy, TxVariant, VariantId};
+use crate::engine::{DispatchPlan, DispatchStrategy, JitoTipPlan, TxVariant, VariantId};
 use crate::monitoring::events;
 use crate::network::{IpAllocator, IpLeaseMode, IpLeaseOutcome, IpTaskKind};
 
@@ -73,13 +73,6 @@ impl LanderVariant {
         }
     }
 
-    pub fn fixed_tip_lamports(&self) -> Option<u64> {
-        match self {
-            LanderVariant::Jito(lander) => lander.fixed_tip_lamports(),
-            _ => None,
-        }
-    }
-
     pub async fn submit_variant(
         &self,
         variant: TxVariant,
@@ -137,11 +130,11 @@ impl LanderStack {
             .any(|lander| matches!(lander, LanderVariant::Jito(_)))
     }
 
-    pub fn fixed_jito_tip(&self) -> Option<u64> {
-        self.landers
-            .iter()
-            .filter_map(|lander| lander.fixed_tip_lamports())
-            .max()
+    pub fn draw_jito_tip_plan(&self) -> Option<JitoTipPlan> {
+        self.landers.iter().find_map(|lander| match lander {
+            LanderVariant::Jito(lander) => lander.draw_tip_plan(),
+            _ => None,
+        })
     }
 
     pub fn variant_layout(&self, strategy: DispatchStrategy) -> Vec<usize> {

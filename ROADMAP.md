@@ -1,6 +1,6 @@
 # Galileo Dex 模块重构路线图
 
-> 目标：打造高性能、易维护的盲发套利核心，解耦各 DEX 适配层，实现统一的 Jupiter 指令构建流程。
+> 目标：打造高性能、易维护的盲发套利核心，解耦各 DEX 适配层，实现统一的 `route_v2` 指令构建流程。
 
 ## 阶段一（当前）
 
@@ -13,13 +13,13 @@
 
 ## 阶段二
 
-- [ ] **Jupiter 子系统重构**
-  - 拆分 `txs/jupiter`：`swaps`（payload 编码）、`accounts`（标准账户生成）、`route_v2`（数据布局）。
+- [ ] **指令构建子系统重构**
+  - 拆分现有 `txs` 模块：`swaps`（payload 编码）、`accounts`（标准账户生成）、`route_v2`（数据布局）。
   - 新增 `SwapInstructionBuilder`，统一拼装 `Instruction` 与监控附件。
   - 对接 `DexMetaProvider` 输出，确保 `route_plan` 与 `remaining_accounts` 均由新 builder 管理。
 - [ ] **策略/引擎适配**
   - `PureBlindRouteBuilder` 与 `StrategyEngine` 仅依赖 trait/registry，不再引用具体 DEX 模块。
-  - 清理遗留的 payload 结构体，统一通过 Jupiter builder 生成 `EncodedSwap`。
+  - 清理遗留的 payload 结构体，统一通过 route_v2 builder 生成 `EncodedSwap`。
 
 ## 阶段三
 

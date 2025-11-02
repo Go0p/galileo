@@ -6,6 +6,8 @@ use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 
+use crate::api::dflow::SwapInstructionsResponse as DflowSwapInstructionsResponse;
+use crate::api::dflow::swap_instructions::BlockhashWithMetadata;
 use crate::config::{AutoUnwrapConfig, FlashloanMarginfiConfig, WalletConfig};
 use crate::engine::{EngineIdentity, SwapInstructionsVariant, SwapOpportunity};
 use crate::strategy::types::TradePair;
@@ -23,6 +25,8 @@ fn make_identity() -> EngineIdentity {
     let wallet = WalletConfig {
         private_key,
         auto_unwrap: AutoUnwrapConfig::default(),
+        wallet_keys: Vec::new(),
+        legacy_wallet_keys: None,
     };
     EngineIdentity::from_wallet(&wallet).expect("build engine identity")
 }
@@ -35,22 +39,22 @@ fn make_instruction(tag: u8) -> Instruction {
     }
 }
 
-fn sample_swap_response() -> crate::api::jupiter::SwapInstructionsResponse {
-    crate::api::jupiter::SwapInstructionsResponse {
+fn sample_swap_response() -> DflowSwapInstructionsResponse {
+    DflowSwapInstructionsResponse {
         raw: Value::Null,
-        token_ledger_instruction: None,
         compute_budget_instructions: vec![make_instruction(1)],
         setup_instructions: vec![make_instruction(2)],
         swap_instruction: make_instruction(3),
-        cleanup_instruction: Some(make_instruction(4)),
+        cleanup_instructions: vec![make_instruction(4)],
         other_instructions: vec![make_instruction(5)],
         address_lookup_table_addresses: vec![],
-        resolved_lookup_tables: Vec::new(),
-        prioritization_fee_lamports: 0,
+        blockhash_with_metadata: BlockhashWithMetadata {
+            blockhash: solana_sdk::hash::Hash::default(),
+            last_valid_block_height: 0,
+        },
+        prioritization_fee_lamports: None,
         compute_unit_limit: 0,
         prioritization_type: None,
-        dynamic_slippage_report: None,
-        simulation_error: None,
     }
 }
 
@@ -75,18 +79,17 @@ fn sample_opportunity() -> SwapOpportunity {
 async fn marginfi_wraps_instructions() {
     let identity = make_identity();
     let marginfi_account = Keypair::new().pubkey();
-    let mut config = FlashloanMarginfiConfig::default();
-    config.enable = true;
+    let config = FlashloanMarginfiConfig::default();
     let rpc = Arc::new(RpcClient::new_mock("mock://marginfi".to_string()));
     let registry = MarginfiAccountRegistry::new(None);
-    let mut manager = MarginfiFlashloanManager::new(&config, rpc, registry);
+    let mut manager = MarginfiFlashloanManager::new(&config, true, false, rpc, registry);
     manager.adopt_preparation(MarginfiFlashloanPreparation {
         account: marginfi_account,
         created: false,
     });
     assert!(manager.is_enabled());
 
-    let response = SwapInstructionsVariant::Jupiter(sample_swap_response());
+    let response = SwapInstructionsVariant::Dflow(sample_swap_response());
     let opportunity = sample_opportunity();
     let outcome = manager
         .assemble(&identity, &opportunity, &response)
@@ -109,12 +112,12 @@ async fn marginfi_wraps_instructions() {
 #[tokio::test]
 async fn disabled_flashloan_passthrough() {
     let identity = make_identity();
-    let response = SwapInstructionsVariant::Jupiter(sample_swap_response());
+    let response = SwapInstructionsVariant::Dflow(sample_swap_response());
     let opportunity = sample_opportunity();
     let config = FlashloanMarginfiConfig::default();
     let rpc = Arc::new(RpcClient::new_mock("mock://marginfi".to_string()));
     let registry = MarginfiAccountRegistry::new(None);
-    let manager = MarginfiFlashloanManager::new(&config, rpc, registry);
+    let manager = MarginfiFlashloanManager::new(&config, false, false, rpc, registry);
     assert!(!manager.is_enabled());
     let outcome = manager
         .assemble(&identity, &opportunity, &response)

@@ -37,23 +37,23 @@ Saros 的账户数据结构与 `spl_token_swap::state::SwapV1` 完全一致，�
 
 | 偏移 | 字段 | 说明 |
 | ---- | ---- | ---- |
-| `0x00` | `version (u8)` | 固定为 `1` |
-| `0x01` | `is_initialized (u8)` | `1` 表示池子已初始化 |
+| `0x00` | `is_initialized (u8)` | `1` 表示池子已初始化 |
+| `0x01` | `nonce (u8)` | Saros 自身用途（通常为 `1`） |
 | `0x02` | `bump_seed (u8)` | 计算 authority PDA 时使用 |
-| `0x08` | `token_program_id` | token program，部分池子记录的值与真实金库 owner 不一致（脚本会以金库 owner 为准） |
-| `0x28` | `token_a` | Saros 金库 A |
-| `0x48` | `token_b` | Saros 金库 B |
-| `0x68` | `pool_mint` | LP mint |
+| `0x03` | `token_program_id` | token program（部分池子与真实金库 owner 会不一致，脚本以金库 owner 为准） |
+| `0x23` | `token_a` | Saros 金库 A |
+| `0x43` | `token_b` | Saros 金库 B |
+| `0x63` | `pool_mint` | LP mint |
 | `0x88` | `fee_account` | 平台手续费账户 |
-| `0xA8` | `token_a_mint` | Vault A 对应的 mint |
-| `0xC8` | `token_b_mint` | Vault B 对应的 mint |
-| `0xE8` | `token_a_deposit (u64 LE)` | 历史入金累加，用于限制 |
-| `0xF0` | `token_b_deposit (u64 LE)` |  |
-| `0xF8` | `token_a_fees (u64 LE)` |  |
-| `0x100` | `token_b_fees (u64 LE)` |  |
-| `0x108` | `fees (Fees)` | 5 × `u64`：`trade_fee_numerator` 等 |
-| `0x130` | `curve_type (u8)` | `0`=ConstantProduct, `1`=ConstantPrice, `2`=Stable, `3`=Offset |
-| `0x138` | `curve_parameters` | 72 字节，取决于 curve 类型 |
+| `0xA3` | `token_a_mint` | Vault A 对应的 mint（实务中建议通过金库账户再确认） |
+| `0xC3` | `token_b_mint` | Vault B 对应的 mint（同上） |
+| `0xE3` | `token_a_deposit (u64 LE)` | 历史入金累加，用于限制 |
+| `0xEB` | `token_b_deposit (u64 LE)` |  |
+| `0xF3` | `token_a_fees (u64 LE)` |  |
+| `0xFB` | `token_b_fees (u64 LE)` |  |
+| `0x103` | `fees (Fees)` | 8 × `u64`：`trade_fee_numerator` 等 |
+| `0x143` | `curve_type (u8)` | `0`=ConstantProduct, `1`=ConstantPrice, `2`=Stable, `3`=Offset |
+| `0x144` | `curve_parameters` | 72 字节，取决于 curve 类型 |
 
 > 汇编中大量 `ldxdw r*, [rX+0x??]` 读写与以上偏移对应，可在 `function_7796`、`function_5980` 中看到对 `token_a`、`token_b` 等字段的校验。
 
@@ -62,7 +62,7 @@ Saros 的账户数据结构与 `spl_token_swap::state::SwapV1` 完全一致，�
 2. **解析流程**：
    - `getAccountInfo` 读取池子原始数据，解析上述字段；
    - 根据 `bump_seed` + `pool` + program ID 计算 authority；
-   - 根据 `token_program_id` 判断使用 Token v1 还是 Token-2022；
+   - 通过 `token_a` / `token_b` 的 SPL Token 账户获取真实的 `mint` + `decimals`，与 state 中记录的值交叉验证；
    - 若提供 `--user`，使用 Associated Token Program 计算用户输入/输出 ATA；
    - 按方向输出账户列表与补充信息（mint、decimals、fee 配置等）。
 3. **观测信息**：建议同时输出 `trade_fee_numerator` 等指标，方便后续落地监控。

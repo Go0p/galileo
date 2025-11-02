@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::IpAddr;
-use std::path::PathBuf;
 
-use serde::Deserialize;
-use serde::de::{Deserializer, Error as DeError, Unexpected, Visitor};
+use serde::de::{Deserializer, Error as DeError, IgnoredAny, Unexpected, Visitor};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_with::serde_as;
 
 use crate::engine::DispatchStrategy;
@@ -16,7 +16,6 @@ pub struct AppConfig {
     pub galileo: GalileoConfig,
     #[allow(dead_code)]
     pub lander: LanderConfig,
-    pub jupiter: JupiterConfig,
 }
 
 #[serde_as]
@@ -107,6 +106,11 @@ pub struct WalletConfig {
     pub private_key: String,
     #[serde(default)]
     pub auto_unwrap: AutoUnwrapConfig,
+    #[serde(default, deserialize_with = "deserialize_wallet_entries")]
+    pub wallet_keys: Vec<WalletKeyEntry>,
+    #[serde(default, rename = "wallets_key")]
+    #[allow(dead_code)]
+    pub legacy_wallet_keys: Option<IgnoredAny>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -123,6 +127,23 @@ pub struct AutoUnwrapConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct WalletKeyEntry {
+    pub remark: String,
+    pub encrypted: String,
+}
+
+impl Serialize for WalletKeyEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry(&self.remark, &self.encrypted)?;
+        map.end()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct InstructionConfig {
     #[serde(default)]
     pub memo: String,
@@ -133,7 +154,9 @@ pub struct EngineConfig {
     #[serde(default)]
     pub backend: EngineBackend,
     #[serde(default)]
-    pub jupiter: JupiterEngineConfig,
+    pub time_out: EngineTimeoutConfig,
+    #[serde(default)]
+    pub console_summary: ConsoleSummaryConfig,
     #[serde(default)]
     pub dflow: DflowEngineConfig,
     #[serde(default)]
@@ -144,10 +167,78 @@ pub struct EngineConfig {
     pub kamino: KaminoEngineConfig,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ConsoleSummaryConfig {
+    #[serde(default)]
+    pub enable: bool,
+}
+
+fn deserialize_wallet_entries<'de, D>(deserializer: D) -> Result<Vec<WalletKeyEntry>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[cfg(debug_assertions)]
+    {
+        use tracing::info;
+        info!(target = "config", "deserialize_wallet_entries invoked");
+    }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum RawEntry {
+        Structured(WalletKeyEntry),
+        LegacyMap(BTreeMap<String, String>),
+    }
+
+    let raw = Option::<Vec<RawEntry>>::deserialize(deserializer)?;
+    let mut entries = Vec::new();
+
+    if let Some(items) = raw {
+        for item in items {
+            match item {
+                RawEntry::Structured(entry) => entries.push(entry),
+                RawEntry::LegacyMap(map) => {
+                    for (remark, encrypted) in map {
+                        entries.push(WalletKeyEntry { remark, encrypted });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EngineTimeoutConfig {
+    #[serde(default = "super::default_quote_timeout_ms")]
+    pub quote_ms: u64,
+    #[serde(default = "default_swap_timeout_ms")]
+    pub swap_ms: u64,
+    #[serde(default = "default_landing_timeout_ms")]
+    pub landing_ms: u64,
+}
+
+impl Default for EngineTimeoutConfig {
+    fn default() -> Self {
+        Self {
+            quote_ms: super::default_quote_timeout_ms(),
+            swap_ms: default_swap_timeout_ms(),
+            landing_ms: default_landing_timeout_ms(),
+        }
+    }
+}
+
+const fn default_swap_timeout_ms() -> u64 {
+    10_000
+}
+
+const fn default_landing_timeout_ms() -> u64 {
+    5_000
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum EngineBackend {
-    Jupiter,
     Dflow,
     Ultra,
     Kamino,
@@ -158,7 +249,7 @@ pub enum EngineBackend {
 
 impl Default for EngineBackend {
     fn default() -> Self {
-        Self::Jupiter
+        Self::Dflow
     }
 }
 
@@ -179,6 +270,46 @@ impl QuoteParallelism {
         match self {
             QuoteParallelism::Auto => None,
             QuoteParallelism::Fixed(value) => Some(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct QuoteCadenceTimings {
+    #[serde(default)]
+    pub group_parallelism: QuoteParallelism,
+    #[serde(default)]
+    pub intra_group_spacing_ms: Option<u64>,
+    #[serde(default)]
+    pub wave_cooldown_ms: Option<u64>,
+}
+
+impl Default for QuoteCadenceTimings {
+    fn default() -> Self {
+        Self {
+            group_parallelism: QuoteParallelism::Auto,
+            intra_group_spacing_ms: None,
+            wave_cooldown_ms: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct QuoteCadenceConfig {
+    #[serde(default)]
+    pub default: QuoteCadenceTimings,
+    #[serde(default)]
+    pub per_base_mint: BTreeMap<String, QuoteCadenceTimings>,
+    #[serde(default)]
+    pub per_label: BTreeMap<String, QuoteCadenceTimings>,
+}
+
+impl Default for QuoteCadenceConfig {
+    fn default() -> Self {
+        Self {
+            default: QuoteCadenceTimings::default(),
+            per_base_mint: BTreeMap::new(),
+            per_label: BTreeMap::new(),
         }
     }
 }
@@ -256,45 +387,7 @@ impl<'de> Deserialize<'de> for QuoteParallelism {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct JupiterEngineConfig {
-    #[serde(default)]
-    pub enable: bool,
-    #[serde(default)]
-    pub api_proxy: Option<String>,
-    #[serde(default)]
-    pub args_included_dexes: Vec<String>,
-    #[serde(default)]
-    pub quote_config: JupiterQuoteConfig,
-    #[serde(default)]
-    pub swap_config: JupiterSwapConfig,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct JupiterQuoteConfig {
-    #[serde(default)]
-    pub only_direct_routes: bool,
-    #[serde(default = "super::default_true")]
-    pub restrict_intermediate_tokens: bool,
-    #[serde(default)]
-    pub parallelism: QuoteParallelism,
-    #[serde(default)]
-    pub batch_interval_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct JupiterSwapConfig {
-    #[serde(default)]
-    pub skip_user_accounts_rpc_calls: bool,
-    #[serde(default = "super::default_true")]
-    pub dynamic_compute_unit_limit: bool,
-    #[serde(default)]
-    pub wrap_and_unwrap_sol: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct DflowEngineConfig {
-    #[serde(default)]
-    pub enable: bool,
     #[serde(default)]
     pub leg: Option<LegRole>,
     #[serde(default)]
@@ -311,8 +404,6 @@ pub struct DflowEngineConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TitanEngineConfig {
-    #[serde(default)]
-    pub enable: bool,
     #[serde(default)]
     pub leg: Option<LegRole>,
     #[serde(default)]
@@ -360,8 +451,6 @@ pub struct TitanTxConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct KaminoEngineConfig {
     #[serde(default)]
-    pub enable: bool,
-    #[serde(default)]
     pub leg: Option<LegRole>,
     #[serde(default)]
     pub api_quote_base: Option<String>,
@@ -390,11 +479,9 @@ pub struct KaminoQuoteConfig {
     #[serde(default = "default_cu_limit_multiplier")]
     pub cu_limit_multiplier: f64,
     #[serde(default)]
-    pub parallelism: QuoteParallelism,
-    #[serde(default)]
-    pub batch_interval_ms: Option<u64>,
-    #[serde(default)]
     pub resolve_lookup_tables_via_rpc: bool,
+    #[serde(default)]
+    pub cadence: QuoteCadenceConfig,
 }
 
 impl Default for KaminoQuoteConfig {
@@ -407,9 +494,8 @@ impl Default for KaminoQuoteConfig {
             wrap_and_unwrap_sol: false,
             routes: Vec::new(),
             cu_limit_multiplier: default_cu_limit_multiplier(),
-            parallelism: QuoteParallelism::default(),
-            batch_interval_ms: None,
             resolve_lookup_tables_via_rpc: false,
+            cadence: QuoteCadenceConfig::default(),
         }
     }
 }
@@ -423,9 +509,7 @@ pub struct DflowQuoteConfig {
     #[serde(default)]
     pub max_route_length: Option<u8>,
     #[serde(default)]
-    pub parallelism: QuoteParallelism,
-    #[serde(default)]
-    pub batch_interval_ms: Option<u64>,
+    pub cadence: QuoteCadenceConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -444,8 +528,6 @@ const fn default_cu_limit_multiplier() -> f64 {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct UltraEngineConfig {
-    #[serde(default)]
-    pub enable: bool,
     #[serde(default)]
     pub leg: Option<LegRole>,
     #[serde(default)]
@@ -479,9 +561,7 @@ pub struct UltraQuoteConfig {
     #[serde(default = "default_priority_fee_lamports")]
     pub priority_fee_lamports: Option<u64>,
     #[serde(default)]
-    pub parallelism: QuoteParallelism,
-    #[serde(default)]
-    pub batch_interval_ms: Option<u64>,
+    pub cadence: QuoteCadenceConfig,
 }
 
 fn default_priority_fee_lamports() -> Option<u64> {
@@ -497,7 +577,6 @@ pub struct UltraSwapConfig {
 impl Default for UltraEngineConfig {
     fn default() -> Self {
         Self {
-            enable: false,
             leg: None,
             legs: Vec::new(),
             api_quote_base: None,
@@ -519,8 +598,7 @@ impl Default for UltraQuoteConfig {
             broadcast_fee_type: None,
             jito_tip_lamports: None,
             priority_fee_lamports: default_priority_fee_lamports(),
-            parallelism: QuoteParallelism::default(),
-            batch_interval_ms: None,
+            cadence: QuoteCadenceConfig::default(),
         }
     }
 }
@@ -596,27 +674,13 @@ pub struct IntermediumConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct BotConfig {
     #[serde(default)]
-    pub disable_local_binary: bool,
-    #[serde(default)]
-    pub disable_running: bool,
-    #[serde(default)]
     pub cpu_affinity: CpuAffinityConfig,
-    #[serde(default = "super::default_quote_timeout_ms")]
-    pub quote_ms: u64,
-    #[serde(default)]
-    pub swap_ms: Option<u64>,
-    #[serde(default)]
-    pub landing_ms: Option<u64>,
-    #[serde(default)]
-    pub auto_restart_minutes: u64,
     #[serde(default)]
     pub get_block_hash_by_grpc: bool,
     #[serde(default)]
     pub enable_simulation: bool,
-    #[serde(default = "super::default_true")]
-    pub show_jupiter_logs: bool,
     #[serde(default)]
-    pub dry_run: bool,
+    pub dry_run: DryRunConfig,
     #[serde(default)]
     pub prometheus: PrometheusConfig,
     #[serde(default)]
@@ -624,7 +688,31 @@ pub struct BotConfig {
     #[serde(default)]
     pub auto_refresh_wallet_minute: u64,
     #[serde(default)]
+    pub strategies: StrategyToggleSet,
+    #[serde(default)]
+    pub engines: EngineToggleSet,
+    #[serde(default, alias = "enable_flashloan")]
+    pub flashloan: BotFlashloanToggle,
+    #[serde(default, alias = "profit_guard")]
     pub light_house: LightHouseBotConfig,
+}
+
+impl BotConfig {
+    pub fn strategy_enabled(&self, strategy: StrategyToggle) -> bool {
+        self.strategies.is_enabled(strategy)
+    }
+
+    pub fn flashloan_enabled(&self, product: FlashloanProduct) -> bool {
+        self.flashloan.is_enabled(product)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct DryRunConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub rpc_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -693,14 +781,200 @@ fn default_timeout_cooldown_ms() -> u64 {
     250
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct PriceFeedConfig {
+    pub url: String,
+    #[serde(default = "default_price_refresh_ms")]
+    pub refresh_ms: u64,
+}
+
+impl Default for PriceFeedConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            refresh_ms: default_price_refresh_ms(),
+        }
+    }
+}
+
+const fn default_price_refresh_ms() -> u64 {
+    1_000
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct LightHouseBotConfig {
     #[serde(default)]
     pub enable: bool,
     #[serde(default)]
     pub profit_guard_mints: Vec<String>,
+    #[serde(default, alias = "sol_usd_price", alias = "sol_usd_feed")]
+    pub sol_price_feed: Option<PriceFeedConfig>,
     #[serde(default)]
     pub memory_slots: Option<u8>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StrategyToggleSet {
+    pub enabled: Vec<StrategyToggle>,
+}
+
+impl StrategyToggleSet {
+    pub fn is_enabled(&self, strategy: StrategyToggle) -> bool {
+        self.enabled.iter().any(|item| *item == strategy)
+    }
+}
+
+impl<'de> Deserialize<'de> for StrategyToggleSet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            List(Vec<StrategyToggle>),
+            Map {
+                #[serde(default)]
+                enabled: Vec<StrategyToggle>,
+                #[serde(default, alias = "enable_strategys")]
+                enable_strategys: Vec<StrategyToggle>,
+            },
+        }
+
+        let option = Option::<Raw>::deserialize(deserializer)?;
+        let mut enabled = Vec::new();
+
+        if let Some(value) = option {
+            match value {
+                Raw::List(list) => {
+                    enabled = list;
+                }
+                Raw::Map {
+                    enabled: mut list_a,
+                    enable_strategys: mut list_b,
+                } => {
+                    let mut merged = Vec::new();
+                    for entry in list_a.drain(..).chain(list_b.drain(..)) {
+                        if !merged.contains(&entry) {
+                            merged.push(entry);
+                        }
+                    }
+                    enabled = merged;
+                }
+            }
+        }
+
+        Ok(Self { enabled })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum StrategyToggle {
+    BlindStrategy,
+    PureBlindStrategy,
+    CopyStrategy,
+    BackRunStrategy,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EngineLegBackend {
+    Dflow,
+    Ultra,
+    Kamino,
+    Titan,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EngineToggleSet {
+    pub pairs: Vec<EngineTogglePair>,
+}
+
+impl EngineToggleSet {
+    pub fn is_pair_enabled(&self, buy: EngineLegBackend, sell: EngineLegBackend) -> bool {
+        self.pairs
+            .iter()
+            .any(|pair| pair.buy_leg == buy && pair.sell_leg == sell)
+    }
+
+    pub fn buy_leg_enabled(&self, backend: EngineLegBackend) -> bool {
+        self.pairs.iter().any(|pair| pair.buy_leg == backend)
+    }
+
+    pub fn sell_leg_enabled(&self, backend: EngineLegBackend) -> bool {
+        self.pairs.iter().any(|pair| pair.sell_leg == backend)
+    }
+}
+
+impl<'de> Deserialize<'de> for EngineToggleSet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            List(Vec<EngineTogglePair>),
+            Map {
+                #[serde(default)]
+                pairs: Vec<EngineTogglePair>,
+                #[serde(default, alias = "enable_engines")]
+                enable_engines: Vec<EngineTogglePair>,
+            },
+        }
+
+        let option = Option::<Raw>::deserialize(deserializer)?;
+        let mut pairs = Vec::new();
+
+        if let Some(value) = option {
+            match value {
+                Raw::List(list) => {
+                    pairs = list;
+                }
+                Raw::Map {
+                    pairs: mut list_a,
+                    enable_engines: mut list_b,
+                } => {
+                    let mut merged = Vec::new();
+                    for entry in list_a.drain(..).chain(list_b.drain(..)) {
+                        if !merged.contains(&entry) {
+                            merged.push(entry);
+                        }
+                    }
+                    pairs = merged;
+                }
+            }
+        }
+
+        Ok(Self { pairs })
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct EngineTogglePair {
+    pub buy_leg: EngineLegBackend,
+    pub sell_leg: EngineLegBackend,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct BotFlashloanToggle {
+    #[serde(default)]
+    pub products: Vec<FlashloanProduct>,
+    #[serde(default)]
+    pub prefer_wallet_balance: bool,
+}
+
+impl BotFlashloanToggle {
+    pub fn is_enabled(&self, product: FlashloanProduct) -> bool {
+        self.products.iter().any(|item| *item == product)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum FlashloanProduct {
+    Marginfi,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -712,10 +986,6 @@ pub struct FlashloanConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct FlashloanMarginfiConfig {
     #[serde(default)]
-    pub enable: bool,
-    #[serde(default)]
-    pub prefer_wallet_balance: bool,
-    #[serde(default)]
     pub marginfi_account: Option<String>,
     #[serde(default = "super::default_flashloan_compute_unit_overhead")]
     pub compute_unit_overhead: u32,
@@ -724,8 +994,6 @@ pub struct FlashloanMarginfiConfig {
 impl Default for FlashloanMarginfiConfig {
     fn default() -> Self {
         Self {
-            enable: false,
-            prefer_wallet_balance: false,
             marginfi_account: None,
             compute_unit_overhead: super::default_flashloan_compute_unit_overhead(),
         }
@@ -734,8 +1002,6 @@ impl Default for FlashloanMarginfiConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct BlindStrategyConfig {
-    #[serde(default)]
-    pub enable: bool,
     #[serde(default)]
     pub memo: String,
     #[serde(default)]
@@ -759,8 +1025,6 @@ pub struct BlindBaseMintConfig {
     #[serde(default)]
     #[serde(alias = "min_quote_profit_lamports")]
     pub min_quote_profit: Option<u64>,
-    #[serde(default)]
-    pub process_delay: Option<u64>,
     #[serde(default)]
     pub sending_cooldown: Option<u64>,
     #[serde(default)]
@@ -815,8 +1079,6 @@ impl Default for TradeRangeStrategy {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct PureBlindStrategyConfig {
     #[serde(default)]
-    pub enable: bool,
-    #[serde(default)]
     pub enable_landers: Vec<String>,
     #[serde(default = "super::default_one")]
     pub cu_multiplier: f64,
@@ -862,12 +1124,10 @@ pub struct PureBlindAssetsConfig {
 pub struct PureBlindBaseMintConfig {
     #[serde(default)]
     pub mint: String,
-    #[serde(default, deserialize_with = "deserialize_trade_sizes")]
-    pub trade_sizes: Vec<u64>,
+    #[serde(default)]
+    pub lanes: Vec<TradeSizeLaneConfig>,
     #[serde(default)]
     pub min_profit: Option<u64>,
-    #[serde(default)]
-    pub process_delay: Option<u64>,
     #[serde(default)]
     pub route_type: Option<String>,
 }
@@ -880,8 +1140,8 @@ pub struct PureBlindOverrideConfig {
     pub legs: Vec<PureBlindOverrideLegConfig>,
     #[serde(default)]
     pub lookup_tables: Vec<String>,
-    #[serde(default, deserialize_with = "deserialize_trade_sizes")]
-    pub trade_sizes: Vec<u64>,
+    #[serde(default)]
+    pub lanes: Vec<TradeSizeLaneConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -895,46 +1155,6 @@ pub struct PureBlindMonitoringConfig {
     pub enable_metrics: bool,
     #[serde(default)]
     pub route_labels: bool,
-}
-
-fn deserialize_trade_size_range<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum RawValue {
-        Number(u64),
-        String(String),
-    }
-
-    let raw = Vec::<RawValue>::deserialize(deserializer)?;
-    let mut values = Vec::with_capacity(raw.len());
-    for entry in raw {
-        match entry {
-            RawValue::Number(value) => values.push(value),
-            RawValue::String(text) => {
-                let normalized = text.replace('_', "").trim().to_string();
-                if normalized.is_empty() {
-                    continue;
-                }
-                let parsed = normalized.parse::<u64>().map_err(|err| {
-                    D::Error::custom(format!(
-                        "invalid trade size `{text}`: failed to parse u64 ({err})"
-                    ))
-                })?;
-                values.push(parsed);
-            }
-        }
-    }
-    Ok(values)
-}
-
-fn deserialize_trade_sizes<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_trade_size_range(deserializer)
 }
 
 fn deserialize_u64_value<'de, D>(deserializer: D) -> Result<u64, D::Error>
@@ -964,8 +1184,6 @@ where
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct BackRunStrategyConfig {
-    #[serde(default)]
-    pub enable: bool,
     #[serde(default)]
     pub enable_dexs: Vec<String>,
     #[serde(default)]
@@ -1012,8 +1230,6 @@ pub struct BackRunTradeConfig {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct CopyStrategyConfig {
-    #[serde(default)]
-    pub enable: bool,
     #[serde(default)]
     pub copy_dispatch: CopyDispatchConfig,
     #[serde(default)]
@@ -1200,252 +1416,6 @@ pub struct PrometheusConfig {
     pub enable: bool,
     #[serde(default = "super::default_prometheus_listen")]
     pub listen: String,
-}
-
-#[serde_as]
-#[derive(Debug, Clone, Deserialize)]
-pub struct JupiterConfig {
-    /// `[jupiter.binary]`：GitHub Release 下载来源及安装目录。
-    #[serde(default)]
-    pub binary: JupiterBinaryConfig,
-    /// `[jupiter.core]`：RPC、监听端口等核心启动参数。
-    #[serde(default)]
-    pub core: JupiterCoreConfig,
-    /// `[jupiter.launch]`：路由与功能开关相关的 CLI 选项。
-    #[serde(default)]
-    pub launch: JupiterLaunchConfig,
-    /// `[jupiter.performance]`：线程数等性能配置。
-    #[serde(default)]
-    pub performance: JupiterPerformanceConfig,
-    /// `[jupiter.process]`：守护与自动重启策略。
-    #[serde(default)]
-    pub process: JupiterProcessConfig,
-    /// `[jupiter.environment]`：附加环境变量。
-    #[serde(default = "super::default_environment")]
-    pub environment: BTreeMap<String, String>,
-    /// `[jupiter.health_check]`：启动后健康检查配置。
-    #[serde(default)]
-    pub health_check: Option<HealthCheckConfig>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct LaunchOverrides {
-    pub filter_markets_with_mints: Vec<String>,
-    pub exclude_dex_program_ids: Vec<String>,
-    pub include_dex_program_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct JupiterBinaryConfig {
-    #[serde(default = "super::default_repo_owner")]
-    pub repo_owner: String,
-    #[serde(default = "super::default_repo_name")]
-    pub repo_name: String,
-    #[serde(default = "super::default_binary_name")]
-    pub binary_name: String,
-    #[serde(default = "super::default_install_dir")]
-    pub install_dir: PathBuf,
-    #[serde(default)]
-    pub proxy: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct JupiterCoreConfig {
-    #[serde(default)]
-    pub rpc_url: String,
-    #[serde(default)]
-    pub secondary_rpc_urls: Vec<String>,
-    #[serde(default = "super::default_host")]
-    pub host: String,
-    #[serde(default = "super::default_port")]
-    pub port: u16,
-    #[serde(default = "super::default_metrics_port")]
-    pub metrics_port: u16,
-    #[serde(default)]
-    pub use_local_market_cache: bool,
-    #[serde(default = "super::default_auto_download_market_cache")]
-    pub auto_download_market_cache: bool,
-    #[serde(default = "super::default_market_cache")]
-    pub market_cache: String,
-    #[serde(default = "super::default_market_cache_download_url")]
-    pub market_cache_download_url: String,
-    #[serde(default)]
-    pub exclude_other_dex_program_ids: bool,
-    #[serde(default = "super::default_market_mode")]
-    pub market_mode: MarketMode,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct JupiterLaunchConfig {
-    #[serde(default = "super::default_true")]
-    pub allow_circular_arbitrage: bool,
-    #[serde(default = "super::default_true")]
-    pub enable_new_dexes: bool,
-    #[serde(default)]
-    pub enable_add_market: bool,
-    #[serde(default = "super::default_true")]
-    pub expose_quote_and_simulate: bool,
-    #[serde(default)]
-    pub yellowstone: Option<YellowstoneConfig>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct YellowstoneConfig {
-    pub endpoint: String,
-    #[serde(default)]
-    pub x_token: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MarketMode {
-    Remote,
-    File,
-    Europa,
-}
-
-impl MarketMode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            MarketMode::Remote => "remote",
-            MarketMode::File => "file",
-            MarketMode::Europa => "europa",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct JupiterPerformanceConfig {
-    #[serde(default = "super::default_total_thread_count")]
-    pub total_thread_count: u16,
-    #[serde(default = "super::default_webserver_thread_count")]
-    pub webserver_thread_count: u16,
-    #[serde(default = "super::default_update_thread_count")]
-    pub update_thread_count: u16,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct JupiterProcessConfig {
-    #[serde(default)]
-    pub auto_restart_minutes: u64,
-    #[serde(default = "super::default_max_restart_attempts")]
-    pub max_restart_attempts: u32,
-    #[serde(default = "super::default_graceful_shutdown_timeout_ms")]
-    pub graceful_shutdown_timeout_ms: u64,
-}
-
-impl JupiterConfig {
-    pub fn binary_path(&self) -> PathBuf {
-        self.binary.install_dir.join(&self.binary.binary_name)
-    }
-
-    pub fn effective_args(
-        &self,
-        overrides: &LaunchOverrides,
-        market_cache_override: Option<&str>,
-    ) -> Vec<String> {
-        let mut args = Vec::new();
-        let core = &self.core;
-
-        if !core.rpc_url.trim().is_empty() {
-            args.push("--rpc-url".to_string());
-            args.push(core.rpc_url.clone());
-        }
-
-        for url in core
-            .secondary_rpc_urls
-            .iter()
-            .filter(|url| !url.trim().is_empty())
-        {
-            args.push("--secondary-rpc-url".to_string());
-            args.push(url.clone());
-        }
-
-        if let Some(local_cache) = market_cache_override {
-            args.push("--market-cache".to_string());
-            args.push(local_cache.to_string());
-        } else if !core.market_cache.trim().is_empty() {
-            args.push("--market-cache".to_string());
-            args.push(core.market_cache.clone());
-        }
-
-        let market_mode = if core.use_local_market_cache {
-            MarketMode::File
-        } else {
-            core.market_mode
-        };
-
-        args.push("--market-mode".to_string());
-        args.push(market_mode.as_str().to_string());
-
-        args.push("--host".to_string());
-        args.push(core.host.clone());
-
-        args.push("--port".to_string());
-        args.push(core.port.to_string());
-
-        args.push("--metrics-port".to_string());
-        args.push(core.metrics_port.to_string());
-
-        let launch = &self.launch;
-        if launch.allow_circular_arbitrage {
-            args.push("--allow-circular-arbitrage".to_string());
-        }
-        if launch.enable_new_dexes {
-            args.push("--enable-new-dexes".to_string());
-        }
-        if launch.enable_add_market {
-            args.push("--enable-add-market".to_string());
-        }
-        if launch.expose_quote_and_simulate {
-            args.push("--expose-quote-and-simulate".to_string());
-        }
-        if let Some(yellowstone) = &launch.yellowstone {
-            if !yellowstone.endpoint.trim().is_empty() {
-                args.push("--yellowstone-grpc-endpoint".to_string());
-                args.push(yellowstone.endpoint.clone());
-            }
-            if let Some(token) = yellowstone.x_token.as_ref() {
-                if !token.is_empty() {
-                    args.push("--yellowstone-grpc-x-token".to_string());
-                    args.push(token.clone());
-                }
-            }
-        }
-
-        if !overrides.filter_markets_with_mints.is_empty() {
-            args.push("--filter-markets-with-mints".to_string());
-            args.push(overrides.filter_markets_with_mints.join(","));
-        }
-
-        if !overrides.exclude_dex_program_ids.is_empty() {
-            args.push("--exclude-dex-program-ids".to_string());
-            args.push(overrides.exclude_dex_program_ids.join(","));
-        }
-
-        if !overrides.include_dex_program_ids.is_empty() {
-            args.push("--dex-program-ids".to_string());
-            args.push(overrides.include_dex_program_ids.join(","));
-        }
-
-        let performance = &self.performance;
-        let total_threads = std::cmp::max(performance.total_thread_count, 1);
-        args.push("--total-thread-count".to_string());
-        args.push(total_threads.to_string());
-
-        let web_threads = std::cmp::max(
-            std::cmp::min(performance.webserver_thread_count, total_threads),
-            1,
-        );
-        args.push("--webserver-thread-count".to_string());
-        args.push(web_threads.to_string());
-
-        let update_threads = std::cmp::max(performance.update_thread_count, 1);
-        args.push("--update-thread-count".to_string());
-        args.push(update_threads.to_string());
-
-        args
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

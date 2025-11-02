@@ -13,6 +13,16 @@ impl ZeroFiSwap {
     }
 }
 
+/// Saros swap 编码器封装。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SarosSwap;
+
+impl SarosSwap {
+    pub fn encode() -> Result<EncodedSwap> {
+        EncodedSwap::from_name("Saros", &())
+    }
+}
+
 /// SolFiV2 swap 编码器封装。
 #[derive(Debug, Clone, Copy)]
 pub struct SolFiV2Swap {

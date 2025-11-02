@@ -1,3 +1,4 @@
+use std::convert::TryFrom;
 use std::future::Future;
 use std::net::IpAddr;
 use std::pin::Pin;
@@ -10,10 +11,12 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
 use tracing::trace;
 
-use crate::engine::EngineResult;
+use super::quote_cadence::CadenceTimings;
+use crate::config::QuoteParallelism;
 use crate::engine::error::EngineError;
 use crate::engine::quote::QuoteExecutor;
 use crate::engine::types::{DoubleQuote, QuoteTask};
+use crate::engine::{EngineResult, QuoteCadence};
 use crate::monitoring::events;
 use crate::network::{IpAllocator, IpLeaseMode, IpLeaseOutcome, IpTaskKind};
 
@@ -23,8 +26,7 @@ use super::quote::QuoteConfig;
 #[derive(Clone)]
 pub struct QuoteDispatcher {
     ip_allocator: Arc<IpAllocator>,
-    parallelism_override: Option<u16>,
-    batch_interval: Duration,
+    cadence: QuoteCadence,
 }
 
 pub struct QuoteDispatchOutcome {
@@ -37,27 +39,27 @@ pub struct QuoteDispatchOutcome {
 }
 
 impl QuoteDispatcher {
-    pub fn new(
-        ip_allocator: Arc<IpAllocator>,
-        parallelism_override: Option<u16>,
-        batch_interval: Duration,
-    ) -> Self {
+    pub fn new(ip_allocator: Arc<IpAllocator>, cadence: QuoteCadence) -> Self {
         Self {
             ip_allocator,
-            parallelism_override,
-            batch_interval,
+            cadence,
         }
     }
 
     pub fn plan(&self, batches: Vec<QuoteBatchPlan>) -> Vec<QuoteBatchPlan> {
         let planned = batches.len();
-        let parallelism = self.effective_parallelism(planned);
+        let parallelism = self.effective_parallelism(planned, &batches);
+        let timings = self.cadence.default_timings();
+        let override_parallelism = self.parallelism_override(&batches);
         trace!(
             target: "engine::dispatcher",
             planned,
             parallelism,
             total_slots = self.ip_allocator.total_slots(),
             per_ip_limit = ?self.ip_allocator.per_ip_inflight_limit(),
+            spacing_ms = timings.intra_group_spacing.as_millis(),
+            wave_cooldown_ms = timings.wave_cooldown.as_millis(),
+            override_parallelism,
             "QuoteDispatcher 生成批次计划"
         );
         batches
@@ -75,7 +77,7 @@ impl QuoteDispatcher {
         }
 
         let planned = batches.len();
-        let parallelism = self.effective_parallelism(planned);
+        let parallelism = self.effective_parallelism(planned, &batches);
         let semaphore = if parallelism >= planned {
             None
         } else {
@@ -105,9 +107,9 @@ impl QuoteDispatcher {
             let executor = quote_executor.clone();
             let config = quote_config.clone();
             let strategy = Arc::clone(&strategy_label);
+            let delay = dispatcher.compute_dispatch_delay(&batch, index);
 
             futures.push(Box::pin(async move {
-                let delay = dispatcher.compute_dispatch_delay(index, parallelism);
                 if !delay.is_zero() {
                     sleep(delay).await;
                 }
@@ -239,6 +241,8 @@ impl QuoteDispatcher {
                                                 reverse: reverse_quote,
                                                 forward_latency: forward_duration,
                                                 reverse_latency: reverse_duration,
+                                                forward_ip,
+                                                reverse_ip,
                                             }))
                                         } else {
                                             Ok(None)
@@ -343,12 +347,12 @@ impl QuoteDispatcher {
         Ok(outcomes)
     }
 
-    fn effective_parallelism(&self, planned: usize) -> usize {
+    fn effective_parallelism(&self, planned: usize, batches: &[QuoteBatchPlan]) -> usize {
         if planned <= 1 {
             return planned.max(1);
         }
 
-        if let Some(value) = self.parallelism_override {
+        if let Some(value) = self.parallelism_override(batches) {
             return usize::from(value.max(1)).min(planned);
         }
 
@@ -362,22 +366,34 @@ impl QuoteDispatcher {
         computed.max(1).min(planned)
     }
 
-    fn compute_dispatch_delay(&self, index: usize, parallelism: usize) -> Duration {
-        let parallelism = parallelism.max(1);
-        if self.batch_interval.is_zero() {
+    fn compute_dispatch_delay(&self, batch: &QuoteBatchPlan, index: usize) -> Duration {
+        let timings = self.timings_for_batch(batch);
+        let spacing = timings.intra_group_spacing;
+        if spacing.is_zero() {
             return Duration::ZERO;
         }
 
-        let wave = index / parallelism;
-        if wave == 0 {
-            return Duration::ZERO;
-        }
+        let multiplier = u32::try_from(index).unwrap_or(u32::MAX);
+        spacing.saturating_mul(multiplier)
+    }
 
-        if index % parallelism == 0 {
-            return self.batch_interval;
+    fn parallelism_override(&self, batches: &[QuoteBatchPlan]) -> Option<u16> {
+        let mut min_value: Option<u16> = None;
+        for batch in batches {
+            let timings = self.timings_for_batch(batch);
+            if let QuoteParallelism::Fixed(value) = timings.group_parallelism {
+                let value = value.max(1);
+                min_value = Some(match min_value {
+                    Some(current) => current.min(value),
+                    None => value,
+                });
+            }
         }
+        min_value
+    }
 
-        Duration::ZERO
+    fn timings_for_batch(&self, batch: &QuoteBatchPlan) -> CadenceTimings {
+        self.cadence.timings_for_base_mint(&batch.pair.input_mint)
     }
 }
 
@@ -389,29 +405,12 @@ async fn acquire_permit(semaphore: &Arc<Semaphore>) -> EngineResult<OwnedSemapho
 
 pub(crate) fn classify_ip_outcome(err: &EngineError) -> Option<IpLeaseOutcome> {
     match err {
-        EngineError::Jupiter(inner) => classify_jupiter(inner),
         EngineError::Dflow(inner) => classify_dflow(inner),
         EngineError::Kamino(inner) => classify_kamino(inner),
         EngineError::Ultra(inner) => classify_ultra(inner),
         EngineError::Network(inner) => classify_reqwest(inner),
         EngineError::Rpc(_) => Some(IpLeaseOutcome::NetworkError),
         EngineError::NetworkResource(_) => Some(IpLeaseOutcome::NetworkError),
-        _ => None,
-    }
-}
-
-pub(crate) fn classify_jupiter(
-    err: &crate::jupiter::error::JupiterError,
-) -> Option<IpLeaseOutcome> {
-    use crate::jupiter::error::JupiterError;
-    match err {
-        JupiterError::ApiStatus { status, .. } | JupiterError::DownloadStatus { status, .. } => {
-            map_status(status)
-        }
-        JupiterError::Http(inner) | JupiterError::DownloadFailed { source: inner, .. } => {
-            classify_reqwest(inner)
-        }
-        JupiterError::HealthCheck(_) => Some(IpLeaseOutcome::NetworkError),
         _ => None,
     }
 }

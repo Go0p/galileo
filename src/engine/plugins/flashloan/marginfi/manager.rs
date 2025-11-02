@@ -57,6 +57,8 @@ pub struct MarginfiFlashloanManager {
 impl MarginfiFlashloanManager {
     pub fn new(
         cfg: &FlashloanMarginfiConfig,
+        enabled: bool,
+        prefer_wallet_balance: bool,
         rpc: Arc<RpcClient>,
         accounts: MarginfiAccountRegistry,
     ) -> Self {
@@ -64,8 +66,8 @@ impl MarginfiFlashloanManager {
         let fallback_marginfi = configured_default.map(MarginfiFlashloan::new);
         Self {
             rpc,
-            enabled: cfg.enable,
-            prefer_wallet_balance: cfg.prefer_wallet_balance,
+            enabled,
+            prefer_wallet_balance,
             configured_default,
             fallback_marginfi,
             balance_cache: Cache::new(InMemoryBackend::default()),

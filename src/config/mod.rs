@@ -1,5 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
-use std::path::PathBuf;
+use std::collections::HashSet;
 
 use crate::engine::DispatchStrategy;
 
@@ -59,72 +58,12 @@ pub(crate) fn default_auto_unwrap_min_balance_lamports() -> u64 {
     1_000_000_000
 }
 
-pub(crate) fn default_repo_owner() -> String {
-    "jup-ag".to_string()
-}
-
-pub(crate) fn default_repo_name() -> String {
-    "jupiter-swap-api".to_string()
-}
-
-pub(crate) fn default_binary_name() -> String {
-    "jupiter-swap-api".to_string()
-}
-
-pub(crate) fn default_install_dir() -> PathBuf {
-    PathBuf::from("bin")
-}
-
-pub(crate) fn default_host() -> String {
-    "0.0.0.0".to_string()
-}
-
-pub(crate) fn default_port() -> u16 {
-    18_080
-}
-
-pub(crate) fn default_metrics_port() -> u16 {
-    18_081
-}
-
-pub(crate) fn default_market_cache() -> String {
-    "https://cache.jup.ag/markets?v=6".to_string()
-}
-
-pub(crate) fn default_market_cache_download_url() -> String {
-    default_market_cache()
-}
-
-pub(crate) fn default_market_mode() -> cfg::MarketMode {
-    cfg::MarketMode::Remote
-}
-
 pub(crate) fn default_prometheus_listen() -> String {
     "0.0.0.0:9898".to_string()
 }
 
-pub(crate) fn default_total_thread_count() -> u16 {
-    64
-}
-
-pub(crate) fn default_webserver_thread_count() -> u16 {
-    24
-}
-
-pub(crate) fn default_update_thread_count() -> u16 {
-    5
-}
-
-pub(crate) fn default_max_restart_attempts() -> u32 {
-    3
-}
-
 pub(crate) fn default_flashloan_compute_unit_overhead() -> u32 {
     110_000
-}
-
-pub(crate) fn default_graceful_shutdown_timeout_ms() -> u64 {
-    5_000
 }
 
 pub(crate) fn default_compute_unit_price_strategy() -> String {
@@ -133,14 +72,6 @@ pub(crate) fn default_compute_unit_price_strategy() -> String {
 
 pub(crate) fn default_tip_strategy() -> cfg::TipStrategyKind {
     cfg::TipStrategyKind::Fixed
-}
-
-pub(crate) fn default_environment() -> BTreeMap<String, String> {
-    BTreeMap::from_iter([(String::from("RUST_LOG"), String::from("info"))])
-}
-
-pub(crate) fn default_auto_download_market_cache() -> bool {
-    true
 }
 
 pub(crate) fn default_health_check_interval_secs() -> u64 {
@@ -223,7 +154,8 @@ impl Default for cfg::EngineConfig {
     fn default() -> Self {
         Self {
             backend: cfg::EngineBackend::default(),
-            jupiter: cfg::JupiterEngineConfig::default(),
+            time_out: cfg::EngineTimeoutConfig::default(),
+            console_summary: cfg::ConsoleSummaryConfig::default(),
             dflow: cfg::DflowEngineConfig::default(),
             ultra: cfg::UltraEngineConfig::default(),
             titan: cfg::TitanEngineConfig::default(),
@@ -232,43 +164,9 @@ impl Default for cfg::EngineConfig {
     }
 }
 
-impl Default for cfg::JupiterEngineConfig {
-    fn default() -> Self {
-        Self {
-            enable: true,
-            api_proxy: None,
-            args_included_dexes: Vec::new(),
-            quote_config: cfg::JupiterQuoteConfig::default(),
-            swap_config: cfg::JupiterSwapConfig::default(),
-        }
-    }
-}
-
-impl Default for cfg::JupiterQuoteConfig {
-    fn default() -> Self {
-        Self {
-            only_direct_routes: false,
-            restrict_intermediate_tokens: true,
-            parallelism: cfg::QuoteParallelism::default(),
-            batch_interval_ms: None,
-        }
-    }
-}
-
-impl Default for cfg::JupiterSwapConfig {
-    fn default() -> Self {
-        Self {
-            skip_user_accounts_rpc_calls: false,
-            dynamic_compute_unit_limit: true,
-            wrap_and_unwrap_sol: false,
-        }
-    }
-}
-
 impl Default for cfg::DflowEngineConfig {
     fn default() -> Self {
         Self {
-            enable: true,
             leg: None,
             api_quote_base: None,
             api_swap_base: None,
@@ -282,7 +180,6 @@ impl Default for cfg::DflowEngineConfig {
 impl Default for cfg::TitanEngineConfig {
     fn default() -> Self {
         Self {
-            enable: false,
             leg: None,
             ws_url: None,
             ws_proxy: None,
@@ -303,8 +200,7 @@ impl Default for cfg::DflowQuoteConfig {
             use_auto_slippage: true,
             only_direct_routes: false,
             max_route_length: None,
-            parallelism: cfg::QuoteParallelism::default(),
-            batch_interval_ms: None,
+            cadence: cfg::QuoteCadenceConfig::default(),
         }
     }
 }
@@ -324,6 +220,8 @@ impl Default for cfg::WalletConfig {
         Self {
             private_key: String::new(),
             auto_unwrap: cfg::AutoUnwrapConfig::default(),
+            wallet_keys: Vec::new(),
+            legacy_wallet_keys: None,
         }
     }
 }
@@ -375,20 +273,16 @@ impl Default for cfg::IntermediumConfig {
 impl Default for cfg::BotConfig {
     fn default() -> Self {
         Self {
-            disable_local_binary: false,
-            disable_running: false,
             cpu_affinity: cfg::CpuAffinityConfig::default(),
-            quote_ms: default_quote_timeout_ms(),
-            swap_ms: None,
-            landing_ms: None,
-            auto_restart_minutes: 30,
             get_block_hash_by_grpc: true,
             enable_simulation: false,
-            show_jupiter_logs: true,
-            dry_run: false,
+            dry_run: cfg::DryRunConfig::default(),
             prometheus: cfg::PrometheusConfig::default(),
             network: cfg::NetworkConfig::default(),
             auto_refresh_wallet_minute: 0,
+            strategies: cfg::StrategyToggleSet::default(),
+            engines: cfg::EngineToggleSet::default(),
+            flashloan: cfg::BotFlashloanToggle::default(),
             light_house: cfg::LightHouseBotConfig::default(),
         }
     }
@@ -405,7 +299,6 @@ impl Default for cfg::FlashloanConfig {
 impl Default for cfg::BlindStrategyConfig {
     fn default() -> Self {
         Self {
-            enable: false,
             memo: String::new(),
             enable_dexs: Vec::new(),
             exclude_dexes: Vec::new(),
@@ -419,7 +312,6 @@ impl Default for cfg::BlindStrategyConfig {
 impl Default for cfg::BackRunStrategyConfig {
     fn default() -> Self {
         Self {
-            enable: false,
             enable_dexs: Vec::new(),
             enable_landers: Vec::new(),
             memo: String::new(),
@@ -434,88 +326,6 @@ impl Default for cfg::PrometheusConfig {
         Self {
             enable: false,
             listen: default_prometheus_listen(),
-        }
-    }
-}
-
-impl Default for cfg::JupiterConfig {
-    fn default() -> Self {
-        Self {
-            binary: cfg::JupiterBinaryConfig::default(),
-            core: cfg::JupiterCoreConfig::default(),
-            launch: cfg::JupiterLaunchConfig::default(),
-            performance: cfg::JupiterPerformanceConfig::default(),
-            process: cfg::JupiterProcessConfig::default(),
-            environment: default_environment(),
-            health_check: None,
-        }
-    }
-}
-
-impl Default for cfg::JupiterBinaryConfig {
-    fn default() -> Self {
-        Self {
-            repo_owner: default_repo_owner(),
-            repo_name: default_repo_name(),
-            binary_name: default_binary_name(),
-            install_dir: default_install_dir(),
-            proxy: None,
-        }
-    }
-}
-
-impl Default for cfg::JupiterCoreConfig {
-    fn default() -> Self {
-        Self {
-            rpc_url: String::new(),
-            secondary_rpc_urls: Vec::new(),
-            host: default_host(),
-            port: default_port(),
-            metrics_port: default_metrics_port(),
-            use_local_market_cache: false,
-            auto_download_market_cache: default_auto_download_market_cache(),
-            market_cache: default_market_cache(),
-            market_cache_download_url: default_market_cache_download_url(),
-            exclude_other_dex_program_ids: false,
-            market_mode: default_market_mode(),
-        }
-    }
-}
-
-impl Default for cfg::JupiterLaunchConfig {
-    fn default() -> Self {
-        Self {
-            allow_circular_arbitrage: true,
-            enable_new_dexes: true,
-            enable_add_market: false,
-            expose_quote_and_simulate: true,
-            yellowstone: None,
-        }
-    }
-}
-
-impl Default for cfg::MarketMode {
-    fn default() -> Self {
-        cfg::MarketMode::Remote
-    }
-}
-
-impl Default for cfg::JupiterPerformanceConfig {
-    fn default() -> Self {
-        Self {
-            total_thread_count: default_total_thread_count(),
-            webserver_thread_count: default_webserver_thread_count(),
-            update_thread_count: default_update_thread_count(),
-        }
-    }
-}
-
-impl Default for cfg::JupiterProcessConfig {
-    fn default() -> Self {
-        Self {
-            auto_restart_minutes: 60,
-            max_restart_attempts: default_max_restart_attempts(),
-            graceful_shutdown_timeout_ms: default_graceful_shutdown_timeout_ms(),
         }
     }
 }

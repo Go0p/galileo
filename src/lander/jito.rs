@@ -33,7 +33,7 @@ use tracing::{debug, warn};
 use url::Url;
 
 use crate::config::{LanderJitoConfig, LanderJitoUuidConfig, TipStrategyKind, TipStreamLevel};
-use crate::engine::TxVariant;
+use crate::engine::{JitoTipPlan, TxVariant};
 use crate::network::{IpBoundClientPool, ReqwestClientFactoryFn};
 
 use super::error::LanderError;
@@ -108,8 +108,22 @@ impl JitoLander {
         self.endpoints.clone()
     }
 
-    pub fn fixed_tip_lamports(&self) -> Option<u64> {
-        self.tip_selector.fixed_tip()
+    pub fn draw_tip_plan(&self) -> Option<JitoTipPlan> {
+        let lamports = self.tip_selector.select_tip()?;
+        if lamports == 0 {
+            return None;
+        }
+
+        let Some(recipient) = random_tip_wallet() else {
+            warn!(
+                target: "lander::jito",
+                lamports,
+                "tip wallet list empty, skipping tip plan"
+            );
+            return None;
+        };
+
+        Some(JitoTipPlan::new(lamports, recipient))
     }
 
     fn http_client(&self, local_ip: Option<IpAddr>) -> Result<Client, LanderError> {
@@ -136,10 +150,6 @@ impl JitoLander {
             ));
         }
 
-        let configured_tip = self.tip_selector.select_tip();
-        let base_tip = (variant.tip_lamports() > 0).then_some(variant.tip_lamports());
-        let tip_lamports = configured_tip.or(base_tip).unwrap_or(0);
-
         if let Some(last_valid) = variant.last_valid_block_height() {
             debug!(
                 target: "lander::jito",
@@ -148,67 +158,101 @@ impl JitoLander {
             );
         }
 
-        let tip_recipient = if tip_lamports > 0 {
-            random_tip_wallet()
-        } else {
-            None
-        };
-
-        let final_tx = match (tip_lamports, tip_recipient) {
-            (lamports, Some(recipient)) if lamports > 0 => {
-                match build_jito_transaction(&variant, Some((recipient, lamports))) {
-                    Ok(tx) => {
-                        debug!(
-                            target: "lander::jito",
-                            tip_lamports = lamports,
-                            recipient = %recipient,
-                            "tip 指令已合并进主交易"
-                        );
-                        tx
-                    }
-                    Err(err) => {
-                        warn!(
-                            target: "lander::jito",
-                            tip_lamports = lamports,
-                            recipient = %recipient,
-                            error = %err,
-                            "构建包含 tip 的交易失败，回退为无 tip 交易"
-                        );
-                        build_jito_transaction(&variant, None).unwrap_or_else(|fallback_err| {
-                            warn!(
-                                target: "lander::jito",
-                                error = %fallback_err,
-                                "重构无 tip 交易失败，使用原始交易"
-                            );
-                            variant.transaction().clone()
-                        })
-                    }
-                }
-            }
-            (lamports, None) if lamports > 0 => {
-                warn!(
+        let embedded_plan = variant.jito_tip_plan().cloned();
+        let (tip_lamports, final_tx) = if let Some(plan) = embedded_plan {
+            let lamports = plan.lamports;
+            if lamports > 0 {
+                debug!(
                     target: "lander::jito",
                     tip_lamports = lamports,
-                    "tip wallet list empty, skipping tip transaction"
+                    recipient = %plan.recipient,
+                    "使用预装 tip 计划"
                 );
-                build_jito_transaction(&variant, None).unwrap_or_else(|err| {
+            }
+            let tx = build_jito_transaction(&variant, None).unwrap_or_else(|err| {
+                warn!(
+                    target: "lander::jito",
+                    error = %err,
+                    "构建带预装 tip 的交易失败，回退至原始交易"
+                );
+                variant.transaction().clone()
+            });
+            (lamports, tx)
+        } else {
+            let configured_tip = self.tip_selector.select_tip();
+            let base_tip = (variant.tip_lamports() > 0).then_some(variant.tip_lamports());
+            let lamports = configured_tip.or(base_tip).unwrap_or(0);
+            let recipient = if lamports > 0 {
+                random_tip_wallet()
+            } else {
+                None
+            };
+
+            let tx = match (lamports, recipient) {
+                (value, Some(target_wallet)) if value > 0 => {
+                    match build_jito_transaction(&variant, Some((target_wallet, value))) {
+                        Ok(tx) => {
+                            debug!(
+                                target: "lander::jito",
+                                tip_lamports = value,
+                                recipient = %target_wallet,
+                                "tip 指令已合并进主交易"
+                            );
+                            tx
+                        }
+                        Err(err) => {
+                            warn!(
+                                target: "lander::jito",
+                                tip_lamports = value,
+                                recipient = %target_wallet,
+                                error = %err,
+                                "构建包含 tip 的交易失败，回退为无 tip 交易"
+                            );
+                            build_jito_transaction(&variant, None).unwrap_or_else(|fallback_err| {
+                                warn!(
+                                    target: "lander::jito",
+                                    error = %fallback_err,
+                                    "重构无 tip 交易失败，使用原始交易"
+                                );
+                                variant.transaction().clone()
+                            })
+                        }
+                    }
+                }
+                (value, None) if value > 0 => {
+                    warn!(
+                        target: "lander::jito",
+                        tip_lamports = value,
+                        "tip wallet list empty, skipping tip transaction"
+                    );
+                    build_jito_transaction(&variant, None).unwrap_or_else(|err| {
+                        warn!(
+                            target: "lander::jito",
+                            error = %err,
+                            "重构无 tip 交易失败，使用原始交易"
+                        );
+                        variant.transaction().clone()
+                    })
+                }
+                _ => build_jito_transaction(&variant, None).unwrap_or_else(|err| {
                     warn!(
                         target: "lander::jito",
                         error = %err,
                         "重构无 tip 交易失败，使用原始交易"
                     );
                     variant.transaction().clone()
-                })
-            }
-            _ => build_jito_transaction(&variant, None).unwrap_or_else(|err| {
-                warn!(
-                    target: "lander::jito",
-                    error = %err,
-                    "重构无 tip 交易失败，使用原始交易"
-                );
-                variant.transaction().clone()
-            }),
+                }),
+            };
+            (lamports, tx)
         };
+
+        if tip_lamports > 0 {
+            debug!(
+                target: "lander::jito",
+                tip_lamports,
+                "最终提交包含 tip"
+            );
+        }
 
         let main_encoded = encode_transaction(&final_tx)?;
         let bundle_value = Value::Array(vec![Value::String(main_encoded)]);
@@ -508,10 +552,6 @@ impl TipSelector {
                 Some(MIN_JITO_TIP_LAMPORTS)
             }
         }
-    }
-
-    fn fixed_tip(&self) -> Option<u64> {
-        matches!(self.strategy, TipStrategyKind::Fixed).then_some(self.fixed_tip)
     }
 
     fn pick_range_tip(&self) -> Option<u64> {

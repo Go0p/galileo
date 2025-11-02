@@ -1,6 +1,5 @@
 use super::quote::QuoteResponsePayload;
 use super::serde_helpers::{field_as_string, option_field_as_string};
-pub use crate::api::jupiter::swap_instructions::{PrioritizationType, PriorityLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
@@ -14,6 +13,26 @@ use solana_sdk::{
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct ComputeUnitPriceMicroLamports(pub u64);
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum PrioritizationType {
+    #[serde(rename_all = "camelCase")]
+    Jito { lamports: u64 },
+    #[serde(rename_all = "camelCase")]
+    ComputeBudget {
+        micro_lamports: u64,
+        estimated_micro_lamports: Option<u64>,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Copy, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum PriorityLevel {
+    Medium,
+    High,
+    VeryHigh,
+}
 
 /// `createFeeAccount` 配置。
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]

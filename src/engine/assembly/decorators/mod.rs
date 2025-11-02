@@ -5,7 +5,8 @@ use solana_sdk::pubkey::Pubkey;
 
 use crate::engine::plugins::flashloan::{FlashloanMetadata, marginfi::MarginfiFlashloanManager};
 use crate::engine::{
-    EngineIdentity, EngineResult, LighthouseRuntime, SwapInstructionsVariant, SwapOpportunity,
+    EngineIdentity, EngineResult, JitoTipPlan, LighthouseRuntime, SwapInstructionsVariant,
+    SwapOpportunity,
 };
 use crate::monitoring::events;
 
@@ -15,11 +16,13 @@ pub mod compute_budget;
 pub mod flashloan;
 pub mod guard_budget;
 pub mod profit_guard;
+pub mod tip;
 
 pub use compute_budget::ComputeBudgetDecorator;
 pub use flashloan::FlashloanDecorator;
 pub use guard_budget::GuardBudgetDecorator;
 pub use profit_guard::ProfitGuardDecorator;
+pub use tip::TipDecorator;
 
 /// 装配上下文，在装饰器执行过程中传递交易相关信息。
 pub struct AssemblyContext<'a> {
@@ -31,6 +34,7 @@ pub struct AssemblyContext<'a> {
     pub prioritization_fee: u64,
     pub tip_lamports: u64,
     pub jito_tip_budget: u64,
+    pub jito_tip_plan: Option<JitoTipPlan>,
     pub variant: Option<&'a mut SwapInstructionsVariant>,
     pub opportunity: Option<&'a SwapOpportunity>,
     pub flashloan_manager: Option<&'a MarginfiFlashloanManager>,
@@ -49,6 +53,7 @@ impl<'a> AssemblyContext<'a> {
             prioritization_fee: 0,
             tip_lamports: 0,
             jito_tip_budget: 0,
+            jito_tip_plan: None,
             variant: None,
             opportunity: None,
             flashloan_manager: None,
@@ -61,14 +66,14 @@ impl<'a> AssemblyContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::jupiter::SwapInstructionsResponse;
     use crate::config;
     use crate::config::types::{AutoUnwrapConfig, FlashloanMarginfiConfig, WalletConfig};
+    use crate::engine::aggregator::MultiLegInstructions;
     use crate::engine::assembly::bundle::InstructionBundle;
     use crate::engine::plugins::flashloan::{
         MarginfiAccountRegistry, MarginfiFlashloanManager, MarginfiFlashloanPreparation,
     };
-    use crate::engine::types::SwapOpportunity;
+    use crate::engine::types::{JitoTipPlan, SwapOpportunity};
     use crate::engine::{EngineIdentity, LighthouseSettings};
     use crate::instructions::compute_budget::{
         compute_unit_limit_instruction, compute_unit_price_instruction,
@@ -76,7 +81,6 @@ mod tests {
     use crate::instructions::flashloan::types::FlashloanProtocol;
     use crate::instructions::guards::lighthouse::program::LIGHTHOUSE_PROGRAM_ID;
     use crate::strategy::types::TradePair;
-    use serde_json::Value;
     use solana_client::nonblocking::rpc_client::RpcClient;
     use solana_sdk::instruction::Instruction;
     use solana_sdk::message::AddressLookupTableAccount;
@@ -103,6 +107,8 @@ mod tests {
                 min_sol_balance_lamports: config::default_auto_unwrap_min_balance_lamports(),
                 compute_unit_price_micro_lamports: 0,
             },
+            wallet_keys: Vec::new(),
+            legacy_wallet_keys: None,
         };
         EngineIdentity::from_wallet(&wallet).expect("identity from wallet config")
     }
@@ -115,7 +121,7 @@ mod tests {
         }
     }
 
-    fn sample_jupiter_variant() -> SwapInstructionsVariant {
+    fn sample_multi_leg_variant() -> SwapInstructionsVariant {
         let lookup_address = Pubkey::new_unique();
         let lookup_entry = AddressLookupTableAccount {
             key: lookup_address,
@@ -124,29 +130,25 @@ mod tests {
         let compute_limit = compute_unit_limit_instruction(200_000);
         let compute_price = compute_unit_price_instruction(1_000);
         let swap_instruction = dummy_instruction();
-        let response = SwapInstructionsResponse {
-            raw: Value::Null,
-            token_ledger_instruction: None,
-            compute_budget_instructions: vec![compute_limit.clone(), compute_price.clone()],
-            setup_instructions: Vec::new(),
-            swap_instruction,
-            cleanup_instruction: None,
-            other_instructions: Vec::new(),
-            address_lookup_table_addresses: vec![lookup_address],
-            resolved_lookup_tables: vec![lookup_entry],
-            prioritization_fee_lamports: 0,
-            compute_unit_limit: 0,
-            prioritization_type: None,
-            dynamic_slippage_report: None,
-            simulation_error: None,
-        };
-        SwapInstructionsVariant::Jupiter(response)
+        let response = MultiLegInstructions::new(
+            vec![compute_limit.clone(), compute_price.clone()],
+            vec![swap_instruction],
+            vec![lookup_address],
+            vec![lookup_entry],
+            Some(0),
+            0,
+        );
+        SwapInstructionsVariant::MultiLeg(response)
+    }
+
+    fn sample_jupiter_variant() -> SwapInstructionsVariant {
+        sample_multi_leg_variant()
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn compute_budget_decorator_updates_bundle_and_variant() {
         let identity = dummy_identity();
-        let mut variant = sample_jupiter_variant();
+        let mut variant = sample_multi_leg_variant();
         let mut bundle = InstructionBundle::from_instructions(variant.flatten_instructions());
         bundle.set_lookup_tables(
             variant.address_lookup_table_addresses().to_vec(),
@@ -188,7 +190,7 @@ mod tests {
         assert_eq!(u64::from_le_bytes(price_bytes), 5_000);
         assert_eq!(bundle.lookup_addresses, expected_lookups);
 
-        if let SwapInstructionsVariant::Jupiter(response) = &variant {
+        if let SwapInstructionsVariant::MultiLeg(response) = &variant {
             assert_eq!(response.compute_unit_limit, 400_000);
             let mut response_limit = [0u8; 4];
             let limit_ix = response
@@ -208,7 +210,7 @@ mod tests {
             response_price.copy_from_slice(&price_ix.data[1..9]);
             assert_eq!(u64::from_le_bytes(response_price), 5_000);
         } else {
-            panic!("expected Jupiter variant");
+            panic!("expected MultiLeg variant");
         }
     }
 
@@ -216,24 +218,28 @@ mod tests {
     async fn guard_and_profit_decorators_apply_lighthouse_guard() {
         let identity = dummy_identity();
         let mut bundle = InstructionBundle::default();
-        let base_mint = solana_sdk::pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+        let base_mint = solana_sdk::pubkey!("So11111111111111111111111111111111111111112");
 
         let mut ctx = AssemblyContext::new(&identity);
         ctx.base_mint = Some(&base_mint);
         ctx.guard_required = 5_000;
         ctx.prioritization_fee = 1_000;
         ctx.jito_tip_budget = 2_000;
+        ctx.tip_lamports = 2_000;
+        ctx.jito_tip_plan = Some(JitoTipPlan::new(2_000, Pubkey::new_unique()));
 
         let settings = LighthouseSettings {
             enable: true,
             profit_guard_mints: vec![base_mint],
             memory_slots: Some(4),
             existing_memory_ids: Vec::new(),
+            sol_price_feed: None,
         };
         let mut lighthouse = LighthouseRuntime::new(&settings, 4);
         super::attach_lighthouse_internal(&mut ctx, &mut lighthouse);
 
         let mut chain = DecoratorChain::new();
+        chain.register(TipDecorator);
         chain.register(GuardBudgetDecorator);
         chain.register(ProfitGuardDecorator);
 
@@ -244,9 +250,13 @@ mod tests {
 
         assert_eq!(ctx.guard_required, 8_000);
         assert_eq!(bundle.pre.len(), 1);
-        assert_eq!(bundle.post.len(), 1);
+        assert_eq!(bundle.post.len(), 2);
+        assert_eq!(
+            bundle.post[0].program_id,
+            solana_sdk::pubkey!("11111111111111111111111111111111")
+        );
         assert_eq!(bundle.pre[0].program_id, LIGHTHOUSE_PROGRAM_ID);
-        assert_eq!(bundle.post[0].program_id, LIGHTHOUSE_PROGRAM_ID);
+        assert_eq!(bundle.post[1].program_id, LIGHTHOUSE_PROGRAM_ID);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -262,13 +272,13 @@ mod tests {
         let expected_lookups = bundle.lookup_addresses.clone();
 
         let mut cfg = FlashloanMarginfiConfig::default();
-        cfg.enable = true;
         cfg.compute_unit_overhead = 15_000;
 
         let rpc = Arc::new(RpcClient::new("http://127.0.0.1:8899".to_string()));
         let marginfi_account = Pubkey::new_unique();
         let registry = MarginfiAccountRegistry::new(Some(marginfi_account));
-        let mut manager = MarginfiFlashloanManager::new(&cfg, Arc::clone(&rpc), registry);
+        let mut manager =
+            MarginfiFlashloanManager::new(&cfg, true, false, Arc::clone(&rpc), registry);
         manager.adopt_preparation(MarginfiFlashloanPreparation {
             account: marginfi_account,
             created: false,

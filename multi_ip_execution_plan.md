@@ -7,7 +7,7 @@
 ## 0. 实施进度
 - [x] 阶段 1：网络资源池基础设施（`IpInventory` / `IpAllocator` 骨架落地，配置解析扩展完成）
 - [x] 阶段 2：并发调度重构（`QuoteDispatcher::dispatch` 结合 `Semaphore + FuturesUnordered` 实现批次并发，`QuoteExecutor` 支持复用单次 lease 完成买/卖腿报价）
-- [x] 阶段 3：退避与观测接入（Jupiter / Ultra / DFlow 报价均已在限流与网络失败时标记 `mark_outcome`，IP 资源池已产出 `galileo_ip_*` 系列指标并补充冷却打点，swap/lander 链路监控同步到位）
+- [x] 阶段 3：退避与观测接入（Ultra / DFlow 报价均已在限流与网络失败时标记 `mark_outcome`，IP 资源池已产出 `galileo_ip_*` 系列指标并补充冷却打点，swap/lander 链路监控同步到位）
 - [ ] 阶段 4：Multi-leg & Titan（已完成 2/3 项，待补集成测试验证 Titan 双 size 并发）
 - [ ] 阶段 5：Lander & 落地（`SwapPreparer`/`TransactionBuilder`/`LanderStack` 已接入 IP 池，仍需补充分发指标与退避策略）
 
@@ -15,9 +15,9 @@
 
 ## 1. 现状回顾（痛点聚焦）
 - **盲发策略**：`StrategyEngine::handle_action` 串行消费 `QuoteTask`，即使 `TradeProfile.amounts` 配置了多个 size，也会依次等待每条报价完成。
-- **process_delay**：`MintSchedule::mark_dispatched` 在取出规模时立即推进下一次调度；因此当前节奏是“单 size → 等待 delay → 下一个 size”，无法在相同 delay 内尝试更多机会。
+- **Quote cadence**：以 `group_parallelism`、`intra_group_spacing`、`wave_cooldown` 描述 quote 组节奏，替代旧的 `process_delay` + `batch_interval` 双层控制。
 - **Multi-leg & Titan**：`MultiLegRuntime` 已有腿级别的并发，但仍缺少对本地 IP 的控制；Titan WebSocket 自带并发上限（最多两条 size 流），且连接阶段无法绑定指定 IP。
-- **网络客户端**：DFlow / Ultra / Jupiter / lander 全部复用默认 `reqwest::Client`，无法区分来源 IP；Titan WebSocket 也未指定本地端口。
+- **网络客户端**：DFlow / Ultra / Kamino / lander 全部复用默认 `reqwest::Client`，无法区分来源 IP；Titan WebSocket 也未指定本地端口。
 - **观测**：`monitoring::events` 未记录 `local_ip`、429 / timeout 等细节，排障困难。
 
 ---
@@ -25,7 +25,7 @@
 ## 2. 设计原则
 1. **零成本抽象**：公共组件使用 trait + 泛型，避免在关键路径出现 `Box<dyn>`。
 2. **有界并发**：并发度由显式配置和运行时资源（IP 数、Titan 限制）共同决定，所有调度都要落在 `tokio::Semaphore` 或自定义队列上。
-3. **节奏透明**：`process_delay` 仍然定义“批次级节奏”，并发只在单次批次内展开；调度器返回的下一次唤醒时间保持准确。
+3. **节奏透明**：策略调度输出规模，Engine 依据 cadence 统一决定组内间隔与批次冷却；调度器返回的下一次唤醒时间保持准确。
 4. **观测优先**：所有新模块必须自带 metrics / tracing 字段，以 `local_ip`、`batch_id`、`task_kind` 为核心标签。
 5. **破坏性重构可接受**：删除旧的串行逻辑和多余的配置项，确保新方案干净易读。
 
@@ -36,7 +36,7 @@
 ### 3.1 IP 资源池（`src/network/` 新增）
 - `IpInventory`：启动时探测可用 IP（自动扫描 + 手动白名单 + 黑名单），过滤 loopback/down 接口；失败时回退默认 IP 并告警。
 - `IpSlot`：封装 `IpAddr`、状态（Idle / Busy / CoolingDown / LongLived）、滚动统计（请求数、429、timeout）。
-- `IpBoundClientPool<T>`：为每个 IP 懒加载 HTTP 客户端；`T: HttpClientFactory` 泛型允许 DFlow / Ultra / Jupiter / Lander 复用同一套池子。内部复用 TLS 证书与代理配置，保持零拷贝 buffer。
+- `IpBoundClientPool<T>`：为每个 IP 懒加载 HTTP 客户端；`T: HttpClientFactory` 泛型允许 DFlow / Ultra / Kamino / Lander 复用同一套池子。内部复用 TLS 证书与代理配置，保持零拷贝 buffer。
 - `HttpClientFactory` trait（`src/network/client.rs` 新增）：定义 `type Client` 与 `fn make(&self, ip: IpAddr) -> Result<Client>`，对接各后端共享的 `reqwest::Client` 构建逻辑，基于 `hyper::client::HttpConnector::set_local_address` 完成本地 IP 绑定。
 - `TitanSocketFactory`：基于 `IpLease` 构建绑定指定 IP 的 `TcpSocket`，供 Titan WebSocket 使用。
 
@@ -65,19 +65,18 @@ enum IpLeaseMode {
 ### 3.3 Quote 批次与并发调度
 - `QuoteBatchPlan`（新增数据结构）：
   ```rust
-  struct QuoteBatchPlan {
-      batch_id: u64,
-      pair: TradePair,
-      size: u64,
-      process_delay: Duration,
-  }
-  ```
-- `ReadyAmounts` + `StrategyContext::take_amounts_if_ready`：调度入口返回批次规模与 `process_delay`，落地时统一转换为 `QuoteBatchPlan`。
-- `StrategyContext::push_quote_tasks`：生成批次 ID，按 `process_delay` 将规模封装为 `QuoteBatchPlan`，供调度器消费。
-- `QuoteDispatcher`（`src/engine/quote_dispatcher.rs`）：`plan` 负责记录批次统计；`dispatch` 结合 `tokio::Semaphore` 与 `FuturesUnordered` 启动并发 worker，并在派发前应用 `process_delay` 与全局 `quote_batch_interval_ms`。
+struct QuoteBatchPlan {
+    batch_id: u64,
+    pair: TradePair,
+    size: u64,
+}
+```
+- `StrategyContext::take_amounts`：读取配置规模，交由 QuoteDispatcher 分配批次；cadence 负责统一的节奏控制。
+- `StrategyContext::push_quote_tasks`：生成批次 ID，将规模封装为 `QuoteBatchPlan`。
+- `QuoteDispatcher`（`src/engine/quote_dispatcher.rs`）：`plan` 负责记录批次统计；`dispatch` 结合 `tokio::Semaphore` 与 `FuturesUnordered` 启动并发 worker，并按 cadence 控制组内间隔与并发度。
 
 ### 3.4 Titan 特殊处理
-- Titan provider 在 `MultiLegRuntime` 中通过 `TitanControl` 维护信号量，默认最大并发 2；Titan 长连不读取各引擎的 `parallelism` 配置。
+- Titan provider 在 `MultiLegRuntime` 中通过 `TitanControl` 维护信号量，默认最大并发 2；Titan 长连独立于 cadence 的并发配置。
 - Titan WebSocket 使用 `IpAllocator::acquire(TitanWsConnect)` 获取 `SharedLongLived` lease；长连接空闲时保持 `Idle` 状态，允许 HTTP 任务复用。
 
 ### 3.5 Lander / Swap / Multi-leg 集成
@@ -86,9 +85,9 @@ enum IpLeaseMode {
 - Multi-leg 各腿 provider 调用 `IpAllocator`，保证 quote 与 swap 行为都遵循全局资源限制。
 
 ### 3.6 与现有代码的接口改造
-- [x] `src/engine/context.rs`：`take_amounts_if_ready` 返回 `ReadyAmounts`，`push_quote_tasks` 生成带批次 ID 的 `QuoteBatchPlan`。
+- [x] `src/engine/context.rs`：`take_amounts` 直接返回规模列表，`push_quote_tasks` 生成带批次 ID 的 `QuoteBatchPlan`。
 - [x] `src/engine/mod.rs`：`StrategyEngine` 通过 `QuoteDispatcher::dispatch` 获取并发报价结果，再顺序评估套利机会与落地；旧的串行路径保留作 Multi-leg 回退。
-- [x] `src/engine/quote.rs`：`QuoteExecutor::round_trip` 接受 `&IpLeaseHandle` 并复用买卖腿的 lease，同时在 Jupiter / Ultra / DFlow 报价失败时标记退避。
+- [x] `src/engine/quote.rs`：`QuoteExecutor::round_trip` 接受 `&IpLeaseHandle` 并复用买卖腿的 lease，同时在 Ultra / DFlow / Kamino 报价失败时标记退避。
 - [x] `src/engine/swap_preparer.rs`：`SwapPreparer::prepare` 强制要求 `&IpLeaseHandle`，确保指令生成沿用同一 IP 并补齐本地 IP 传播。
 - [ ] `src/lander/mod.rs` 与各落地器实现感知 `IpAllocator`，统一通过构造函数注入 `Arc<IpAllocator>`，避免跨模块 `Box<dyn>`。
 - [x] `monitoring::events`：报价事件已输出 `local_ip`、`batch_id` 指标，新增 IP 资源池打点（`galileo_ip_inventory_total` / `galileo_ip_inflight` / `galileo_ip_cooldown_*`）覆盖 swap/lander 链路观测。
@@ -97,29 +96,26 @@ enum IpLeaseMode {
 
 ## 4. 并发度计算与节奏控制
 
-### 4.1 `quote_parallelism`（新增配置）
-- 配置路径：`engine.jupiter.quote_config.parallelism` / `engine.dflow.quote_config.parallelism` / `engine.ultra.quote_config.parallelism`。Titan 长连无需配置并发。
-- 取值含义：
-  - `auto`：`min(trade_sizes.len(), ip_capacity, backend_limit)`。
-  - 正整数：显式上限，仍与 `ip_capacity`、`backend_limit` 取最小值。
-  - 缺省 / `1`：退化为串行。
-- `ip_capacity` = `IpAllocator` 中处于 `Idle` 或 `LongLived` 状态的 slot 数；单 IP 模式仍返回 `>=1`。
-- `backend_limit`：
-  - DFlow / Ultra / Jupiter：默认 `usize::MAX`，可在配置中设置软上限。
-  - Titan：固定为 2。
+### 4.1 Cadence 默认配置
+- 配置路径：`engine.<backend>.quote_config.cadence.default.*`。
+- 字段含义：
+  - `group_parallelism`：并发 quote 组数量；`auto` 根据 IP 池与 per-IP 限制动态决定上限。
+  - `intra_group_spacing_ms`：同一批次内，连续组启动的最小间隔。
+  - `wave_cooldown_ms`：一批所有组完成后，下一批启动前的冷却时间。
+- 如需按 mint/标签调整，可在 `per_base_mint` / `per_label` 中增量覆盖（当前版本只应用 `default`，后续可扩展）。
 
 ### 4.2 单 IP 并发策略
 - `IpAllocator` 允许同一 IP 发起多个并发请求（上限可配置）。退避逻辑在 `mark_result` 中调节每个 IP 的下次可用时间，实现“一个 IP 并发 + 节奏控制”。
 - 当频繁出现 429 时，`IpAllocator` 会缩减该 IP 的 effective capacity，并通过 metrics `galileo_ip_cooldown_total{ip}` 暴露。
 
-### 4.3 `quote_batch_interval_ms`
-- 配置路径：各引擎 `quote_config.batch_interval_ms`，缺省为 0。
-- 含义：一个批次全部完成后，强制等待该时间再开始下一批；用于在单 IP 场景下拉长速率窗口。
-- 当 `IpAllocator` 报告退避状态时，调度器可动态放大该间隔，避免热 IP 被继续打爆。
+### 4.3 Quote cadence
+- 配置路径：各引擎 `quote_config.cadence.default.*`，缺省为 `group_parallelism = auto`、其余间隔为 0。
+- 含义：通过 `group_parallelism`、`intra_group_spacing_ms`、`wave_cooldown_ms` 描述一次批次内 quote 组的并发与启动节奏。
+- 当 `IpAllocator` 报告退避状态时，可动态调整这些参数（例如放大 `intra_group_spacing` 或 `wave_cooldown`），避免热 IP 被继续打爆。
 
 ### 4.4 调度器回退策略
 - `src/engine/scheduler.rs` 增加 `BackoffHint`，由 `QuoteDispatcher` 反馈“最早可重试时间”。
-- `Scheduler::wait` 取 `min(strategy.next_ready, backoff_hint)`，确保 `process_delay` 与 IP 冷却并行生效。
+- `Scheduler::wait` 基于策略提供的等待时间与 cadence 返回的 `wave_cooldown` 之和，确保 IP 冷却与节奏协同。
 
 ---
 
@@ -135,29 +131,31 @@ bot:
       timeout_start: 250
 
 engine:
-  jupiter:
+  ultra:
     quote_config:
-      parallelism: auto
-      batch_interval_ms: 0
+      cadence:
+        default:
+          group_parallelism: auto
+          intra_group_spacing_ms: 0
+          wave_cooldown_ms: 0
 
-ultra:
-  quote_config:
-    parallelism: auto
-    batch_interval_ms: 0
-
-dflow:
-  quote_config:
-    parallelism: 4
-    batch_interval_ms: 10
+  dflow:
+    quote_config:
+      cadence:
+        default:
+          group_parallelism: 4
+          intra_group_spacing_ms: 50
+          wave_cooldown_ms: 500
 ```
 - `bot.network.enable_multiple_ip`：开启多 IP 池扫描；关闭时退化为单 IP，但批次并发仍可运行。
 - `bot.network.manual_ips` / `blacklist_ips`：显式白/黑名单；默认按自动发现的接口过滤，调试时可通过 `allow_loopback` 启用 127.0.0.1。
 - `bot.network.per_ip_inflight_limit`：限制单个 IP 的同时请求数；缺省 `null` 表示仅受 per-IP 退避逻辑约束。
 - `bot.network.cooldown_ms`：分别定义 429/限流与超时类错误的冷却起点，后续由 `mark_outcome` 指数拉长。
-- `engine.<backend>.quote_config.parallelism`：为 DFlow / Ultra / Jupiter 分别设置并发；Titan 长连不需要该字段。
-- `engine.<backend>.quote_config.batch_interval_ms`：各引擎的批次间隔，单位毫秒，缺省为 0。
-- 旧的手写并发逻辑（若存在）全部删除，统一走新调度入口。
-- `src/config/types.rs`：DFlow / Ultra / Jupiter 的 `quote_config` 新增 `parallelism`、`batch_interval_ms` 字段，替代旧的全局并发配置。
+- `engine.<backend>.quote_config.cadence.default.group_parallelism`：为 DFlow / Ultra / Kamino 分别设置并发；Titan 长连不需要该字段。
+- `engine.<backend>.quote_config.cadence.default.{intra_group_spacing_ms,wave_cooldown_ms}`：控制批次内启动节奏与批次间冷却。
+- `engine.<backend>.quote_config.cadence.per_base_mint`：可按 base mint 细化节奏；目前仅在 cadence 解析阶段启用，Strategy/Dispatcher 已能读取覆盖。
+- 旧的手写并发逻辑（若存在）全部删除，统一走 `QuoteDispatcher` cadence。
+- `src/config/types.rs`：DFlow / Ultra / Kamino 的 `quote_config` 暴露 `cadence` 字段，后续可扩展 per-base mint/label 覆盖。
 
 ---
 
@@ -170,8 +168,8 @@ dflow:
   - `galileo_lander_submission_total{strategy,lander,dispatch,variant,result,local_ip}`
   - `galileo_quote_total` / `galileo_quote_latency_ms` 现已增加 `local_ip`、`batch_id` 标签
   - `galileo_swap_compute_unit_limit_bucket{strategy,local_ip}`、`galileo_transaction_built_total{strategy,local_ip}` 用于分析构建路径
-- Tracing 扩展字段：`batch_id`、`local_ip`、`quote_parallelism`、`ip_cooldown_ms`。
-- 文档更新：`docs/strategy_arch.md` 解释如何使用 `quote_parallelism`、`enable_multiple_ip` 调优；`galileo.yaml` 样例同步。
+- Tracing 扩展字段：`batch_id`、`local_ip`、`group_parallelism`、`ip_cooldown_ms`。
+- 文档更新：`docs/strategy_arch.md` 解释 cadence 配置与 `enable_multiple_ip` 的调优思路；`galileo.yaml` 样例同步。
 
 ---
 
@@ -185,11 +183,11 @@ dflow:
 - [x] 新增 `QuoteBatchPlan`、`ReadyAmounts`，`StrategyContext` 将调度规模转换为批次（`src/engine/context.rs`）。
 - [x] 引入 `QuoteDispatcher`（`src/engine/quote_dispatcher.rs`）并在 `StrategyEngine` 中以 `dispatch` 驱动并发报价，顺序路径仅保留给 Multi-leg 回退。
 - [x] `QuoteExecutor::round_trip` 接受 `IpLeaseHandle` 并复用同一 lease 完成买/卖腿请求。
-- [x] `JupiterApiClient`、`DflowApiClient`、`UltraApiClient` 支持 IP 绑定的 HTTP 客户端池。
+- [x] `DflowApiClient`、`UltraApiClient`、`KaminoApiClient` 支持 IP 绑定的 HTTP 客户端池。
 - [x] `lander::rpc::RpcLander` 接入 `IpAllocator`。
 
 ### 阶段 3：退避与观测
-1. `IpAllocator::mark_result` 接入所有 HTTP / WS / RPC 调用，完善 cooldown 策略。✅ Jupiter / Ultra / DFlow 报价、Swap 构建、Lander 提交路径均透传 `mark_outcome` 并暴露 IP 冷却指标。
+1. `IpAllocator::mark_result` 接入所有 HTTP / WS / RPC 调用，完善 cooldown 策略。✅ Ultra / DFlow / Kamino 报价、Swap 构建、Lander 提交路径均透传 `mark_outcome` 并暴露 IP 冷却指标。
 2. 补充 metrics、tracing 字段，更新 `monitoring::events`。✅ Lander 路径、新增 swap/transaction 指标包含 `local_ip` 标签，并输出 `galileo_lander_submission_total`。Grafana 建议新增 “Quote / Swap / Lander 成功率” 看板，并给 `galileo_lander_submission_total{result="failure"}` 配置阈值告警。
 
 ### 阶段 4：Multi-leg & Titan
@@ -220,7 +218,7 @@ dflow:
 | 风险 | 描述 | 缓解措施 |
 | --- | --- | --- |
 | 特定环境禁止绑定某些 IP | `bind` 失败或权限不足 | 支持黑名单/回退默认 IP，启动时显式告警 |
-| 单 IP 并发导致瞬间 429 | 节奏过猛 | 结合 `quote_batch_interval_ms` + `mark_result` 冷却；监控 429 指标 |
+| 单 IP 并发导致瞬间 429 | 节奏过猛 | 结合 cadence 配置（`intra_group_spacing` / `wave_cooldown`）+ `mark_outcome` 冷却；监控 429 指标 |
 | Titan 长连占用导致饥饿 | 其它任务无法获取 IP | `SharedLongLived` 允许共享；空闲检测 + 定期释放 |
 | Quote 批次错配 | 买卖腿调度错乱 | `batch_id` + 状态机校验；卖腿前检查买腿成功 |
 | 多策略争用 IP | 盲发与 multi-leg 互相抢 slot | `IpTaskKind` 分级权重 + 指标监控；必要时引入优先级队列 |

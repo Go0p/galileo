@@ -11,6 +11,7 @@ use crate::dexes::dlmm::MeteoraDlmmMarketMeta;
 use crate::dexes::framework::SwapFlow;
 use crate::dexes::humidifi::HumidiFiMarketMeta;
 use crate::dexes::obric_v2::ObricV2MarketMeta;
+use crate::dexes::saros::SarosMarketMeta;
 use crate::dexes::solfi_v2::SolfiV2MarketMeta;
 use crate::dexes::tessera_v::TesseraVMarketMeta;
 use crate::dexes::whirlpool::WhirlpoolMarketMeta;
@@ -67,6 +68,7 @@ pub enum BlindDex {
     SolFiV2,
     HumidiFi,
     TesseraV,
+    Saros,
     ZeroFi,
     ObricV2,
     RaydiumClmm,
@@ -80,6 +82,7 @@ impl BlindDex {
             Self::SolFiV2 => "SolFiV2",
             Self::HumidiFi => "HumidiFi",
             Self::TesseraV => "TesseraV",
+            Self::Saros => "Saros",
             Self::ZeroFi => "ZeroFi",
             Self::ObricV2 => "ObricV2",
             Self::RaydiumClmm => "RaydiumClmm",
@@ -93,6 +96,7 @@ impl BlindDex {
             Self::SolFiV2 => 90_000,
             Self::HumidiFi => 40_000,
             Self::TesseraV => 83_000,
+            Self::Saros => 46_000,
             Self::ZeroFi => 46_000,
             Self::ObricV2 => 58_000,
             Self::RaydiumClmm => 180_000,
@@ -116,6 +120,7 @@ impl FromStr for BlindDex {
             "SolFiV2" => Ok(Self::SolFiV2),
             "HumidiFi" => Ok(Self::HumidiFi),
             "TesseraV" => Ok(Self::TesseraV),
+            "Saros" => Ok(Self::Saros),
             "ZeroFi" => Ok(Self::ZeroFi),
             "ObricV2" => Ok(Self::ObricV2),
             "RaydiumClmm" => Ok(Self::RaydiumClmm),
@@ -213,6 +218,7 @@ pub enum BlindMarketMeta {
     HumidiFi(Arc<HumidiFiMarketMeta>),
     SolFiV2(Arc<SolfiV2MarketMeta>),
     TesseraV(Arc<TesseraVMarketMeta>),
+    Saros(Arc<SarosMarketMeta>),
     ZeroFi(Arc<ZeroFiMarketMeta>),
     ObricV2(Arc<ObricV2MarketMeta>),
     RaydiumClmm(Arc<RaydiumClmmMarketMeta>),

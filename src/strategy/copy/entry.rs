@@ -6,13 +6,13 @@ use tracing::warn;
 
 use crate::cache::AltCache;
 use crate::cli::context::{
-    resolve_global_http_proxy, resolve_instruction_memo, resolve_rpc_client,
+    DryRunMode, resolve_global_http_proxy, resolve_instruction_memo, resolve_rpc_client,
 };
-use crate::cli::strategy::{StrategyBackend, StrategyMode};
+use crate::cli::strategy::StrategyBackend;
 use crate::config::launch::resources::{
     build_http_client_pool, build_ip_allocator, build_rpc_client_pool,
 };
-use crate::config::{AppConfig, LanderSettings};
+use crate::config::{AppConfig, LanderSettings, StrategyToggle};
 use crate::engine::{ComputeUnitPriceMode, EngineIdentity, TransactionBuilder};
 use crate::lander::LanderFactory;
 
@@ -21,17 +21,20 @@ use super::runner::CopyStrategyRunner;
 pub async fn run_copy_strategy(
     config: &AppConfig,
     _backend: &StrategyBackend<'_>,
-    mode: StrategyMode,
+    dry_run: &DryRunMode,
 ) -> Result<()> {
     let copy_config = &config.galileo.copy_strategy;
-    if !copy_config.enable {
+    if !config
+        .galileo
+        .bot
+        .strategy_enabled(StrategyToggle::CopyStrategy)
+    {
         warn!(target: "strategy", "复制策略未启用，直接退出");
         return Ok(());
     }
+    let dry_run_enabled = dry_run.is_enabled();
 
-    let dry_run = matches!(mode, StrategyMode::DryRun) || config.galileo.bot.dry_run;
-
-    let resolved_rpc = resolve_rpc_client(&config.galileo.global)?;
+    let resolved_rpc = resolve_rpc_client(&config.galileo.global, dry_run.rpc_override())?;
     let rpc_client = resolved_rpc.client.clone();
     let identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
@@ -46,7 +49,11 @@ pub async fn run_copy_strategy(
     );
 
     let ip_allocator = build_ip_allocator(&config.galileo.bot.network)?;
-    let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+    let global_proxy = if dry_run_enabled {
+        None
+    } else {
+        resolve_global_http_proxy(&config.galileo.global)
+    };
     let rpc_client_pool =
         build_rpc_client_pool(resolved_rpc.endpoints.clone(), global_proxy.clone());
 
@@ -76,7 +83,7 @@ pub async fn run_copy_strategy(
         Some(Arc::clone(&submission_client_pool)),
     );
 
-    let landing_timeout = resolve_landing_timeout(&config.galileo.bot);
+    let landing_timeout = resolve_landing_timeout(&config.galileo.engine.time_out);
     let dispatch_strategy = config.lander.lander.sending_strategy;
     let wallet_refresh_interval = if config.galileo.bot.auto_refresh_wallet_minute == 0 {
         None
@@ -101,7 +108,7 @@ pub async fn run_copy_strategy(
         lander_settings: config.lander.lander.clone(),
         landing_timeout,
         dispatch_strategy,
-        dry_run,
+        dry_run: dry_run_enabled,
         wallet_refresh_interval,
     };
 
@@ -142,7 +149,7 @@ fn derive_compute_unit_price_mode(settings: &LanderSettings) -> Option<ComputeUn
     }
 }
 
-fn resolve_landing_timeout(bot: &crate::config::BotConfig) -> Duration {
-    let ms = bot.landing_ms.unwrap_or(2_000).max(1);
-    Duration::from_millis(ms as u64)
+fn resolve_landing_timeout(timeouts: &crate::config::EngineTimeoutConfig) -> Duration {
+    let ms = timeouts.landing_ms.max(1);
+    Duration::from_millis(ms)
 }

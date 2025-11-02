@@ -43,7 +43,7 @@
    lander:
      sending_strategy: "AllAtOnce"  # 或 "OneByOne"
    ```
-   - 其它节奏控制（`process_delay`、`sending_cooldown`）继续在策略层使用。
+   - 其它节奏控制（`cadence`、`sending_cooldown`）继续在策略层使用。
    - 不再引入额外复杂配置保持策略轻量。
 
 6. **保留并梳理 tip 配置**
@@ -109,7 +109,7 @@ lander/
 
 2. **集成测试**
    - 搭建伪 endpoint，验证 AllAtOnce 同时命中多个 endpoint 的行为，以及 OneByOne 在多失败场景下的回退逻辑。
-   - 确认 `process_delay`、`sending_cooldown` 等节奏控制仍有效。
+   - 确认 cadence 与 `sending_cooldown` 等节奏控制仍有效。
 
 ---
 

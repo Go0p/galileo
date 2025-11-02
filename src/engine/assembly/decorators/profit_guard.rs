@@ -27,7 +27,13 @@ impl InstructionDecorator for ProfitGuardDecorator {
             return Ok(());
         };
 
-        if !lighthouse.should_guard(base_mint) {
+        let Some(required_amount) = lighthouse
+            .guard_amount_for(base_mint, guard_required)
+            .await?
+        else {
+            return Ok(());
+        };
+        if required_amount == 0 {
             return Ok(());
         }
 
@@ -35,7 +41,7 @@ impl InstructionDecorator for ProfitGuardDecorator {
         let token_account =
             spl_associated_token_account::get_associated_token_address(&payer, base_mint);
         let memory_id = lighthouse.next_memory_id();
-        let guard = token_amount_guard(payer, token_account, memory_id, guard_required);
+        let guard = token_amount_guard(payer, token_account, memory_id, required_amount);
         bundle.insert_profit_guard(guard);
         Ok(())
     }

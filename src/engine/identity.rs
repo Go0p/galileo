@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use bs58;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 
 use crate::config::WalletConfig;
+use crate::config::wallet::parse_keypair_string;
 
 use super::error::{EngineError, EngineResult};
 
@@ -12,7 +12,6 @@ use super::error::{EngineError, EngineResult};
 pub struct EngineIdentity {
     pub pubkey: Pubkey,
     fee_account: Option<String>,
-    use_shared_accounts: bool,
     skip_user_accounts_rpc_calls: bool,
     pub signer: Arc<Keypair>,
 }
@@ -24,13 +23,11 @@ impl EngineIdentity {
 
         let fee_account = None;
 
-        let use_shared_accounts = false;
         let skip_user_accounts_rpc_calls = false;
 
         Ok(Self {
             pubkey,
             fee_account,
-            use_shared_accounts,
             skip_user_accounts_rpc_calls,
             signer,
         })
@@ -38,10 +35,6 @@ impl EngineIdentity {
 
     pub fn fee_account(&self) -> Option<&str> {
         self.fee_account.as_deref()
-    }
-
-    pub fn use_shared_accounts(&self) -> bool {
-        self.use_shared_accounts
     }
 
     pub fn skip_user_accounts_rpc_calls(&self) -> bool {
@@ -64,27 +57,4 @@ fn load_keypair(wallet: &WalletConfig) -> EngineResult<Arc<Keypair>> {
     Err(EngineError::InvalidConfig(
         "缺少私钥配置，请提供 global.wallet.private_key 或环境变量 GALILEO_PRIVATE_KEY".into(),
     ))
-}
-
-fn parse_keypair_string(raw: &str) -> Result<Keypair, anyhow::Error> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("keypair string empty");
-    }
-
-    if trimmed.starts_with('[') {
-        let bytes: Vec<u8> = serde_json::from_str(trimmed)?;
-        Ok(Keypair::try_from(bytes.as_slice())?)
-    } else if trimmed.contains(',') {
-        let bytes = trimmed
-            .split(',')
-            .map(|part| part.trim())
-            .filter(|part| !part.is_empty())
-            .map(|part| part.parse::<u8>())
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Keypair::try_from(bytes.as_slice())?)
-    } else {
-        let data = bs58::decode(trimmed).into_vec()?;
-        Ok(Keypair::try_from(data.as_slice())?)
-    }
 }

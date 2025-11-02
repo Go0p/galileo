@@ -29,7 +29,7 @@
 - `ComputeBudgetDecorator` 直接调用缓存层；`GuardBudgetDecorator` 仅计算数值，不再修改指令 Vec。
 
 ### 4. 多腿与聚合引擎内存策略
-- `SwapInstructionsVariant` 内部改为 `enum { Jupiter(SmallVec), … }`，提供 `into_segments()` 供 bundle 消费。
+- `SwapInstructionsVariant` 已压缩为 `enum { Dflow(..), Ultra(..), MultiLeg(..), Kamino(..) }`，统一暴露 `into_segments()` 供 bundle 零拷贝消费。
 - Multi-leg orchestration 合并阶段使用 `Vec::with_capacity(total_len)` + `extend_from_slice`，杜绝多次 reallocation。
 - Ultra/Kamino 解码模块针对 base64/bincode 解码复用缓冲区，避免重复分配。
 

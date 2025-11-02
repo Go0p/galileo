@@ -10,6 +10,7 @@ pub mod plugins;
 mod precheck;
 mod profit;
 mod quote;
+mod quote_cadence;
 mod quote_dispatcher;
 mod runtime;
 mod scheduler;
@@ -27,14 +28,20 @@ pub use planner::{DispatchPlan, DispatchStrategy, TxVariant, TxVariantPlanner, V
 pub use precheck::AccountPrechecker;
 pub use profit::{ProfitConfig, ProfitEvaluator, TipConfig};
 pub use quote::{QuoteConfig, QuoteExecutor};
+pub use quote_cadence::QuoteCadence;
 pub use quote_dispatcher::QuoteDispatcher;
 pub(crate) use runtime::LighthouseRuntime;
 pub use runtime::MultiLegEngineContext;
 pub(crate) use runtime::strategy::MintSchedule;
-pub use runtime::strategy::{EngineSettings, LighthouseSettings, StrategyEngine};
+pub use runtime::strategy::{
+    ConsoleSummarySettings, EngineSettings, LighthouseSettings, SolPriceFeedSettings,
+    StrategyEngine,
+};
 pub use scheduler::Scheduler;
 pub use swap_preparer::{ComputeUnitPriceMode, SwapPreparer};
 #[allow(unused_imports)]
-pub use types::{ExecutionPlan, QuoteTask, StrategyTick, SwapOpportunity, TradeProfile};
+pub use types::{
+    ExecutionPlan, JitoTipPlan, QuoteTask, StrategyTick, SwapOpportunity, TradeProfile,
+};
 
 pub const FALLBACK_CU_LIMIT: u32 = 230_000;

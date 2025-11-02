@@ -3,6 +3,7 @@ pub mod dlmm;
 pub mod framework;
 pub mod humidifi;
 pub mod obric_v2;
+pub mod saros;
 pub mod solfi_v2;
 pub mod tessera_v;
 pub mod whirlpool;

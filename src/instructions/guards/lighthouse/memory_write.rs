@@ -55,8 +55,8 @@ pub fn build_memory_write_instruction(params: MemoryWriteParams) -> Instruction 
 
 #[cfg(test)]
 mod tests {
-    use super::program::LIGHTHOUSE_PROGRAM_ID;
     use super::*;
+    use crate::instructions::guards::lighthouse::program::LIGHTHOUSE_PROGRAM_ID;
 
     #[test]
     fn memory_write_encoding_matches_expected_layout() {

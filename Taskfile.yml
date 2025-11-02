@@ -45,7 +45,7 @@ tasks:
           CMD: 'init {{.CLI_ARGS | default ""}}'
 
   galileo:quote:
-    desc: "请求 Jupiter 报价（需传入必要参数）"
+    desc: "请求报价（需传入必要参数）"
     cmds:
       - task: galileo:run
         vars:
@@ -63,55 +63,6 @@ tasks:
       - task: galileo:run
         vars:
           CMD: 'strategy {{.CLI_ARGS | default ""}}'
-
-  galileo:jupiter:help:
-    desc: "查看 galileo jupiter 子命令帮助"
-    cmds:
-      - task: galileo:run
-        vars:
-          CMD: "jupiter --help"
-
-  galileo:jupiter:start:
-    desc: "启动 Jupiter 二进制（可追加 --force-update）"
-    cmds:
-      - task: galileo:run
-        vars:
-          CMD: 'jupiter start {{.CLI_ARGS | default ""}}'
-
-  galileo:jupiter:stop:
-    desc: "停止 Jupiter 二进制"
-    cmds:
-      - task: galileo:run
-        vars:
-          CMD: "jupiter stop"
-
-  galileo:jupiter:restart:
-    desc: "重启 Jupiter 二进制"
-    cmds:
-      - task: galileo:run
-        vars:
-          CMD: "jupiter restart"
-
-  galileo:jupiter:update:
-    desc: "下载并安装最新 (或指定版本) 的 Jupiter 二进制"
-    cmds:
-      - task: galileo:run
-        vars:
-          CMD: 'jupiter update {{.CLI_ARGS | default ""}}'
-
-  galileo:jupiter:status:
-    desc: "查看 Jupiter 二进制当前状态"
-    cmds:
-      - task: galileo:run
-        vars:
-          CMD: "jupiter status"
-
-  galileo:jupiter:list:
-    desc: "列出最近可用的 Jupiter 版本"
-    cmds:
-      - task: galileo:run
-        vars:
-          CMD: 'jupiter list {{.CLI_ARGS | default ""}}'
 
   galileo:hotpath:
     desc: "启用 hotpath 特性运行 galileo（自定义命令通过 CMD 传入）"

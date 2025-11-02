@@ -15,7 +15,7 @@ use thiserror::Error;
 use tracing::{Level, debug, trace, warn};
 use url::form_urlencoded;
 
-use crate::config::{BotConfig, LoggingConfig, LoggingProfile};
+use crate::config::{EngineTimeoutConfig, LoggingConfig, LoggingProfile};
 use crate::monitoring::metrics::prometheus_enabled;
 use crate::monitoring::short_mint_str;
 use crate::monitoring::{LatencyMetadata, guard_with_level};
@@ -68,16 +68,16 @@ impl UltraApiClient {
     pub fn new(
         client: reqwest::Client,
         base_url: String,
-        bot_config: &BotConfig,
+        timeouts: &EngineTimeoutConfig,
         logging: &LoggingConfig,
     ) -> Self {
-        Self::with_ip_pool(client, base_url, bot_config, logging, None)
+        Self::with_ip_pool(client, base_url, timeouts, logging, None)
     }
 
     pub fn with_ip_pool(
         client: reqwest::Client,
         base_url: String,
-        bot_config: &BotConfig,
+        timeouts: &EngineTimeoutConfig,
         logging: &LoggingConfig,
         client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
     ) -> Self {
@@ -87,9 +87,8 @@ impl UltraApiClient {
         } else {
             format!("https://{trimmed}")
         };
-        let quote_timeout = Duration::from_millis(bot_config.quote_ms);
-        let swap_ms = bot_config.swap_ms.unwrap_or(bot_config.quote_ms);
-        let execute_timeout = Duration::from_millis(swap_ms);
+        let quote_timeout = Duration::from_millis(timeouts.quote_ms);
+        let execute_timeout = Duration::from_millis(timeouts.swap_ms);
         Self {
             base_url: normalized,
             client,

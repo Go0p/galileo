@@ -40,17 +40,14 @@ https://github.com/ValidatorsDAO/solana-stream/blob/main/crate/solana-stream-sdk
 - 根目录提供的 `galileo.yaml` 给出最小可运行示例，可直接复制后补全 RPC、Yellowstone 等敏感信息。
 - 上链器与小费策略拆分在 `lander.yaml`，程序会自动加载同目录或 `config/` 下的该文件，方便独立维护 tip、优先费等参数。
 - 更详细的字段说明与第三方脚本映射见 `docs/galileo_config_reference.md`。
-- 本地调试只想复用线上 Jupiter API 时，可将 `[jupiter.launch].disable_local_binary` 设为 `true`，跳过本地二进制启动。
-- 运行时 RPC / Jupiter API 端点配置集中在 `[bot]`，签名账户、共享账户等身份信息位于 `[bot.identity]`。
+- 运行时 RPC 与聚合器 API 端点集中在 `[bot]` 及 `engine.*` 节点，签名账户、共享账户等身份信息位于 `[bot.identity]`。
 - 启用 `[strategy]` 段并填写钱包、公链参数后，可执行 `galileo strategy` 启动套利循环（CTRL+C 可安全退出）。
 
-执行 `galileo init` 可在目标目录生成默认的 `galileo.yaml`、`lander.yaml`、`jupiter.toml` 模板；如需覆盖已有文件，附加 `--force`。
+执行 `galileo init` 可在目标目录生成默认的 `galileo.yaml` 与 `lander.yaml` 模板；如需覆盖已有文件，附加 `--force`。
 
 常用 CLI 入口：
-- `galileo strategy`：根据配置运行套利循环，必要时会自动拉起本地 Jupiter。
-- `galileo jupiter start|stop|restart|status|update`：管理本地 Jupiter 二进制（当 `disable_local_binary = false` 且使用本地 URL 时生效）。
+- `galileo strategy`：根据配置运行套利循环。
 - `galileo tools dflow-probe --template copy_tx/template_tx.json`：离线比对 DFlow 动态路由指令的编码输出。
-- Jupiter 启动参数解释可参考 `docs/jupiter_cli_options.md`，或使用 `galileo jupiter help` 查看 CLI。
 
 
 ## 缓存系统设计

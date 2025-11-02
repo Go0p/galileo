@@ -15,6 +15,7 @@ use tracing::warn;
 
 use super::COMPUTE_BUDGET_PROGRAM_ID;
 use super::builder::PreparedTransaction;
+use super::types::JitoTipPlan;
 
 pub type VariantId = u32;
 
@@ -91,6 +92,7 @@ pub struct TxVariant {
     base_tip_lamports: u64,
     instructions: Vec<Instruction>,
     lookup_accounts: Vec<AddressLookupTableAccount>,
+    jito_tip_plan: Option<JitoTipPlan>,
 }
 
 impl TxVariant {
@@ -104,6 +106,7 @@ impl TxVariant {
         base_tip_lamports: u64,
         instructions: Vec<Instruction>,
         lookup_accounts: Vec<AddressLookupTableAccount>,
+        jito_tip_plan: Option<JitoTipPlan>,
     ) -> Self {
         Self {
             id,
@@ -115,6 +118,7 @@ impl TxVariant {
             base_tip_lamports,
             instructions,
             lookup_accounts,
+            jito_tip_plan,
         }
     }
 
@@ -159,6 +163,10 @@ impl TxVariant {
             .signatures
             .get(0)
             .map(|sig| sig.to_string())
+    }
+
+    pub fn jito_tip_plan(&self) -> Option<&JitoTipPlan> {
+        self.jito_tip_plan.as_ref()
     }
 }
 
@@ -248,6 +256,7 @@ impl TxVariantPlanner {
                     prepared.tip_lamports,
                     variant_instructions,
                     prepared.lookup_accounts.clone(),
+                    prepared.jito_tip_plan.clone(),
                 );
                 variants.push(variant);
                 next_id = next_id.saturating_add(1);
@@ -366,6 +375,7 @@ mod tests {
             tip_lamports: 0,
             instructions: Vec::new(),
             lookup_accounts: Vec::new(),
+            jito_tip_plan: None,
         }
     }
 

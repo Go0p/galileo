@@ -39,7 +39,7 @@ impl Strategy for BlindStrategy {
                 for offset in 0..total {
                     let idx = (start + offset) % total;
                     let pair = &pairs[idx];
-                    if let Some(amounts) = ctx.take_amounts_if_ready(&pair.input_pubkey) {
+                    if let Some(amounts) = ctx.take_amounts(&pair.input_pubkey) {
                         if !amounts.is_empty() {
                             ctx.push_quote_tasks(pair, amounts);
                         }

@@ -62,14 +62,14 @@ src/
 - **指令原语**：所有协议 `Instruction` 构造逻辑集中在 `instructions/`，保持 engine/strategy 纯粹。
 - **监控模块**：与 Engine、Strategy、Lander 解耦，通过 `monitoring::events` 输出日志与指标。
 
-## 3. Jupiter Quote → Swap → Lander 执行链路
+## 3. 聚合器 Quote → Swap → Lander 执行链路
 
 ### 3.1 Quote 阶段
-- 依赖本地 Jupiter 二进制，针对配置文件中的 `base_mint` 反复 Quote；配置项 `mints` 仅表示可能的中间市场（A→B→A 时的 B）。
+- 引擎通过远端聚合器 API（DFlow / Ultra / Kamino）按配置的 `base_mint` 批量 Quote；`mints` 仍表示潜在的中间市场（A→B→A 时的 B）。
 - 输入/输出 mint 均固定为 `base_mint`，通过两次 Quote（正向、反向）确认利润，Quote 请求参数应直接来自配置（`request_params`）。
 - Quote 频率极高，不启用缓存；失败快速回退，使用 `try_send` + 降级通道防止积压。
 - `QuoteExecutor` 负责构造请求、执行 HTTP/gRPC 调用、解析响应，并同步写入监控。
-- 当前引擎内置 Jupiter / DFlow / Kamino / Ultra 四类聚合器，通过 `galileo.engine.backend` 切换。Kamino 直接复用 `/kswap/all-routes` 响应内的指令集，不再额外调用 swap-instructions API。
+- 当前引擎内置 DFlow / Kamino / Ultra 三类聚合器，通过 `galileo.engine.backend` 切换。Kamino 直接复用 `/kswap/all-routes` 响应内的指令集，不再额外调用 swap-instructions API。
 
 ### 3.2 盈利判定
 - `ProfitEvaluator` 接收双向 Quote 结果，执行手续费、滑点、tip 开销评估。
@@ -77,7 +77,7 @@ src/
 - 可配置的风控门限：`min_profit`, `max_slippage`, `cooldown` 等均在 Strategy 层完成判定，Engine 只负责并发调度。
 
 ### 3.3 指令装配流水线
-- `SwapPreparer` 根据 `SwapOpportunity` 调用 Jupiter / DFlow / Ultra 等聚合器，返回 `SwapInstructionsVariant`（含指令、ALT、compute budget、tip 等元数据）。
+- `SwapPreparer` 根据 `SwapOpportunity` 调用 DFlow / Ultra / Kamino 等聚合器，返回 `SwapInstructionsVariant`（含指令、ALT、compute budget、tip 等元数据）。
 - 引擎将响应转换为 `InstructionBundle`，按 `compute_budget` / `prefix` / `main` / `post` 四段组织，避免后续反复拷贝。
 - `DecoratorChain` 顺序执行装饰器：
   - `FlashloanDecorator`：若 `MarginfiFlashloanManager` 可用，则调用 `instructions::flashloan::marginfi::MarginfiFlashloan` 将主体指令包裹在 Begin/Borrow/Repay/End 中。
@@ -150,13 +150,13 @@ pub trait Strategy {
 - **策略层**：聚焦调度顺序/节奏（如 Blind 批次、PureBlind 复制），通过 `StrategyContext` 唤起 Quote、刷新配置或回收资源，最终返回 `StrategyDecision` 供引擎执行。
 - **引擎层组成**：
   - `quote.rs` + `quote_dispatcher.rs`：管理多源 Quote 并发、IP 退避、机会封装。
-  - `swap_preparer.rs`：针对 Jupiter / DFlow / Ultra / Kamino 等后端生成 `SwapInstructionsVariant`。
+  - `swap_preparer.rs`：针对 DFlow / Ultra / Kamino 等后端生成 `SwapInstructionsVariant`。
   - `runtime/strategy/{quote,swap}.rs`：驱动报价批次、执行计划、装配流水线。
   - `assembly/`：`InstructionBundle` + `DecoratorChain` 抽象，确保装饰器顺序统一。
   - `planner.rs`：`TxVariantPlanner` 依据落地策略产出 `DispatchPlan`。
   - `runtime/lighthouse.rs` + `instructions::guards::lighthouse/`：负责利润守护 runtime 与指令原语。
   - `plugins/flashloan/`：闪电贷 Manager / 账户确保，指令原语位于 `instructions::flashloan/`。
-- **运行流程**：策略只暴露事件处理入口，引擎负责资源调度、盈利判定、指令装配、交易构建、落地与监控打点；`bot.dry_run = true` 或 CLI `galileo dry-run` 时仍会执行完整流水线，只在落地阶段提前返回。
+- **运行流程**：策略只暴露事件处理入口，引擎负责资源调度、盈利判定、指令装配、交易构建、落地与监控打点；当 `bot.dry_run.enable = true`（或 CLI `galileo dry-run`）时，所有 RPC 请求与交易落地都会改用 `bot.dry_run.rpc_url` 指向的本地/沙箱节点，落地器强制回退为 RPC，便于本地回放。
 - **扩展方式**：新增策略 → 在 `src/strategy/<name>/` 下实现 `Strategy` + 配置解析 → 在 `strategy::mod.rs` 中注册即可。
 
 ## 6. 监控贯穿设计
@@ -179,7 +179,7 @@ pub trait Strategy {
 - **Quote 优先级**：Quote 是最长耗时环节，Engine 应支持并发批量发起，并在配置中限制最大并行数；避免所有策略共用单队列导致阻塞。
 - **无缓存策略**：保持 Quote 实时性，除非后续需要冷启动快照，否则不做任何本地缓存。
 - **线程模型**：沿用 README 指导——异步 IO 与 rayon 计算分离；计算密集型逻辑（盈利判断、路径评估）放入 rayon 持久线程池。
-- **背压机制**：`try_send` + 丢弃旧任务，Strategies 按 `process_delay` 控制节奏；Engine 提供统一的 `RateLimiter` 工具。
+- **背压机制**：`try_send` + 丢弃旧任务，Quote 节奏由 `engine.<backend>.quote_config.cadence` 控制，Engine 依据配置限制并发与冷却时间。
 - **Blockhash / 账户状态**：通过 DashMap 管理，更新频次与 Engine 解耦；监控中暴露 freshness。
 
 ## 8. 配置映射（节选）
@@ -187,11 +187,10 @@ pub trait Strategy {
 | 配置项 | 影响模块 | 描述 |
 | --- | --- | --- |
 | `blind_strategy.*` / `back_run_strategy.*` | `src/strategy/*.rs` | 策略节奏、利润阈值、禁用状态；策略模块读取后决定是否发起 Quote。 |
-| `bot.request_params.*` | `engine::quote` | 构造 Jupiter Quote 请求的默认参数。 |
 | `lander.enable` / `lander.type` | `lander::*` | 选择默认 Lander 实现与启用列表。 |
 | `lander.sending_strategy` | `engine::planner` + `lander::stack` | 选择 `AllAtOnce` 或 `OneByOne` 调度策略，决定交易变体数量与分发方式。 |
 | `lander.tips` | `engine::builder` + `lander::*` | 配置 tip 账户、优先费；Builder 根据策略覆盖 CU。 |
-| `controls.over_trade_process_delay_ms` | `engine::scheduler` | 控制任务节奏，防止过载。 |
+| `engine.<backend>.quote_config.cadence.*` | `engine::quote_dispatcher` | 配置 quote 组并发（`group_parallelism`）、组内间隔与波次冷却，可通过 `per_base_mint` 对特定 mint 覆写。 |
 | `monitoring.*` | `bot.prometheus` | Prometheus 开关与监听地址；启用后暴露 `/metrics`，指标由 `monitoring::events` 输出。 |
 
 示例：
@@ -257,7 +256,7 @@ lander:
       listen: "0.0.0.0:9898"
   ```
 
-  启动后，galileo 会在 `listen` 地址暴露 `/metrics`，Jupiter 本身仍通过 `jupiter.core.metrics_port` 对外提供自身指标。
+  启动后，galileo 会在 `listen` 地址暴露 `/metrics` 供 Prometheus 抓取，外部聚合器仅作为 HTTP 依赖，不再需要单独采集本地进程指标。
 
 - **指标示例（按模块拆分）**：
   - Quote：`galileo_quote_total{strategy,result}`、`galileo_quote_latency_ms{strategy}`、`galileo_opportunity_detected_total{strategy}`。
@@ -268,7 +267,7 @@ lander:
   - Copy：`galileo_copy_queue_depth{wallet}`、`galileo_copy_queue_dropped_total{wallet}`、`galileo_copy_wallet_refresh_total{wallet}`。
 
 - **抓取与看板**：
-  1. 在 Prometheus `scrape_configs` 中新增 job 指向 galileo 监听端口；Jupiter 端口（默认 `18081`）也保持抓取。
+  1. 在 Prometheus `scrape_configs` 中新增 job 指向 Galileo 监听端口；聚合器指标可按需在外部系统收集。
   2. Grafana 可基于上述指标构建“机会发现/成功率、Quote 延迟、Lander 成功率”等看板，尤其推荐按 `local_ip` 维度拆分 `galileo_lander_submission_total`、`galileo_swap_compute_unit_limit_bucket` 观察退避效果。结合 Hotpath 报告可快速定位瓶颈。
 
 - **性能注意事项**：仅在配置中启用 Prometheus 时才会初始化 exporter 并真正上报指标；默认关闭时，`metrics` 调用会落入空实现，不影响主套利流程。

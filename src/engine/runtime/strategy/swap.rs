@@ -7,6 +7,7 @@ use tracing::{debug, error, info, trace, warn};
 use crate::api::dflow::DflowError;
 use crate::engine::assembly::decorators::{
     ComputeBudgetDecorator, FlashloanDecorator, GuardBudgetDecorator, ProfitGuardDecorator,
+    TipDecorator,
 };
 use crate::engine::assembly::{
     AssemblyContext, DecoratorChain, InstructionBundle, attach_lighthouse,
@@ -149,6 +150,16 @@ where
             swap_variant.resolved_lookup_tables().to_vec(),
         );
 
+        let mut jito_tip_plan = self.landers.draw_jito_tip_plan();
+        let mut effective_tip = opportunity.tip_lamports;
+        if let Some(plan) = jito_tip_plan.as_ref() {
+            if plan.lamports > 0 {
+                effective_tip = plan.lamports;
+            } else {
+                jito_tip_plan = None;
+            }
+        }
+
         let mut assembly_ctx = AssemblyContext::new(&self.identity);
         assembly_ctx.base_mint = Some(&opportunity.pair.input_pubkey);
         assembly_ctx.compute_unit_limit = swap_variant.compute_unit_limit();
@@ -157,8 +168,9 @@ where
         assembly_ctx.prioritization_fee = swap_variant
             .prioritization_fee_lamports()
             .unwrap_or_default();
-        assembly_ctx.tip_lamports = opportunity.tip_lamports;
-        assembly_ctx.jito_tip_budget = self.jito_tip_budget(opportunity.tip_lamports);
+        assembly_ctx.tip_lamports = effective_tip;
+        assembly_ctx.jito_tip_budget = self.jito_tip_budget(effective_tip);
+        assembly_ctx.jito_tip_plan = jito_tip_plan.clone();
         assembly_ctx.variant = Some(&mut swap_variant);
         assembly_ctx.opportunity = Some(&opportunity);
         assembly_ctx.flashloan_manager = self.flashloan.as_ref();
@@ -167,6 +179,7 @@ where
         let mut decorators = DecoratorChain::new();
         decorators.register(FlashloanDecorator);
         decorators.register(ComputeBudgetDecorator);
+        decorators.register(TipDecorator);
         decorators.register(GuardBudgetDecorator);
         decorators.register(ProfitGuardDecorator);
 
@@ -202,7 +215,8 @@ where
                 &self.identity,
                 &swap_variant,
                 final_instructions,
-                opportunity.tip_lamports,
+                effective_tip,
+                jito_tip_plan.clone(),
             )
             .await?;
         events::transaction_built(
@@ -221,9 +235,8 @@ where
                 slot = prepared.slot,
                 blockhash = %prepared.blockhash,
                 landers = self.landers.count(),
-                "dry-run 模式：交易已构建，跳过落地"
+                "dry-run 模式：交易将提交至覆盖的 RPC 端点"
             );
-            return Ok(());
         }
 
         let dispatch_strategy = self.settings.dispatch_strategy;

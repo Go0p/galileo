@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tracing::info;
 
-use crate::api::jupiter::SwapInstructionsResponse;
+use crate::api::dflow::SwapInstructionsResponse as DflowSwapInstructionsResponse;
 use crate::cache::AltCache;
 use crate::cli::args::{LanderCmd, LanderSendArgs};
 use crate::cli::context::{resolve_global_http_proxy, resolve_rpc_client};
@@ -38,18 +38,10 @@ async fn send_transaction(
     lander_settings: &config::LanderSettings,
     memo: Option<String>,
 ) -> Result<()> {
-    let resolved_rpc = resolve_rpc_client(&config.galileo.global)?;
+    let resolved_rpc = resolve_rpc_client(&config.galileo.global, None)?;
     let rpc_client = resolved_rpc.client.clone();
-    let mut identity =
+    let identity =
         EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
-    identity.set_skip_user_accounts_rpc_calls(
-        config
-            .galileo
-            .engine
-            .jupiter
-            .swap_config
-            .skip_user_accounts_rpc_calls,
-    );
 
     let builder_config = BuilderConfig::new(memo).with_yellowstone(
         config.galileo.global.yellowstone_grpc_url.clone(),
@@ -101,12 +93,12 @@ async fn send_transaction(
 
     let raw = tokio::fs::read_to_string(&args.instructions).await?;
     let value: serde_json::Value = serde_json::from_str(&raw)?;
-    let instructions = SwapInstructionsResponse::try_from(value)
+    let instructions = DflowSwapInstructionsResponse::try_from(value)
         .map_err(|err| anyhow!("解析 Swap 指令失败: {err}"))?;
-    let instructions_variant = SwapInstructionsVariant::Jupiter(instructions);
+    let instructions_variant = SwapInstructionsVariant::Dflow(instructions);
 
     let prepared = builder
-        .build(&identity, &instructions_variant, args.tip_lamports)
+        .build(&identity, &instructions_variant, args.tip_lamports, None)
         .await
         .map_err(|err| anyhow!(err))?;
 

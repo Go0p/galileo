@@ -18,7 +18,7 @@ use thiserror::Error;
 use tracing::{debug, trace, warn};
 use url::form_urlencoded;
 
-use crate::config::{BotConfig, LoggingConfig, LoggingProfile};
+use crate::config::{EngineTimeoutConfig, LoggingConfig, LoggingProfile};
 use crate::monitoring::metrics::prometheus_enabled;
 use crate::monitoring::{LatencyMetadata, guard_with_level};
 use crate::network::{IpBoundClientPool, ReqwestClientFactoryFn};
@@ -119,14 +119,14 @@ impl DflowApiClient {
         client: reqwest::Client,
         quote_base_url: String,
         swap_base_url: String,
-        bot_config: &BotConfig,
+        timeouts: &EngineTimeoutConfig,
         logging: &LoggingConfig,
     ) -> Self {
         Self::with_ip_pool(
             client,
             quote_base_url,
             swap_base_url,
-            bot_config,
+            timeouts,
             logging,
             None,
         )
@@ -136,13 +136,12 @@ impl DflowApiClient {
         client: reqwest::Client,
         quote_base_url: String,
         swap_base_url: String,
-        bot_config: &BotConfig,
+        timeouts: &EngineTimeoutConfig,
         logging: &LoggingConfig,
         client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
     ) -> Self {
-        let quote_timeout = Duration::from_millis(bot_config.quote_ms);
-        let swap_ms = bot_config.swap_ms.unwrap_or(bot_config.quote_ms);
-        let swap_timeout = Duration::from_millis(swap_ms);
+        let quote_timeout = Duration::from_millis(timeouts.quote_ms);
+        let swap_timeout = Duration::from_millis(timeouts.swap_ms);
         Self {
             quote_base_url,
             swap_base_url,

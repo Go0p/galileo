@@ -2,24 +2,25 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use serde_json::Value;
 use solana_sdk::instruction::AccountMeta;
 use solana_sdk::pubkey::Pubkey;
 use tracing::warn;
 
-use crate::api::jupiter::SwapInstructionsResponse;
 use crate::cache::cached_associated_token_address;
 use crate::dexes::clmm::RaydiumClmmAdapter;
 use crate::dexes::dlmm::MeteoraDlmmAdapter;
 use crate::dexes::framework::{SwapAccountAssembler, SwapAccountsContext, SwapFlow};
 use crate::dexes::humidifi::HumidiFiAdapter;
 use crate::dexes::obric_v2::ObricV2Adapter;
+use crate::dexes::saros::SarosAdapter;
 use crate::dexes::solfi_v2::SolFiV2Adapter;
 use crate::dexes::tessera_v::TesseraVAdapter;
 use crate::dexes::whirlpool::WhirlpoolAdapter;
 use crate::dexes::zerofi::ZeroFiAdapter;
+use crate::engine::aggregator::MultiLegInstructions;
 use crate::engine::assembly::decorators::{
     ComputeBudgetDecorator, FlashloanDecorator, GuardBudgetDecorator, ProfitGuardDecorator,
+    TipDecorator,
 };
 use crate::engine::assembly::{
     AssemblyContext, DecoratorChain, InstructionBundle, attach_lighthouse,
@@ -30,8 +31,8 @@ use crate::instructions::compute_budget::compute_budget_sequence;
 use crate::instructions::jupiter::route_v2::{RouteV2Accounts, RouteV2InstructionBuilder};
 use crate::instructions::jupiter::swaps::{
     HumidiFiSwap, MeteoraDlmmSwap, MeteoraDlmmSwapV2, ObricSwap, RaydiumClmmSwap,
-    RaydiumClmmSwapV2, SolFiV2Swap, TesseraVSide, TesseraVSwap, WhirlpoolSwap, WhirlpoolSwapV2,
-    ZeroFiSwap,
+    RaydiumClmmSwapV2, SarosSwap, SolFiV2Swap, TesseraVSide, TesseraVSwap, WhirlpoolSwap,
+    WhirlpoolSwapV2, ZeroFiSwap,
 };
 use crate::instructions::jupiter::types::{JUPITER_V6_PROGRAM_ID, RoutePlanStepV2};
 use crate::lander::Deadline;
@@ -140,30 +141,31 @@ where
             .map(|table| table.key)
             .collect();
 
-        let response = SwapInstructionsResponse {
-            raw: Value::Null,
-            token_ledger_instruction: None,
+        let bundle = MultiLegInstructions::new(
             compute_budget_instructions,
-            setup_instructions: Vec::new(),
-            swap_instruction: instruction,
-            cleanup_instruction: None,
-            other_instructions: Vec::new(),
-            address_lookup_table_addresses: lookup_table_addresses,
-            resolved_lookup_tables: lookup_table_accounts,
-            prioritization_fee_lamports: 0,
+            vec![instruction],
+            lookup_table_addresses,
+            lookup_table_accounts,
+            None,
             compute_unit_limit,
-            prioritization_type: None,
-            dynamic_slippage_report: None,
-            simulation_error: None,
-        };
-        let mut response_variant = SwapInstructionsVariant::Jupiter(response);
+        );
+        let mut response_variant = SwapInstructionsVariant::MultiLeg(bundle);
 
         let pair = TradePair::from_pubkeys(source_mint, destination_mint);
+        let mut jito_tip_plan = self.landers.draw_jito_tip_plan();
+        let mut effective_tip = 0u64;
+        if let Some(plan) = jito_tip_plan.as_ref() {
+            if plan.lamports > 0 {
+                effective_tip = plan.lamports;
+            } else {
+                jito_tip_plan = None;
+            }
+        }
         let flashloan_opportunity = SwapOpportunity {
             pair,
             amount_in: order.amount_in,
             profit_lamports: 0,
-            tip_lamports: 0,
+            tip_lamports: effective_tip,
             merged_quote: None,
             ultra_legs: None,
         };
@@ -176,16 +178,15 @@ where
             response_variant.address_lookup_table_addresses().to_vec(),
             response_variant.resolved_lookup_tables().to_vec(),
         );
-        let jito_tip_budget = self.jito_tip_budget(0);
-
         let mut assembly_ctx = AssemblyContext::new(&self.identity);
         assembly_ctx.base_mint = Some(&source_mint);
         assembly_ctx.compute_unit_limit = compute_unit_limit;
         assembly_ctx.compute_unit_price = sampled_price;
         assembly_ctx.guard_required = BASE_TX_FEE_LAMPORTS;
         assembly_ctx.prioritization_fee = 0;
-        assembly_ctx.tip_lamports = 0;
-        assembly_ctx.jito_tip_budget = jito_tip_budget;
+        assembly_ctx.tip_lamports = effective_tip;
+        assembly_ctx.jito_tip_budget = self.jito_tip_budget(effective_tip);
+        assembly_ctx.jito_tip_plan = jito_tip_plan.clone();
         assembly_ctx.variant = Some(&mut response_variant);
         assembly_ctx.opportunity = Some(&flashloan_opportunity);
         assembly_ctx.flashloan_manager = self.flashloan.as_ref();
@@ -194,6 +195,7 @@ where
         let mut decorators = DecoratorChain::new();
         decorators.register(FlashloanDecorator);
         decorators.register(ComputeBudgetDecorator);
+        decorators.register(TipDecorator);
         decorators.register(GuardBudgetDecorator);
         decorators.register(ProfitGuardDecorator);
 
@@ -213,7 +215,13 @@ where
 
         let prepared = self
             .tx_builder
-            .build_with_sequence(&self.identity, &response_variant, final_instructions, 0)
+            .build_with_sequence(
+                &self.identity,
+                &response_variant,
+                final_instructions,
+                effective_tip,
+                jito_tip_plan.clone(),
+            )
             .await?;
 
         let dispatch_strategy = self.settings.dispatch_strategy;
@@ -320,6 +328,11 @@ where
                 (BlindMarketMeta::ZeroFi(_), BlindDex::ZeroFi) => {
                     ZeroFiSwap::encode().map_err(|err| {
                         EngineError::InvalidConfig(format!("构造 ZeroFi swap 失败: {err}"))
+                    })?
+                }
+                (BlindMarketMeta::Saros(_), BlindDex::Saros) => {
+                    SarosSwap::encode().map_err(|err| {
+                        EngineError::InvalidConfig(format!("构造 Saros swap 失败: {err}"))
                     })?
                 }
                 (BlindMarketMeta::HumidiFi(meta), BlindDex::HumidiFi) => {
@@ -431,6 +444,13 @@ where
                 }
                 BlindMarketMeta::ZeroFi(meta) => {
                     ZeroFiAdapter::shared().assemble_remaining_accounts(
+                        meta.as_ref(),
+                        ctx,
+                        &mut remaining_accounts,
+                    );
+                }
+                BlindMarketMeta::Saros(meta) => {
+                    SarosAdapter::shared().assemble_remaining_accounts(
                         meta.as_ref(),
                         ctx,
                         &mut remaining_accounts,

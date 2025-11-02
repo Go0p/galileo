@@ -62,6 +62,6 @@ mod tests {
 
         let encoded = encode_base64_transaction(&tx).expect("encode");
         let decoded = decode_base64_transaction(&encoded).expect("decode");
-        assert_eq!(decoded.message.static_account_keys().len(), 1);
+        assert_eq!(decoded.message.static_account_keys().len(), 2);
     }
 }

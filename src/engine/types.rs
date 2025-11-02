@@ -1,8 +1,10 @@
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use super::aggregator::{QuotePayloadVariant, QuoteResponseVariant};
 use crate::api::ultra::order::OrderResponsePayload;
 use crate::strategy::types::TradePair;
+use solana_sdk::pubkey::Pubkey;
 
 #[derive(Debug, Clone)]
 pub struct QuoteTask {
@@ -33,6 +35,8 @@ pub struct DoubleQuote {
     pub reverse: QuoteResponseVariant,
     pub forward_latency: Option<Duration>,
     pub reverse_latency: Option<Duration>,
+    pub forward_ip: Option<IpAddr>,
+    pub reverse_ip: Option<IpAddr>,
 }
 
 impl DoubleQuote {
@@ -45,12 +49,20 @@ impl DoubleQuote {
         self.reverse_latency
             .map(|duration| duration.as_secs_f64() * 1_000.0)
     }
+
+    pub fn total_latency_ms(&self) -> Option<f64> {
+        match (self.forward_latency, self.reverse_latency) {
+            (Some(forward), Some(reverse)) => Some((forward + reverse).as_secs_f64() * 1_000.0),
+            (Some(forward), None) => Some(forward.as_secs_f64() * 1_000.0),
+            (None, Some(reverse)) => Some(reverse.as_secs_f64() * 1_000.0),
+            (None, None) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct TradeProfile {
     pub amounts: Vec<u64>,
-    pub process_delay: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +99,21 @@ impl ExecutionPlan {
         Self {
             opportunity,
             deadline,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct JitoTipPlan {
+    pub lamports: u64,
+    pub recipient: Pubkey,
+}
+
+impl JitoTipPlan {
+    pub fn new(lamports: u64, recipient: Pubkey) -> Self {
+        Self {
+            lamports,
+            recipient,
         }
     }
 }

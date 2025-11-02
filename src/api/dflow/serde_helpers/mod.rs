@@ -1,4 +1,4 @@
-pub use crate::api::jupiter::serde_helpers::field_as_string;
+pub use crate::api::serde_helpers::field_as_string;
 
 pub mod option_field_as_string {
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de};

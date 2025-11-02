@@ -1,23 +1,21 @@
 use std::convert::TryFrom;
 use std::str::FromStr;
 
-use reqwest::StatusCode;
 use tracing::{debug, warn};
 
 use super::aggregator::{KaminoQuote, QuoteResponseVariant};
 use crate::api::dflow::{
     DflowApiClient, DflowError, QuoteRequest as DflowQuoteRequest, SlippageBps, SlippagePreset,
 };
-use crate::api::jupiter::{JupiterApiClient, QuoteRequest};
 use crate::api::kamino::{KaminoApiClient, KaminoError, QuoteRequest as KaminoQuoteRequest};
 use crate::api::ultra::{
     OrderRequest as UltraOrderRequest, Router as UltraRouter, UltraApiClient, UltraError,
 };
-use crate::config::{DflowQuoteConfig, JupiterQuoteConfig, KaminoQuoteConfig, UltraQuoteConfig};
+use crate::config::{DflowQuoteConfig, KaminoQuoteConfig, UltraQuoteConfig};
 use crate::engine::quote_dispatcher;
-use crate::jupiter::error::JupiterError;
 use crate::network::{IpLeaseHandle, IpLeaseOutcome};
 use crate::strategy::types::TradePair;
+use reqwest::StatusCode;
 use solana_sdk::pubkey::Pubkey;
 
 use super::error::{EngineError, EngineResult};
@@ -27,8 +25,6 @@ use super::types::QuoteTask;
 pub struct QuoteConfig {
     pub slippage_bps: u16,
     pub only_direct_routes: bool,
-    pub restrict_intermediate_tokens: bool,
-    pub quote_max_accounts: Option<u32>,
     pub dex_whitelist: Vec<String>,
     pub dex_blacklist: Vec<String>,
 }
@@ -37,10 +33,6 @@ impl QuoteConfig {}
 
 #[derive(Clone)]
 pub enum QuoteBackend {
-    Jupiter {
-        client: JupiterApiClient,
-        defaults: JupiterQuoteConfig,
-    },
     Dflow {
         client: DflowApiClient,
         defaults: DflowQuoteConfig,
@@ -110,12 +102,6 @@ pub struct QuoteExecutor {
 }
 
 impl QuoteExecutor {
-    pub fn for_jupiter(client: JupiterApiClient, defaults: JupiterQuoteConfig) -> Self {
-        Self {
-            backend: QuoteBackend::Jupiter { client, defaults },
-        }
-    }
-
     pub fn for_dflow(client: DflowApiClient, defaults: DflowQuoteConfig) -> Self {
         Self {
             backend: QuoteBackend::Dflow { client, defaults },
@@ -153,52 +139,6 @@ impl QuoteExecutor {
     ) -> EngineResult<Option<QuoteResponseVariant>> {
         let local_ip = Some(lease.ip());
         match &self.backend {
-            QuoteBackend::Jupiter { client, defaults } => {
-                let mut request = QuoteRequest::new(
-                    pair.input_pubkey,
-                    pair.output_pubkey,
-                    amount,
-                    config.slippage_bps,
-                );
-                request.only_direct_routes = Some(config.only_direct_routes);
-                request.restrict_intermediate_tokens = Some(config.restrict_intermediate_tokens);
-                if let Some(max_accounts) = config.quote_max_accounts {
-                    request.max_accounts = Some(max_accounts as usize);
-                }
-
-                if !config.dex_whitelist.is_empty() {
-                    let dexes = config.dex_whitelist.join(",");
-                    request.dexes = Some(dexes);
-                }
-                if !config.dex_blacklist.is_empty() {
-                    let excluded = config.dex_blacklist.join(",");
-                    request.excluded_dexes = Some(excluded);
-                }
-
-                apply_jupiter_defaults(defaults, &mut request);
-                match client.quote_with_ip(&request, local_ip).await {
-                    Ok(response) => Ok(Some(QuoteResponseVariant::Jupiter(response))),
-                    Err(JupiterError::ApiStatus { status, body, .. })
-                        if status == StatusCode::TOO_MANY_REQUESTS =>
-                    {
-                        lease.mark_outcome(IpLeaseOutcome::RateLimited);
-                        warn!(
-                            target: "engine::quote",
-                            status = status.as_u16(),
-                            input_mint = %pair.input_mint,
-                            output_mint = %pair.output_mint,
-                            "Jupiter 报价命中限流，跳过本轮: {body}"
-                        );
-                        Ok(None)
-                    }
-                    Err(err) => {
-                        if let Some(outcome) = quote_dispatcher::classify_jupiter(&err) {
-                            lease.mark_outcome(outcome);
-                        }
-                        Err(EngineError::from(err))
-                    }
-                }
-            }
             QuoteBackend::Dflow { client, defaults } => {
                 let mut request =
                     DflowQuoteRequest::new(pair.input_pubkey, pair.output_pubkey, amount);
@@ -447,19 +387,6 @@ pub fn aggregator_kinds_match(
         false
     }
 }
-
-fn apply_jupiter_defaults(defaults: &JupiterQuoteConfig, request: &mut QuoteRequest) {
-    if !request.only_direct_routes.unwrap_or(false) && defaults.only_direct_routes {
-        request.only_direct_routes = Some(true);
-    }
-
-    if request.restrict_intermediate_tokens.unwrap_or(true)
-        && !defaults.restrict_intermediate_tokens
-    {
-        request.restrict_intermediate_tokens = Some(false);
-    }
-}
-
 fn parse_ultra_router(label: &str) -> EngineResult<UltraRouter> {
     let normalized = label.trim().to_ascii_lowercase();
     let router = match normalized.as_str() {

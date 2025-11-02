@@ -1,6 +1,4 @@
-use std::collections::BTreeSet;
 use std::fs;
-use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,9 +14,7 @@ use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::config::{
-    AppConfig, BotConfig, ConfigError, EngineConfig, GlobalConfig, IntermediumConfig,
-    JupiterConfig, JupiterEngineConfig, LaunchOverrides, LoggingProfile, YellowstoneConfig,
-    load_config,
+    AppConfig, ConfigError, DryRunConfig, GlobalConfig, LoggingProfile, load_config,
 };
 
 #[derive(Debug)]
@@ -61,6 +57,44 @@ impl RpcEndpointRotator {
 pub struct ResolvedRpcClient {
     pub client: Arc<RpcClient>,
     pub endpoints: Arc<RpcEndpointRotator>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DryRunMode {
+    pub enabled: bool,
+    rpc_url: Option<String>,
+}
+
+impl DryRunMode {
+    pub fn from_sources(cli_enabled: bool, config: &DryRunConfig) -> Result<Self> {
+        let url = config
+            .rpc_url
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let enabled = cli_enabled || config.enable;
+        if enabled && url.is_none() {
+            return Err(anyhow!(
+                "dry-run 模式启用时需提供 bot.dry_run.rpc_url，用于指向本地测试节点"
+            ));
+        }
+        Ok(Self {
+            enabled,
+            rpc_url: url,
+        })
+    }
+
+    pub fn rpc_override(&self) -> Option<&str> {
+        if self.enabled {
+            self.rpc_url.as_deref()
+        } else {
+            None
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
 }
 
 /// 初始化 tracing，兼顾 JSON 与文本输出模式。
@@ -137,21 +171,6 @@ pub fn load_configuration(path: Option<PathBuf>) -> Result<AppConfig, ConfigErro
     load_config(path)
 }
 
-pub fn resolve_jupiter_base_url(_bot: &BotConfig, jupiter: &JupiterConfig) -> String {
-    let host = sanitize_jupiter_host(&jupiter.core.host);
-    format!("http://{}:{}", host, jupiter.core.port)
-}
-
-pub fn resolve_jupiter_api_proxy(engine: &EngineConfig) -> Option<String> {
-    engine
-        .jupiter
-        .api_proxy
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
-}
-
 pub fn resolve_global_http_proxy(global: &GlobalConfig) -> Option<String> {
     global
         .proxy
@@ -178,111 +197,6 @@ pub fn rpc_default_headers(endpoint: &str) -> reqwest::header::HeaderMap {
     headers
 }
 
-fn sanitize_jupiter_host(host: &str) -> String {
-    let trimmed = host.trim();
-    if trimmed.is_empty() {
-        return "127.0.0.1".to_string();
-    }
-    if let Ok(ip) = trimmed.parse::<IpAddr>() {
-        if ip.is_unspecified() {
-            return match ip {
-                IpAddr::V4(_) => "127.0.0.1".to_string(),
-                IpAddr::V6(_) => "::1".to_string(),
-            };
-        }
-    }
-    trimmed.to_string()
-}
-
-pub fn should_bypass_proxy(base_url: &str) -> bool {
-    if let Ok(url) = reqwest::Url::parse(base_url) {
-        if let Some(host) = url.host_str() {
-            if host.eq_ignore_ascii_case("localhost") {
-                return true;
-            }
-            if let Ok(ip) = host.parse::<IpAddr>() {
-                return ip.is_loopback() || ip.is_unspecified();
-            }
-        }
-    }
-    false
-}
-
-pub fn build_launch_overrides(
-    engine: &JupiterEngineConfig,
-    intermedium: &IntermediumConfig,
-) -> LaunchOverrides {
-    let mut overrides = LaunchOverrides::default();
-
-    let mut mint_set: BTreeSet<String> = intermedium.mints.iter().cloned().collect();
-    for mint in &intermedium.disable_mints {
-        mint_set.remove(mint);
-    }
-
-    if !mint_set.is_empty() {
-        overrides.filter_markets_with_mints = mint_set.into_iter().collect();
-    }
-
-    overrides.exclude_dex_program_ids = Vec::new();
-    overrides.include_dex_program_ids = engine.args_included_dexes.clone();
-
-    overrides
-}
-
-pub fn resolve_jupiter_defaults(
-    mut jupiter: JupiterConfig,
-    global: &GlobalConfig,
-) -> Result<JupiterConfig> {
-    if jupiter.core.rpc_url.trim().is_empty() {
-        if let Some(primary) = global.primary_rpc_url() {
-            jupiter.core.rpc_url = primary.to_string();
-        }
-    }
-
-    if jupiter.core.rpc_url.trim().is_empty() {
-        return Err(anyhow!(
-            "未配置 Jupiter RPC：请在 jupiter.toml 或 galileo.yaml 的 global.rpc_urls 中设置 RPC 端点"
-        ));
-    }
-
-    if jupiter.core.secondary_rpc_urls.is_empty() {
-        for url in global.rpc_urls() {
-            if url != &jupiter.core.rpc_url {
-                jupiter.core.secondary_rpc_urls.push(url.clone());
-            }
-        }
-    }
-
-    let needs_yellowstone = jupiter
-        .launch
-        .yellowstone
-        .as_ref()
-        .map(|cfg| cfg.endpoint.trim().is_empty())
-        .unwrap_or(true);
-
-    if needs_yellowstone {
-        if let Some(endpoint) = &global.yellowstone_grpc_url {
-            let trimmed = endpoint.trim();
-            if !trimmed.is_empty() {
-                let token = global.yellowstone_grpc_token.as_ref().and_then(|t| {
-                    let tt = t.trim();
-                    if tt.is_empty() {
-                        None
-                    } else {
-                        Some(tt.to_string())
-                    }
-                });
-                jupiter.launch.yellowstone = Some(YellowstoneConfig {
-                    endpoint: trimmed.to_string(),
-                    x_token: token,
-                });
-            }
-        }
-    }
-
-    Ok(jupiter)
-}
-
 pub fn init_configs(args: crate::cli::args::InitCmd) -> Result<()> {
     let output_dir = match args.output {
         Some(dir) => dir,
@@ -291,7 +205,7 @@ pub fn init_configs(args: crate::cli::args::InitCmd) -> Result<()> {
 
     fs::create_dir_all(&output_dir)?;
 
-    let templates: [(&str, &str); 3] = [
+    let templates: [(&str, &str); 2] = [
         (
             "galileo.yaml",
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/galileo.yaml")),
@@ -299,10 +213,6 @@ pub fn init_configs(args: crate::cli::args::InitCmd) -> Result<()> {
         (
             "lander.yaml",
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/lander.yaml")),
-        ),
-        (
-            "jupiter.toml",
-            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/jupiter.toml")),
         ),
     ];
 
@@ -337,35 +247,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_resolve_jupiter_api_proxy_none_on_empty() {
-        let engine = EngineConfig {
-            jupiter: JupiterEngineConfig {
-                enable: true,
-                api_proxy: Some("   ".to_string()),
-                ..JupiterEngineConfig::default()
-            },
-            ..EngineConfig::default()
-        };
-        assert!(resolve_jupiter_api_proxy(&engine).is_none());
-    }
-
-    #[test]
-    fn test_resolve_jupiter_api_proxy_trims_value() {
-        let engine = EngineConfig {
-            jupiter: JupiterEngineConfig {
-                enable: false,
-                api_proxy: Some("  http://127.0.0.1:8888  ".to_string()),
-                ..JupiterEngineConfig::default()
-            },
-            ..EngineConfig::default()
-        };
-        assert_eq!(
-            resolve_jupiter_api_proxy(&engine).as_deref(),
-            Some("http://127.0.0.1:8888")
-        );
-    }
-
-    #[test]
     fn test_rpc_default_headers_adds_origin_for_pump_fun() {
         let headers =
             rpc_default_headers("https://pump-fe.helius-rpc.com/?api-key=test-key-placeholder");
@@ -382,8 +263,17 @@ mod tests {
     }
 }
 
-pub fn resolve_rpc_client(global: &GlobalConfig) -> Result<ResolvedRpcClient> {
-    let endpoints = if !global.rpc_urls().is_empty() {
+pub fn resolve_rpc_client(
+    global: &GlobalConfig,
+    override_endpoint: Option<&str>,
+) -> Result<ResolvedRpcClient> {
+    let endpoints = if let Some(url) = override_endpoint {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow!("dry-run rpc_url 不能为空"));
+        }
+        vec![trimmed.to_string()]
+    } else if !global.rpc_urls().is_empty() {
         global.rpc_urls().to_vec()
     } else {
         Vec::new()
@@ -391,7 +281,11 @@ pub fn resolve_rpc_client(global: &GlobalConfig) -> Result<ResolvedRpcClient> {
     let rotator = Arc::new(RpcEndpointRotator::new(endpoints)?);
     let primary_url = rotator.primary_url().to_string();
 
-    let proxy = resolve_global_http_proxy(global);
+    let proxy = if override_endpoint.is_some() {
+        None
+    } else {
+        resolve_global_http_proxy(global)
+    };
     let mut builder = reqwest::Client::builder()
         .default_headers(rpc_default_headers(&primary_url))
         .timeout(Duration::from_secs(30))
@@ -420,7 +314,13 @@ pub fn resolve_rpc_client(global: &GlobalConfig) -> Result<ResolvedRpcClient> {
         RpcClientConfig::with_commitment(solana_commitment_config::CommitmentConfig::default()),
     );
 
-    if rotator.endpoints().len() > 1 {
+    if override_endpoint.is_some() {
+        info!(
+            target = "rpc::client",
+            url = %primary_url,
+            "dry-run 模式：所有 RPC 请求将指向此端点"
+        );
+    } else if rotator.endpoints().len() > 1 {
         info!(
             target: "rpc::client",
             urls = ?rotator.endpoints(),

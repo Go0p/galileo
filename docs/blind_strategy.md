@@ -3,8 +3,8 @@
 > 目标：彻底移除对 Jupiter /swap-instructions API 的依赖，在本地实现「纯盲发」——直接构造 `route_v2` 指令与账户序列，按配置生成双向套利交易。本文用于梳理需要交付的工作项，方便后续拆分任务。
 
 ## 1. 背景与约束
-- 当前 `BlindStrategy` 仍依赖 quote → profit → swap 的传统链路，流程中调用 Jupiter API 获取报价与指令。这与“盲发”理念相悖。
-- 新需求强调**不再调用 Jupiter 二进制或 API**，而是使用本地逻辑生成交易。唯一需要复用的是 Jupiter `route_v2` 指令格式（程序 id、前置账户固定），我们负责拼装 `data` 与 `remaining_accounts`。
+- 历史版本依赖 quote → profit → swap 的串行链路，并通过 Jupiter API 获取报价与指令；现阶段已改为自建 Quote 执行链，仅复用 `route_v2` 指令格式便于兼容既有 DEX 工具链。
+- 当前实现完全跳过 Jupiter API/二进制，仅保留其 `route_v2` ABI 作为协议约束。我们负责拼装 `data` 与 `remaining_accounts`，并在装饰器链中追加 flashloan、guard 等本地逻辑。
 - 配置来源仍为 `blind_strategy` 节点。每个 base mint 通过若干 `lane`（`min` / `max` / `count` / `strategy` / `weight`）描述想要探索的区间，调度器会按这些定义生成正向与反向的交易规模，并可按权重自动扩容以压满 IP。
 - 纯盲发配置迁移至独立的 `pure_blind_strategy` 节点：常规盲发仍由 `blind_strategy` 控制，纯盲发的启用、市场缓存与调度策略完全独立。
 - 纯盲发闭环可通过 `pure_blind_strategy.overrides` 声明。每条路线以 `legs` 列表按顺序写出市场（当前支持 SolFiV2、TesseraV、HumidiFi、ZeroFi、ObricV2，可混搭），系统会自动解析资产流向并生成正/反向闭环。若路由需要引用 Address Lookup Table，可在同级声明 `lookup_tables`：
@@ -32,7 +32,7 @@
 | --- | --- |
 | `in_amount` | 取自 blind 配置生成的交易规模（例如 10_000_000_000 lamports）。 |
 | `quoted_out_amount` | 对盲发而言需**严格大于等于** `in_amount`。推荐 `in_amount * (1 + ε)`，其中 ε 可取 1‱（避免等于导致 0 滑点 + rounding）。 |
-| `slippage_bps` | 固定为 `0`，确保 Jupiter 在链上根据池状态自行撮合。 |
+| `slippage_bps` | 固定为 `0`，保持 route_v2 指令在链上由各池自行撮合。 |
 | `platform_fee_bps` / `positive_slippage_bps` | 初期均设为 `0`。如需提成可后续引入配置。 |
 | `route_plan` | `Vec<RoutePlanStepV2>`，由我们注入（详见下节）。 |
 
@@ -69,9 +69,10 @@
 
 ## 4. 交易调度与随机化
 - **trade size 生成**：每个 base mint 由一组 `lane` 定义（`min` / `max` / `count` / `strategy` / `weight`），系统会根据策略在区间内插值或采样，随后施加 930–999 bp 的轻量扰动。若开启 `auto_scale_to_ip`，会按 lane 的权重自动补充额外档位以压满可用 IP。  
-- **批量盲发**：当某个 base mint 达到 `process_delay`，调度器会一次性发送该 mint 的全部 trade size，确保 IP 资源被充分占用。  
+- **批量盲发**：每个 base mint 在一次调度 tick 内都会生成配置好的全部 trade size，并被打包成 quote 组交给调度器。  
 - **顺序随机化**：若需要进一步打散顺序，可在调度层（`StrategyEngine::handle_action` 或专用执行器）对返回的任务 `shuffle`。  
-- **节流控制**：`process_delay` 用于约束同一 base mint 进入下一轮批量调度的最小间隔；`batch_interval_ms` 仅在需要时作为跨批次退避。`sending_cooldown` 暂未在调度层生效，如需开启需补充实现。
+- **节奏控制**：通过 `engine.<backend>.quote_config.cadence` 配置 quote 组的并发与节奏：`group_parallelism` 限制同批次的最大同时执行组数，`intra_group_spacing_ms` 控制组内启动间隔，`wave_cooldown_ms` 决定下一轮批次的最小冷却时间。`sending_cooldown` 暂未在调度层生效，如需开启需补充实现。
+- **局部覆写**：`cadence.per_base_mint` 允许为特定 base mint 单独设定节奏；未配置时沿用 `default`。
 
 ## 5. 监控与性能
 - **Tracing**：在关键步骤添加 `hotpath::measure` / `hotpath::measure_block!` 标签，例如：  
@@ -87,7 +88,7 @@
 1. **配置 → 交易对生成重构**：允许在 blind 配置中声明 DEX 组合或默认矩阵（如 Tessera ↔ HumidiFi ↔ SolFiV2）。  
 2. **账户解析模块完善**：为 TesseraV / HumidiFi 引入 `fetch_*_swap_info()`，与 SolFiV2 对齐。  
 3. **Route 构造器**：新增 `BlindRouteBuilder`，输入（amount, forward|reverse, dex pair）→ 输出 `SwapInstructionsResponse`。  
-4. **执行引擎改造**：`SwapPreparer::prepare` 增加盲发分支；当检测到“纯手搓”模式时跳过 Jupiter API，并通过 `src/strategy/pure_blind/runner.rs` 调度 `Action::DispatchBlind`。  
+4. **执行引擎改造**：`SwapPreparer::prepare` 已提供盲发分支；当检测到“纯手搓”路线时直接走本地装配，并通过 `src/strategy/pure_blind/runner.rs` 调度 `Action::DispatchBlind`。  
 5. **测试与干运行**：  
    - 单元测试：对每个 DEX 组合校验 `Instruction` 序列与 `data`。  
   - `cargo run --features=hotpath` 文档更新，说明如何启用性能采样。  
@@ -95,7 +96,7 @@
 
 ## 7. 风险与待确认事项
 - **Dex 账户顺序验证**：需通过现有交易样本或 reverse 工具验证账户排序，避免链上执行失败。  
-- **`quoted_out_amount` 策略**：盲发要求“>`in_amount`”，但过大可能导致 Jupiter 校验不过（声称超出预期）。建议在实现前验证可接受范围。  
+- **`quoted_out_amount` 策略**：盲发要求“>`in_amount`”，但过大仍可能被下游协议判定滑点异常；建议在实现前验证可接受范围。  
 - **Flashloan 兼容性**：盲发交易是否仍需 Marginfi 贷款？若需要，需确认指令顺序（flashloan setup → route_v2 → repay）。  
 - **随机化与风控**：需要确保随机顺序不会 violate `sending_cooldown`。可在调度层使用时间窗控制。
 

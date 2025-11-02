@@ -580,38 +580,65 @@ pub fn profit_opportunity(
     profit: u64,
     net_profit: i128,
     expected_profit: u64,
+    multi_ip_enabled: bool,
+    forward_ip: Option<IpAddr>,
+    reverse_ip: Option<IpAddr>,
+    total_latency_ms: Option<f64>,
 ) {
     let base_display = short_mint_str(base_mint);
     let forward_latency_str = forward_latency_ms.map(|ms| format!("{ms:.3}"));
     let reverse_latency_str = reverse_latency_ms.map(|ms| format!("{ms:.3}"));
     let forward_latency_display = forward_latency_str.as_deref().unwrap_or("-");
     let reverse_latency_display = reverse_latency_str.as_deref().unwrap_or("-");
-    info!(
-        target: "monitoring::profit",
-        event = "opportunity",
-        aggregator,
-        forward_in,
-        forward_out,
-        forward_latency_ms = forward_latency_display,
-        reverse_in,
-        reverse_out,
-        reverse_latency_ms = reverse_latency_display,
-        profit,
-        net_profit,
-        expected_profit,
-        "利润达标,base_mint={},aggregator={},forward_quote={{in_amount={},out_amount={},latency_ms={}}},reverse_quote={{in_amount={},out_amount={},latency_ms={}}},profit={},net_profit={},expect_profit={}",
-        base_display,
-        aggregator,
-        forward_in,
-        forward_out,
-        forward_latency_display,
-        reverse_in,
-        reverse_out,
-        reverse_latency_display,
-        profit,
-        net_profit,
-        expected_profit
-    );
+    let total_latency_str = total_latency_ms.map(|ms| format!("{ms:.3}"));
+    let total_latency_display = total_latency_str.as_deref().unwrap_or("-");
+
+    if multi_ip_enabled {
+        let forward_ip_display = forward_ip
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let reverse_ip_display = reverse_ip
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| "-".to_string());
+
+        info!(
+            target: "monitoring::profit",
+            event = "opportunity",
+            aggregator,
+            base_mint = %base_display,
+            forward_in,
+            forward_out,
+            forward_latency_ms = forward_latency_display,
+            reverse_in,
+            reverse_out,
+            reverse_latency_ms = reverse_latency_display,
+            quote_total_latency_ms = total_latency_display,
+            profit,
+            net_profit,
+            expected_profit,
+            forward_ip = %forward_ip_display,
+            reverse_ip = %reverse_ip_display,
+            "利润达标"
+        );
+    } else {
+        info!(
+            target: "monitoring::profit",
+            event = "opportunity",
+            aggregator,
+            base_mint = %base_display,
+            forward_in,
+            forward_out,
+            forward_latency_ms = forward_latency_display,
+            reverse_in,
+            reverse_out,
+            reverse_latency_ms = reverse_latency_display,
+            quote_total_latency_ms = total_latency_display,
+            profit,
+            net_profit,
+            expected_profit,
+            "利润达标"
+        );
+    }
 }
 
 pub fn profit_detected(strategy: &str, opportunity: &SwapOpportunity) {

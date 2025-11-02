@@ -40,23 +40,24 @@ TOKEN_PROGRAM_V1 = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 TOKEN_PROGRAM_2022 = "TokenzQdSbnjHr1P1a9wYFwS6gkU1GGzLRtXju6Rjt92"
 
 POOL_LAYOUT = {
-    "version": 0x00,
-    "is_initialized": 0x01,
-    "bump_seed": 0x02,
-    "token_program": 0x08,
-    "token_a": 0x28,
-    "token_b": 0x48,
-    "pool_mint": 0x68,
-    "fee_account": 0x88,
-    "token_a_mint": 0xA8,
-    "token_b_mint": 0xC8,
-    "token_a_deposit": 0xE8,
-    "token_b_deposit": 0xF0,
-    "token_a_fees": 0xF8,
-    "token_b_fees": 0x100,
-    "fees": 0x108,  # 8 × u64
-    "curve_type": 0x130,
-    "curve_parameters": 0x138,
+    "version": 0x00,  # bool
+    "is_initialized": 0x00,
+    "nonce": 0x01,
+    "bump_seed": 0x02,  # PDA bump（等同于 token-swap nonce）
+    "token_program": 0x03,
+    "token_a": 0x23,
+    "token_b": 0x43,
+    "pool_mint": 0x63,
+    "token_a_mint": 0x83,
+    "token_b_mint": 0xA3,
+    "fee_account": 0xC3,
+    "token_a_deposit": 0xE3,
+    "token_b_deposit": 0xEB,
+    "token_a_fees": 0xF3,
+    "token_b_fees": 0xFB,
+    "fees": 0x103,  # 8 × u64
+    "curve_type": 0x143,
+    "curve_parameters": 0x144,
 }
 
 FEE_FIELD_NAMES = (
@@ -259,17 +260,41 @@ def fetch_mint_info(
     if not value:
         raise RpcError(f"mint {mint} 不存在")
     owner = value.get("owner")
-    parsed = value.get("data", {}).get("parsed", {})
-    decimals = parsed.get("info", {}).get("decimals")
+    data_field = value.get("data", {})
+    parsed = data_field.get("parsed", {}) if isinstance(data_field, dict) else {}
+    info = parsed.get("info", {}) if isinstance(parsed, dict) else {}
+    decimals = info.get("decimals")
+    if decimals is None:
+        alt = rpc_request(
+            rpc_url,
+            "getAccountInfo",
+            [
+                mint,
+                {
+                    "encoding": "base64",
+                    "commitment": "confirmed",
+                },
+            ],
+        )
+        alt_value = alt.get("value") if alt else None
+        raw_field = alt_value.get("data") if alt_value else None
+        if isinstance(raw_field, list) and raw_field:
+            raw_b64 = raw_field[0]
+            try:
+                raw = base64.b64decode(raw_b64)
+            except (TypeError, ValueError) as exc:  # pragma: no cover - unlikely
+                raise RpcError(f"mint {mint} 数据解码失败: {exc}") from exc
+            if len(raw) >= 45:
+                decimals = raw[44]
     if decimals is None:
         raise RpcError(f"mint {mint} 缺少 decimals 字段")
     return owner, int(decimals)
 
 
-def fetch_token_account_owner(
+def fetch_token_account_details(
     rpc_url: str,
     token_account: str,
-) -> str:
+) -> tuple[str, str, int]:
     result = rpc_request(
         rpc_url,
         "getAccountInfo",
@@ -285,15 +310,67 @@ def fetch_token_account_owner(
     if not value:
         raise RpcError(f"SPL Token 账户 {token_account} 不存在")
     owner = value.get("owner")
-    if not owner:
-        raise RpcError(f"SPL Token 账户 {token_account} 缺少 owner 字段")
-    return owner
+    data_field = value.get("data", {})
+    parsed = data_field.get("parsed", {}) if isinstance(data_field, dict) else {}
+    info = parsed.get("info", {}) if isinstance(parsed, dict) else {}
+    mint = info.get("mint")
+    token_amount = info.get("tokenAmount", {}) if isinstance(info, dict) else {}
+    decimals = token_amount.get("decimals")
+    if not owner or not mint or decimals is None:
+        raise RpcError(f"SPL Token 账户 {token_account} 缺少核心字段")
+    return owner, mint, int(decimals)
+
+
+def resolve_fee_account(
+    rpc_url: str,
+    authority: str,
+    pool_mint: str,
+    recorded_fee_account: str,
+) -> tuple[str, str | None, int | None, bool]:
+    try:
+        owner, mint, decimals = fetch_token_account_details(
+            rpc_url, recorded_fee_account
+        )
+        if mint == pool_mint:
+            return recorded_fee_account, mint, decimals, False
+    except RpcError:
+        pass
+
+    response = rpc_request(
+        rpc_url,
+        "getTokenAccountsByOwner",
+        [
+            authority,
+            {"mint": pool_mint},
+            {
+                "encoding": "jsonParsed",
+                "commitment": "confirmed",
+            },
+        ],
+    )
+    for entry in response.get("value", []):
+        pubkey = entry.get("pubkey")
+        parsed = (
+            entry.get("account", {})
+            .get("data", {})
+            .get("parsed", {})
+        )
+        info = parsed.get("info", {}) if isinstance(parsed, dict) else {}
+        mint = info.get("mint")
+        owner = info.get("owner")
+        token_amount = info.get("tokenAmount", {}) if isinstance(info, dict) else {}
+        decimals = token_amount.get("decimals")
+        if pubkey and mint == pool_mint and decimals is not None:
+            return pubkey, mint, int(decimals), True
+
+    return recorded_fee_account, None, None, False
 
 
 def parse_pool(raw: bytes) -> dict[str, typing.Any]:
     fields = {
         "version": raw[POOL_LAYOUT["version"]],
         "is_initialized": raw[POOL_LAYOUT["is_initialized"]] == 1,
+        "nonce": raw[POOL_LAYOUT["nonce"]],
         "bump_seed": raw[POOL_LAYOUT["bump_seed"]],
         "token_program": read_pubkey(raw, POOL_LAYOUT["token_program"]),
         "token_a": read_pubkey(raw, POOL_LAYOUT["token_a"]),
@@ -335,18 +412,27 @@ def resolve_accounts(
         raise RpcError("PDA bump 与池子记录不一致")
 
     token_program_recorded = pool_state["token_program"]
-    token_program_a = fetch_token_account_owner(rpc_url, pool_state["token_a"])
-    token_program_b = fetch_token_account_owner(rpc_url, pool_state["token_b"])
+    token_program_a, mint_a_actual, token_a_decimals = fetch_token_account_details(
+        rpc_url, pool_state["token_a"]
+    )
+    token_program_b, mint_b_actual, token_b_decimals = fetch_token_account_details(
+        rpc_url, pool_state["token_b"]
+    )
     if token_program_a != token_program_b:
         raise RpcError(
             f"token_a/token_b 所属程序不一致: {token_program_a} vs {token_program_b}"
         )
     token_program = token_program_a
 
-    mint_a_owner, mint_a_decimals = fetch_mint_info(rpc_url, pool_state["token_a_mint"])
-    mint_b_owner, mint_b_decimals = fetch_mint_info(rpc_url, pool_state["token_b_mint"])
+    mint_a_owner, mint_a_decimals = fetch_mint_info(rpc_url, mint_a_actual)
+    mint_b_owner, mint_b_decimals = fetch_mint_info(rpc_url, mint_b_actual)
     if mint_a_owner != token_program or mint_b_owner != token_program:
         raise RpcError("mint 所属 Token Program 与金库 owner 不一致")
+
+    fee_account_recorded = pool_state["fee_account"]
+    fee_account_actual, fee_mint, fee_decimals, fee_inferred = resolve_fee_account(
+        rpc_url, authority, pool_state["pool_mint"], fee_account_recorded
+    )
 
     user_transfer_authority = user or "<user-transfer-authority>"
     if direction == "a2b":
@@ -354,15 +440,15 @@ def resolve_accounts(
         user_destination_label = "user_token_b"
         pool_source = pool_state["token_a"]
         pool_destination = pool_state["token_b"]
-        source_mint = pool_state["token_a_mint"]
-        destination_mint = pool_state["token_b_mint"]
+        source_mint = mint_a_actual
+        destination_mint = mint_b_actual
     elif direction == "b2a":
         user_source_label = "user_token_b"
         user_destination_label = "user_token_a"
         pool_source = pool_state["token_b"]
         pool_destination = pool_state["token_a"]
-        source_mint = pool_state["token_b_mint"]
-        destination_mint = pool_state["token_a_mint"]
+        source_mint = mint_b_actual
+        destination_mint = mint_a_actual
     else:
         raise ValueError(f"未知方向: {direction}")
 
@@ -390,7 +476,7 @@ def resolve_accounts(
         ("pool_destination", pool_destination),
         ("user_destination", user_destination),
         ("pool_mint", pool_state["pool_mint"]),
-        ("fee_account", pool_state["fee_account"]),
+        ("fee_account", fee_account_actual),
         ("token_program", token_program),
     ]
 
@@ -401,15 +487,25 @@ def resolve_accounts(
         "token_program_recorded": token_program_recorded,
         "authority": authority,
         "bump_seed": pool_state["bump_seed"],
+        "nonce": pool_state["nonce"],
+        "fee_account": {
+            "actual": fee_account_actual,
+            "recorded": fee_account_recorded,
+            "inferred": fee_inferred,
+            "mint": fee_mint,
+            "decimals": fee_decimals,
+        },
         "direction": direction,
         "mints": {
             "token_a": {
-                "mint": pool_state["token_a_mint"],
+                "mint": mint_a_actual,
                 "decimals": mint_a_decimals,
+                "recorded": pool_state["token_a_mint"],
             },
             "token_b": {
-                "mint": pool_state["token_b_mint"],
+                "mint": mint_b_actual,
                 "decimals": mint_b_decimals,
+                "recorded": pool_state["token_b_mint"],
             },
         },
         "fees": pool_state["fees"],
@@ -432,15 +528,19 @@ def print_human_readable(report: dict[str, typing.Any]) -> None:
             f"  (swap state 内记录为 {report['token_program_recorded']}, 已以实际金库 owner 为准)"
         )
     print(f"Authority (bump={report['bump_seed']}): {report['authority']}")
+    if report.get("nonce") is not None:
+        print(f"Nonce             : {report['nonce']}")
     print(f"Swap Direction    : {report['direction']}")
     print("\n账户顺序：")
     for idx, (name, value) in enumerate(report["ordered_accounts"]):
         print(f"{idx:2d}. {name:<24} {value}")
     print("\nMint 信息：")
     for side in ("token_a", "token_b"):
-
         mint_info = report["mints"][side]
         print(f"  {side:<7} mint={mint_info['mint']} decimals={mint_info['decimals']}")
+        recorded = mint_info.get("recorded")
+        if recorded and recorded != mint_info["mint"]:
+            print(f"           (swap state 记录: {recorded})")
     print("\nFees:")
     for key, value in report["fees"].items():
         print(f"  {key:<32} {value}")

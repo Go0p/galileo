@@ -8,8 +8,9 @@
 > - WSOL 原语缓存已抽象成 `instructions::wsol`，用于后续内部构造指令；第三方返回的指令保持原样消费。
 > - 装饰器链热区标注：`DecoratorChain::apply_all` 使用函数级 `hotpath::measure`，守护链路延迟纳入性能观测。
 > - Multi-leg orchestrator 与 runtime 避免指令克隆：`assemble_multi_leg_instructions` 直接搬移腿计划内的指令/ALT 数据，执行阶段以所有权传递拼装 bundle。
+> - 配置体系重构：移除各模块内嵌的 `enable` 字段，统一由 `bot.strategies.enabled` / `bot.engines.pairs` / `bot.flashloan.products` 控制启停；纯盲发 `trade_sizes` 改为共用 `lanes` 结构，生成逻辑与盲发策略保持一致。
 
 > 后续安排：
 > - 对 `instructions/jupiter/types` 中的备用构造器进行梳理，确认哪些需要转入测试或高层 API，避免未来再次出现 `#[allow(dead_code)]`。
-> - 多腿与装饰器链路需要新增集成测试，覆盖 ALT 缓存共用与 Jito tip 行为，作为下一阶段性能验收的基线。
+> - 多腿与装饰器链路需要新增集成测试，覆盖 ALT 缓存共用与 Jito tip 行为，同时补充针对 `bot` 开关失配的配置校验用例，作为下一阶段性能验收的基线。
 > - 为 WSOL 缓存补充并发命中与回退测试，记录内部使用场景的性能收益。

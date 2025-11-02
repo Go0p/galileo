@@ -13,8 +13,8 @@ where
 pub fn deserialize<'de, T, D>(deserializer: D) -> Result<T, D::Error>
 where
     T: FromStr,
+    T::Err: std::fmt::Debug,
     D: Deserializer<'de>,
-    <T as FromStr>::Err: std::fmt::Debug,
 {
     let raw = String::deserialize(deserializer)?;
     raw.parse()
