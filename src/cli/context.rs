@@ -11,7 +11,6 @@ use solana_rpc_client::http_sender::HttpSender;
 use time::{UtcOffset, macros::format_description};
 use tracing::info;
 use tracing_subscriber::fmt::time::OffsetTime;
-use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::config::{
@@ -99,10 +98,7 @@ impl DryRunMode {
 }
 
 /// 初始化 tracing，兼顾 JSON 与文本输出模式。
-pub fn init_tracing(
-    config: &crate::config::LoggingConfig,
-    writer: Option<BoxMakeWriter>,
-) -> Result<()> {
+pub fn init_tracing(config: &crate::config::LoggingConfig) -> Result<()> {
     let mut filter = EnvFilter::try_new(&config.level).unwrap_or_else(|_| EnvFilter::new("info"));
 
     // 默认压低外部依赖的调试输出，避免日志被噪声淹没；Verbose 模式可通过配置显式覆盖。
@@ -146,16 +142,13 @@ pub fn init_tracing(
     })?;
     let offset_timer = OffsetTime::new(offset, time_format);
 
-    let writer = writer.unwrap_or_else(|| BoxMakeWriter::new(|| std::io::stderr()));
-
     let builder = fmt()
         .with_timer(offset_timer.clone())
         .with_file(false)
         .with_line_number(false)
         .with_thread_ids(false)
         .with_target(true)
-        .with_level(true)
-        .with_writer(writer);
+        .with_level(true);
 
     if config.json {
         builder

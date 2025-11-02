@@ -101,6 +101,8 @@ pub struct LanderStack {
     landers: Vec<LanderVariant>,
     max_retries: usize,
     ip_allocator: Arc<IpAllocator>,
+    // todo 重构
+    preview_jito: Option<JitoLander>,
 }
 
 impl LanderStack {
@@ -109,10 +111,15 @@ impl LanderStack {
         max_retries: usize,
         ip_allocator: Arc<IpAllocator>,
     ) -> Self {
+        let preview_jito = landers.iter().find_map(|lander| match lander {
+            LanderVariant::Jito(lander) => Some(lander.clone()),
+            _ => None,
+        });
         Self {
             landers,
             max_retries,
             ip_allocator,
+            preview_jito,
         }
     }
 
@@ -131,10 +138,36 @@ impl LanderStack {
     }
 
     pub fn draw_jito_tip_plan(&self) -> Option<JitoTipPlan> {
-        self.landers.iter().find_map(|lander| match lander {
-            LanderVariant::Jito(lander) => lander.draw_tip_plan(),
-            _ => None,
-        })
+        self.landers
+            .iter()
+            .find_map(|lander| match lander {
+                LanderVariant::Jito(lander) => lander.draw_tip_plan(),
+                _ => None,
+            })
+            .or_else(|| {
+                self.preview_jito
+                    .as_ref()
+                    .and_then(|lander| lander.draw_tip_plan())
+            })
+    }
+
+    pub fn into_rpc_only(self) -> Self {
+        let LanderStack {
+            landers,
+            max_retries,
+            ip_allocator,
+            preview_jito,
+        } = self;
+        let filtered: Vec<LanderVariant> = landers
+            .into_iter()
+            .filter(|lander| matches!(lander, LanderVariant::Rpc(_)))
+            .collect();
+        Self {
+            landers: filtered,
+            max_retries,
+            ip_allocator,
+            preview_jito,
+        }
     }
 
     pub fn variant_layout(&self, strategy: DispatchStrategy) -> Vec<usize> {

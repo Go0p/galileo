@@ -23,5 +23,6 @@ pub fn build_transaction_builder(config: &AppConfig) -> Result<TransactionBuilde
         ip_allocator,
         None,
         AltCache::new(),
+        false,
     ))
 }

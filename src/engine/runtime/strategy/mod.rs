@@ -72,24 +72,8 @@ impl Default for SolPriceFeedSettings {
 }
 
 #[derive(Clone, Default)]
-pub struct ConsoleSummaryUpdate {
-    pub line: String,
-}
-
-impl ConsoleSummaryUpdate {
-    pub fn new(line: String) -> Self {
-        Self { line }
-    }
-}
-
-pub trait ConsoleSummarySink: Send + Sync {
-    fn publish(&self, update: ConsoleSummaryUpdate);
-}
-
-#[derive(Clone, Default)]
 pub struct ConsoleSummarySettings {
     pub enable: bool,
-    pub sink: Option<Arc<dyn ConsoleSummarySink>>,
 }
 
 #[derive(Clone)]

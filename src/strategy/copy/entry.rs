@@ -39,13 +39,14 @@ pub async fn run_copy_strategy(
     let identity = EngineIdentity::from_private_key(&config.galileo.private_key)
         .map_err(|err| anyhow!(err))?;
 
+    let enable_yellowstone = !dry_run_enabled && config.galileo.bot.get_block_hash_by_grpc;
     let builder_config = crate::engine::BuilderConfig::new(resolve_instruction_memo(
         &config.galileo.global.instruction,
     ))
     .with_yellowstone(
         config.galileo.global.yellowstone_grpc_url.clone(),
         config.galileo.global.yellowstone_grpc_token.clone(),
-        config.galileo.bot.get_block_hash_by_grpc,
+        enable_yellowstone,
     );
 
     let ip_allocator = build_ip_allocator(&config.galileo.bot.network)?;
@@ -74,6 +75,7 @@ pub async fn run_copy_strategy(
         Arc::clone(&ip_allocator),
         Some(rpc_client_pool),
         AltCache::new(),
+        dry_run_enabled,
     );
 
     let compute_unit_price_mode = derive_compute_unit_price_mode(&config.lander.lander);

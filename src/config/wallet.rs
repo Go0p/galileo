@@ -683,8 +683,8 @@ fn read_password_input(stderr: &mut io::Stderr) -> Result<String, String> {
 
         match evt {
             Event::Key(key_event) => {
-                // 只处理 Press 事件，忽略 Release 和 Repeat 事件
-                if key_event.kind != KeyEventKind::Press {
+                // 忽略按键释放事件，保留按下与重复事件
+                if key_event.kind == KeyEventKind::Release {
                     continue;
                 }
                 match key_event.code {
@@ -730,16 +730,17 @@ fn read_password_input(stderr: &mut io::Stderr) -> Result<String, String> {
                         }
                     }
                     KeyCode::Char(c) => {
-                        // Ctrl+C / Ctrl+D 退出
+                        // Ctrl+C / Ctrl+D 退出；其余 Ctrl 组合直接忽略
                         if key_event.modifiers.contains(KeyModifiers::CONTROL) {
-                            if c == 'c' || c == 'd' {
+                            let lower = c.to_ascii_lowercase();
+                            if lower == 'c' || lower == 'd' {
                                 return Err("用户取消输入".to_string());
                             }
-                        } else {
-                            buffer.insert(cursor_pos, c);
-                            cursor_pos += 1;
-                            redraw_masked_input(stderr, &buffer, cursor_pos)?;
+                            continue;
                         }
+                        buffer.insert(cursor_pos, c);
+                        cursor_pos += 1;
+                        redraw_masked_input(stderr, &buffer, cursor_pos)?;
                     }
                     _ => {
                         // 忽略其他按键
@@ -760,11 +761,11 @@ fn redraw_masked_input(
     buffer: &str,
     cursor_pos: usize,
 ) -> Result<(), String> {
-    // 使用保存的光标位置（输入区域起点）来重绘
+    // 使用保存的光标位置（输入区域起点）来重绘：
     // 1. 恢复到输入区域起点
     // 2. 清除到行尾
     // 3. 输出掩码
-    // 4. 再次保存位置（为下次使用）
+    // 4. 再次回到输入起点
     // 5. 移动光标到正确位置
     let masked = "●".repeat(buffer.len());
 

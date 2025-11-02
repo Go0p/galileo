@@ -11,6 +11,7 @@ use solana_sdk::message::{AddressLookupTableAccount, VersionedMessage};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::transaction::VersionedTransaction;
+use solana_system_interface::instruction as system_instruction;
 use tracing::{debug, info, warn};
 use yellowstone_grpc_proto::geyser::CommitmentLevel;
 
@@ -21,6 +22,7 @@ use crate::network::{
 use crate::rpc::BlockhashSnapshot;
 use crate::rpc::yellowstone::YellowstoneBlockhashClient;
 
+use super::COMPUTE_BUDGET_PROGRAM_ID;
 use super::aggregator::SwapInstructionsVariant;
 use super::error::{EngineError, EngineResult};
 use super::identity::EngineIdentity;
@@ -101,6 +103,7 @@ pub struct TransactionBuilder {
     alt_cache: AltCache,
     ip_allocator: Arc<IpAllocator>,
     rpc_pool: Option<Arc<IpBoundClientPool<RpcClientFactoryFn>>>,
+    force_rpc_blockhash: bool,
 }
 
 impl TransactionBuilder {
@@ -110,6 +113,7 @@ impl TransactionBuilder {
         ip_allocator: Arc<IpAllocator>,
         rpc_pool: Option<Arc<IpBoundClientPool<RpcClientFactoryFn>>>,
         alt_cache: AltCache,
+        force_rpc_blockhash: bool,
     ) -> Self {
         let yellowstone =
             config
@@ -147,6 +151,7 @@ impl TransactionBuilder {
             alt_cache,
             ip_allocator,
             rpc_pool,
+            force_rpc_blockhash,
         }
     }
 
@@ -236,11 +241,15 @@ impl TransactionBuilder {
                 .await?
         };
 
-        let snapshot = if let Some(meta) = instructions.blockhash_with_metadata() {
-            BlockhashSnapshot {
-                blockhash: meta.blockhash,
-                slot: None,
-                last_valid_block_height: Some(meta.last_valid_block_height),
+        let snapshot = if !self.force_rpc_blockhash {
+            if let Some(meta) = instructions.blockhash_with_metadata() {
+                BlockhashSnapshot {
+                    blockhash: meta.blockhash,
+                    slot: None,
+                    last_valid_block_height: Some(meta.last_valid_block_height),
+                }
+            } else {
+                self.latest_blockhash(rpc).await?
             }
         } else {
             self.latest_blockhash(rpc).await?
@@ -254,11 +263,24 @@ impl TransactionBuilder {
             None => instructions.flatten_instructions(),
         };
 
+        if self.force_rpc_blockhash {
+            Self::strip_compute_unit_price(&mut instructions);
+            if let Some(plan) = jito_tip_plan.as_ref() {
+                if plan.lamports > 0 {
+                    instructions.push(system_instruction::transfer(
+                        &identity.pubkey,
+                        &plan.recipient,
+                        plan.lamports,
+                    ));
+                }
+            }
+        }
+
         if let Some(memo) = &self.config.memo {
             instructions.push(Self::build_memo_instruction(memo));
         }
 
-        if tip_lamports > 0 {
+        if tip_lamports > 0 && !self.force_rpc_blockhash {
             debug!(
                 target: "engine::builder",
                 tip_lamports,
@@ -327,6 +349,12 @@ impl TransactionBuilder {
             accounts: Vec::new(),
             data: memo.as_bytes().to_vec(),
         }
+    }
+
+    fn strip_compute_unit_price(instructions: &mut Vec<Instruction>) {
+        instructions.retain(|ix| {
+            !(ix.program_id == COMPUTE_BUDGET_PROGRAM_ID && ix.data.first() == Some(&3))
+        });
     }
 
     fn rpc_for_ip(&self, ip: Option<IpAddr>) -> Arc<RpcClient> {

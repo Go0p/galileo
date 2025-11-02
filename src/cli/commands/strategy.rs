@@ -22,7 +22,6 @@ use crate::config::launch::resources::{
 use crate::config::{
     AppConfig, EngineLegBackend, FlashloanProduct, IntermediumConfig, LegRole, StrategyToggle,
 };
-use crate::engine::ConsoleSummarySink;
 use crate::engine::multi_leg::{
     orchestrator::MultiLegOrchestrator,
     providers::{
@@ -80,7 +79,6 @@ pub async fn run_strategy(
     config: &AppConfig,
     backend: &StrategyBackend<'_>,
     mode: StrategyMode,
-    summary_sink: Option<Arc<dyn ConsoleSummarySink>>,
 ) -> Result<()> {
     let dry_run_mode = DryRunMode::from_sources(
         matches!(mode, StrategyMode::DryRun),
@@ -117,7 +115,7 @@ pub async fn run_strategy(
                     "multi-legs 模式暂需在 bot.strategies.enabled 中启用 blind_strategy 以提供 trade pair 配置"
                 ));
             }
-            run_blind_engine(config, backend, &dry_run_mode, true, summary_sink.clone()).await
+            run_blind_engine(config, backend, &dry_run_mode, true).await
         }
         crate::config::EngineBackend::None => {
             if blind_enabled {
@@ -142,9 +140,7 @@ pub async fn run_strategy(
             (true, true) => Err(anyhow!(
                 "bot.strategies.enabled 中 blind_strategy 与 pure_blind_strategy 不能同时启用"
             )),
-            (true, false) => {
-                run_blind_engine(config, backend, &dry_run_mode, false, summary_sink.clone()).await
-            }
+            (true, false) => run_blind_engine(config, backend, &dry_run_mode, false).await,
             (false, true) => run_pure_blind_engine(config, backend, &dry_run_mode).await,
         },
     }
@@ -155,7 +151,6 @@ async fn run_blind_engine(
     backend: &StrategyBackend<'_>,
     dry_run: &DryRunMode,
     multi_leg_mode: bool,
-    summary_sink: Option<Arc<dyn ConsoleSummarySink>>,
 ) -> Result<()> {
     let blind_config = &config.galileo.blind_strategy;
     let dry_run_enabled = dry_run.is_enabled();
@@ -247,12 +242,13 @@ async fn run_blind_engine(
     );
     let landing_timeout = resolve_landing_timeout(&config.galileo.engine.time_out);
 
+    let enable_yellowstone = !dry_run_enabled && config.galileo.bot.get_block_hash_by_grpc;
     let builder_config =
         BuilderConfig::new(resolve_instruction_memo(&config.galileo.global.instruction))
             .with_yellowstone(
                 config.galileo.global.yellowstone_grpc_url.clone(),
                 config.galileo.global.yellowstone_grpc_token.clone(),
-                config.galileo.bot.get_block_hash_by_grpc,
+                enable_yellowstone,
             );
     let global_proxy = if dry_run_enabled {
         None
@@ -276,6 +272,7 @@ async fn run_blind_engine(
         Arc::clone(&ip_allocator),
         Some(rpc_client_pool),
         alt_cache.clone(),
+        dry_run_enabled,
     );
 
     let marginfi_cfg = &config.galileo.flashloan.marginfi;
@@ -350,26 +347,28 @@ async fn run_blind_engine(
     let default_landers = ["rpc"];
 
     let requested_landers: Vec<String> = if dry_run_enabled {
-        info!(
-            target: "strategy",
-            "dry-run 模式：落地器列表已覆盖为仅使用 RPC"
-        );
-        vec!["rpc".to_string()]
+        if blind_config.enable_landers.is_empty() {
+            vec!["rpc".to_string()]
+        } else {
+            blind_config.enable_landers.clone()
+        }
     } else {
         blind_config.enable_landers.clone()
     };
 
-    let lander_stack = Arc::new(
-        lander_factory
-            .build_stack(
-                &config.lander.lander,
-                &requested_landers,
-                &default_landers,
-                0,
-                Arc::clone(&ip_allocator),
-            )
-            .map_err(|err| anyhow!(err))?,
-    );
+    let mut lander_stack = lander_factory
+        .build_stack(
+            &config.lander.lander,
+            &requested_landers,
+            &default_landers,
+            0,
+            Arc::clone(&ip_allocator),
+        )
+        .map_err(|err| anyhow!(err))?;
+    if dry_run_enabled {
+        lander_stack = lander_stack.into_rpc_only();
+    }
+    let lander_stack = Arc::new(lander_stack);
 
     let quote_cadence = resolve_quote_cadence(&config.galileo.engine, backend);
 
@@ -394,11 +393,6 @@ async fn run_blind_engine(
 
     let console_summary_settings = ConsoleSummarySettings {
         enable: config.galileo.engine.enable_console_summary,
-        sink: if config.galileo.engine.enable_console_summary {
-            summary_sink.clone()
-        } else {
-            None
-        },
     };
 
     let engine_settings = EngineSettings::new(quote_config)
@@ -972,12 +966,13 @@ async fn run_pure_blind_engine(
     let landing_timeout = resolve_landing_timeout(&config.galileo.engine.time_out);
     let ip_allocator = build_ip_allocator(&config.galileo.bot.network)?;
 
+    let enable_yellowstone = !dry_run_enabled && config.galileo.bot.get_block_hash_by_grpc;
     let builder_config =
         BuilderConfig::new(resolve_instruction_memo(&config.galileo.global.instruction))
             .with_yellowstone(
                 config.galileo.global.yellowstone_grpc_url.clone(),
                 config.galileo.global.yellowstone_grpc_token.clone(),
-                config.galileo.bot.get_block_hash_by_grpc,
+                enable_yellowstone,
             );
     let global_proxy = if dry_run_enabled {
         None
@@ -1001,6 +996,7 @@ async fn run_pure_blind_engine(
         Arc::clone(&ip_allocator),
         Some(rpc_client_pool),
         alt_cache.clone(),
+        dry_run_enabled,
     );
 
     let market_cache_handle = init_market_cache(
@@ -1092,31 +1088,32 @@ async fn run_pure_blind_engine(
     let default_landers = ["rpc"];
 
     let requested_landers: Vec<String> = if dry_run_enabled {
-        info!(
-            target: "strategy",
-            "dry-run 模式：纯盲发落地器已覆盖为仅使用 RPC"
-        );
-        vec!["rpc".to_string()]
+        if pure_config.enable_landers.is_empty() {
+            vec!["rpc".to_string()]
+        } else {
+            pure_config.enable_landers.clone()
+        }
     } else {
         pure_config.enable_landers.clone()
     };
 
-    let lander_stack = Arc::new(
-        lander_factory
-            .build_stack(
-                &config.lander.lander,
-                &requested_landers,
-                &default_landers,
-                0,
-                Arc::clone(&ip_allocator),
-            )
-            .map_err(|err| anyhow!(err))?,
-    );
+    let mut lander_stack = lander_factory
+        .build_stack(
+            &config.lander.lander,
+            &requested_landers,
+            &default_landers,
+            0,
+            Arc::clone(&ip_allocator),
+        )
+        .map_err(|err| anyhow!(err))?;
+    if dry_run_enabled {
+        lander_stack = lander_stack.into_rpc_only();
+    }
+    let lander_stack = Arc::new(lander_stack);
 
     let quote_cadence = resolve_quote_cadence(&config.galileo.engine, backend);
     let console_summary_settings = ConsoleSummarySettings {
         enable: config.galileo.engine.enable_console_summary,
-        sink: None,
     };
 
     let engine_settings = EngineSettings::new(quote_config)

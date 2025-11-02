@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
 
 use crate::engine::context::QuoteBatchPlan;
 use crate::engine::quote::{aggregator_kinds_match, second_leg_amount};
@@ -10,10 +10,11 @@ use crate::engine::quote_dispatcher;
 use crate::engine::types::{DoubleQuote, SwapOpportunity};
 use crate::engine::{EngineError, EngineResult};
 use crate::monitoring::events;
+use crate::monitoring::format::short_mint_str;
 use crate::network::{IpLeaseMode, IpTaskKind};
 use crate::strategy::{Strategy, StrategyEvent};
 
-use super::{ConsoleSummaryUpdate, StrategyEngine};
+use super::StrategyEngine;
 
 #[derive(Default)]
 struct BatchStats {
@@ -103,7 +104,8 @@ impl BatchStats {
         }
         let mut parts = Vec::with_capacity(self.opportunities.len());
         for (mint, stats) in &self.opportunities {
-            parts.push(format!("{}/{}", stats.count, mint));
+            let symbol = short_mint_str(mint);
+            parts.push(format!("{}/{}", stats.count, symbol.as_ref()));
         }
         parts.join(",")
     }
@@ -119,7 +121,8 @@ impl BatchStats {
             } else {
                 (stats.total_profit / stats.count as i128) as i64
             };
-            parts.push(format!("{}/{}", avg, mint));
+            let symbol = short_mint_str(mint);
+            parts.push(format!("{}/{}", avg, symbol.as_ref()));
         }
         parts.join(",")
     }
@@ -209,11 +212,6 @@ where
         }
 
         let should_summarize = self.settings.console_summary.enable && self.multi_leg.is_none();
-        let summary_sink = if should_summarize {
-            self.settings.console_summary.sink.clone()
-        } else {
-            None
-        };
         let mut batch_stats = if should_summarize {
             Some(BatchStats::new(total_groups))
         } else {
@@ -278,11 +276,7 @@ where
 
         if let Some(stats) = batch_stats {
             let line = stats.summary_line();
-            if let Some(sink) = summary_sink.as_ref() {
-                sink.publish(ConsoleSummaryUpdate::new(line.clone()));
-            } else {
-                trace!(target: "engine::summary", "{line}");
-            }
+            info!(target: "engine::summary", "{line}");
         }
 
         Ok(max_wave_cooldown)

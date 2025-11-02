@@ -34,8 +34,8 @@ pub(crate) use runtime::LighthouseRuntime;
 pub use runtime::MultiLegEngineContext;
 pub(crate) use runtime::strategy::MintSchedule;
 pub use runtime::strategy::{
-    ConsoleSummarySettings, ConsoleSummarySink, ConsoleSummaryUpdate, EngineSettings,
-    LighthouseSettings, SolPriceFeedSettings, StrategyEngine,
+    ConsoleSummarySettings, EngineSettings, LighthouseSettings, SolPriceFeedSettings,
+    StrategyEngine,
 };
 pub use scheduler::Scheduler;
 pub use swap_preparer::{ComputeUnitPriceMode, SwapPreparer};

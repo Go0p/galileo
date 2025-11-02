@@ -217,12 +217,17 @@ impl CopyWalletRunner {
             .map_err(|err| anyhow!("wallet address `{}` 解析失败: {err}", wallet.address))?;
 
         let enable_landers = if dry_run {
-            tracing::info!(
-                target: "strategy::copy",
-                wallet = %wallet_pubkey,
-                "dry-run 模式：落地器强制使用 RPC"
-            );
-            vec!["rpc".to_string()]
+            if wallet.source.enable_landers.is_empty() {
+                vec!["rpc".to_string()]
+            } else {
+                wallet
+                    .source
+                    .enable_landers
+                    .iter()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }
         } else if wallet.source.enable_landers.is_empty() {
             vec!["rpc".to_string()]
         } else {
@@ -235,17 +240,19 @@ impl CopyWalletRunner {
                 .collect()
         };
 
-        let lander_stack = Arc::new(
-            lander_factory
-                .build_stack(
-                    &lander_settings,
-                    &enable_landers,
-                    &["rpc"],
-                    lander_settings.max_retries.unwrap_or(0),
-                    ip_allocator,
-                )
-                .map_err(|err| anyhow!(err))?,
-        );
+        let mut lander_stack = lander_factory
+            .build_stack(
+                &lander_settings,
+                &enable_landers,
+                &["rpc"],
+                lander_settings.max_retries.unwrap_or(0),
+                ip_allocator,
+            )
+            .map_err(|err| anyhow!(err))?;
+        if dry_run {
+            lander_stack = lander_stack.into_rpc_only();
+        }
+        let lander_stack = Arc::new(lander_stack);
 
         let cu_limit_multiplier = if wallet.cu_limit_multiplier <= 0.0 {
             warn!(

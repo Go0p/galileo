@@ -58,6 +58,7 @@ async fn send_transaction(
         Arc::clone(&ip_allocator),
         Some(rpc_client_pool),
         AltCache::new(),
+        false,
     );
     let mut submission_builder = reqwest::Client::builder();
     if let Some(proxy_url) = global_proxy.as_ref() {
