@@ -22,6 +22,7 @@ use crate::config::launch::resources::{
 use crate::config::{
     AppConfig, EngineLegBackend, FlashloanProduct, IntermediumConfig, LegRole, StrategyToggle,
 };
+use crate::engine::ConsoleSummarySink;
 use crate::engine::multi_leg::{
     orchestrator::MultiLegOrchestrator,
     providers::{
@@ -79,6 +80,7 @@ pub async fn run_strategy(
     config: &AppConfig,
     backend: &StrategyBackend<'_>,
     mode: StrategyMode,
+    summary_sink: Option<Arc<dyn ConsoleSummarySink>>,
 ) -> Result<()> {
     let dry_run_mode = DryRunMode::from_sources(
         matches!(mode, StrategyMode::DryRun),
@@ -115,7 +117,7 @@ pub async fn run_strategy(
                     "multi-legs 模式暂需在 bot.strategies.enabled 中启用 blind_strategy 以提供 trade pair 配置"
                 ));
             }
-            run_blind_engine(config, backend, &dry_run_mode, true).await
+            run_blind_engine(config, backend, &dry_run_mode, true, summary_sink.clone()).await
         }
         crate::config::EngineBackend::None => {
             if blind_enabled {
@@ -140,7 +142,9 @@ pub async fn run_strategy(
             (true, true) => Err(anyhow!(
                 "bot.strategies.enabled 中 blind_strategy 与 pure_blind_strategy 不能同时启用"
             )),
-            (true, false) => run_blind_engine(config, backend, &dry_run_mode, false).await,
+            (true, false) => {
+                run_blind_engine(config, backend, &dry_run_mode, false, summary_sink.clone()).await
+            }
             (false, true) => run_pure_blind_engine(config, backend, &dry_run_mode).await,
         },
     }
@@ -151,6 +155,7 @@ async fn run_blind_engine(
     backend: &StrategyBackend<'_>,
     dry_run: &DryRunMode,
     multi_leg_mode: bool,
+    summary_sink: Option<Arc<dyn ConsoleSummarySink>>,
 ) -> Result<()> {
     let blind_config = &config.galileo.blind_strategy;
     let dry_run_enabled = dry_run.is_enabled();
@@ -169,8 +174,8 @@ async fn run_blind_engine(
     let resolved_rpc = resolve_rpc_client(&config.galileo.global, dry_run.rpc_override())?;
     let rpc_client = resolved_rpc.client.clone();
     let rpc_endpoints = resolved_rpc.endpoints.clone();
-    let mut identity =
-        EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
+    let mut identity = EngineIdentity::from_private_key(&config.galileo.private_key)
+        .map_err(|err| anyhow!(err))?;
 
     let ip_allocator = build_ip_allocator(&config.galileo.bot.network)?;
     let alt_cache = AltCache::new();
@@ -388,7 +393,12 @@ async fn run_blind_engine(
     }
 
     let console_summary_settings = ConsoleSummarySettings {
-        enable: config.galileo.engine.console_summary.enable,
+        enable: config.galileo.engine.enable_console_summary,
+        sink: if config.galileo.engine.enable_console_summary {
+            summary_sink.clone()
+        } else {
+            None
+        },
     };
 
     let engine_settings = EngineSettings::new(quote_config)
@@ -942,8 +952,8 @@ async fn run_pure_blind_engine(
     let resolved_rpc = resolve_rpc_client(&config.galileo.global, dry_run.rpc_override())?;
     let rpc_client = resolved_rpc.client.clone();
     let rpc_endpoints = resolved_rpc.endpoints.clone();
-    let mut identity =
-        EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
+    let mut identity = EngineIdentity::from_private_key(&config.galileo.private_key)
+        .map_err(|err| anyhow!(err))?;
     let alt_cache = AltCache::new();
 
     let (quote_executor, swap_preparer, _unused_defaults) = prepare_swap_components(
@@ -1105,7 +1115,8 @@ async fn run_pure_blind_engine(
 
     let quote_cadence = resolve_quote_cadence(&config.galileo.engine, backend);
     let console_summary_settings = ConsoleSummarySettings {
-        enable: config.galileo.engine.console_summary.enable,
+        enable: config.galileo.engine.enable_console_summary,
+        sink: None,
     };
 
     let engine_settings = EngineSettings::new(quote_config)

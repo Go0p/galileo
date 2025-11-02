@@ -33,14 +33,14 @@ engine:
   backend: "dflow"
   # backend: "multi-legs"
   # backend: "dflow"
+  # 设置为 true 时启用控制台摘要面板，每轮 trade size 批次完成后打印关键统计。
+  enable_console_summary: true
   time_out:
     # 超时时间：报价 / 指令 / 落地（单位：毫秒）
     quote_ms: 2000
     swap_ms: 10000
     landing_ms: 5000
-  console_summary:
-    # enable: 设置为 true 时启用控制台摘要面板，每轮 trade size 批次完成后打印关键统计。
-    enable: false
+
   ultra:
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
     leg: "sell"
@@ -204,15 +204,15 @@ bot:
   enable_simulation: false
   auto_refresh_wallet_minute: 30
   strategies:
+    # 启用的策略列表（策略配置从 strategies/ 目录加载）
     enabled:
       - blind_strategy
-      - copy_strategy
+    # 策略配置文件目录（默认为 "strategies"）
+    config_dir: "strategies"
   engines:
     pairs:
       - buy_leg: dflow
         sell_leg: dflow
-      - buy_leg: ultra
-        sell_leg: ultra
   flashloan:
     products:
       - marginfi
@@ -250,267 +250,9 @@ flashloan:
 
 # lander 相关配置已移至独立的 lander.yaml
 
-# 盲发策略
-blind_strategy:
-  memo: ""
-  # 只允许交易这些 dex
-  enable_dexs: [
-      # "HumidiFi",
-      # "SolFi",
-      # "SolFi V2",
-      # "Tessera V",
-      # "ZeroFi",
-      # "Whirlpools",
-      # "Obric V2",
-      # "Aquifer",
-      # "Lifinity V2",
-      # "DFlow JIT Router"
-    ]
-  exclude_dexes: [
-      # 通过 exclude_dexes 会在 DFlow /quote 请求中拼接为 excludeDexes 参数
-      # "DFlow JIT Router",
-    ]
-  enable_landers: [
-      # "staked"
-      # "jito",
-    ]
-  # 自动根据 IP 容量扩展各 lane 的交易规模数量，避免手动维护庞大的 trade size 列表。
-  auto_scale_to_ip:
-    enable: false
-    max_multiplier: 3.0
-  base_mints:
-    # - mint: "So11111111111111111111111111111111111111112"
-    #   # 每个 lane 描述一个交易规模区间与生成策略：
-    #   # - min/max：规模范围（单位 lamports）
-    #   # - count：初始生成多少个规模；结合 auto_scale 时也作为扩容基数
-    #   # - strategy：linear / exponential / random
-    #   # - weight：auto_scale 启用时的扩容权重（可选，默认 1.0）
-    #   lanes:
-    #     - min: 1_000_000_000
-    #       max: 6_000_000_000
-    #       count: 1
-    #       strategy: linear
-    #   # 最小利润
-    #   min_quote_profit: 10000
-    #   # 交易延时
-    #   # 单位为毫秒。默认值表示机器人将等待 1000 毫秒，然后针对相同代币交易规模的对再次尝试。减少此值将增加立即捕捉价格变化的机会，但会增加读取 RPC 负载。
-    #   # 冷却时间
-    #   # 如果找到一个机会并且发送了 tx，则至少等待这个时间（ms）才能发送另一个。
-    #   sending_cooldown: 1000
-    #   # 路由类型
-    #   # 2hop ：这意味着只有像 A -> B -> A 这样的路由才会被考虑。如果您还将 use_direct_route_only 设置为 false，则 A->B 和 B->A 之间可能存在其他铸币厂。
-    #   # 3hop ：这意味着只会考虑像 A -> B -> C -> A 这样的路线。您需要设置除了所有中间铸币厂之外，还希望在中间包含哪些额外的铸币厂。
-    #   # 最常见的用例是使用 SOL 和 USDC 为路线报价，例如 SOL -> USDC -> X -> SOL。3hop 会产生与将 use_direct_route_only 设置为 false 类似的结果，但报价时间要快得多
-    #   # 使用 3hop 时还需要定义 three_hop_mints
-    #   route_types:
-    #     - "2hop"
-    #     - "3hop"
-    #   # 三跳交易中，中间的铸币厂
-    #   three_hop_mints:
-    #     - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-    - mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-      lanes:
-        - min: 600_000_000
-          max: 1_200_000_000
-          count: 1
-          strategy: linear
-      min_quote_profit: 1000
-      sending_cooldown: 1000
-      route_types:
-        - "2hop"
-        - "3hop"
-      three_hop_mints:
-        - "So11111111111111111111111111111111111111112"
-
-
-# 纯盲发策略（与 blind_strategy 并行配置，互不影响）
-pure_blind_strategy:
-  # 纯盲发策略允许使用的落地器（顺序影响优先级）
-  enable_landers: []
-
-  market_cache:
-    path: "./cache/pure_markets.json"              
-    # 自动拉取更新时用
-    download_url: "https://cache.jup.ag/markets?v=4" 
-    proxy: "http://192.168.124.4:2080"
-    # 可选：定时刷新缓存（0=禁用）
-    auto_refresh_minutes: 120
-    # 当设置为 true 时，dexes 下有实现的，盲发支持的，才会保留，否则会过滤掉
-    exclude_other_dex_program_ids: true
-    exclude_dex_program_ids: [
-      "CAMMCz6GM1DNKyvHRAAmcX6vLLANBYdmsKtfgfcJQ68X",
-      "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
-      "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"
-    ]
-    # 可选：按 TVL/深度阈值过滤
-    min_liquidity_usd: 50000                       
-
-  # 描述闭环入口资产以及想要探索的中间资产集合
-  assets:
-    base_mints:
-      - mint: "So11111111111111111111111111111111111111112"
-        lanes:
-          - min: 5_000_000_000
-            max: 5_000_000_000
-            count: 1
-            strategy: linear
-          - min: 10_000_000_000
-            max: 10_000_000_000
-            count: 1
-            strategy: linear
-        # 限制发送的频率，单位为毫秒
-        # 路由类型，是 3 跳还是 2 跳
-        route_type: "2hop"
-      - mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-        lanes:
-          - min: 1_000_000_000
-            max: 1_000_000_000
-            count: 1
-            strategy: linear
-          - min: 2_000_000_000
-            max: 2_000_000_000
-            count: 1
-            strategy: linear
-        # 限制发送的频率，单位为毫秒
-        # 路由类型，是 3 跳还是 2 跳
-        route_type: "3hop"
-    intermediates:
-      - "So11111111111111111111111111111111111111112"
-      - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-    blacklist_mints: []        # 明确禁用的中间资产
-  overrides:                   # 手工指定的闭环（自动生成失败时可兜底）
-    # - name: "humidifi_whirlpool_zerofi_cycle"
-    #   legs:
-    #     - market: "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW" # HumidiFi
-    #     - market: "HktfL7iwGKT5QHjywQkcDnZXScoh811k7akrMZJkCcEF" # Whirlpools
-    #     - market: "BqkNuLTbUZLifWuUtfF5CkyRegTQhYYgUnNeUaxoWC8S" # ZeroFi
-    #   lookup_tables:
-    #     - "3RRynG7FN6FkVaAyZPHwZSAGYUWzxb1EmtM5CfrShhsw"
-    #     - "AW3raiF9cvqu8d5JgCXmCi8kh16Aba86gWVi9pbNYNNc"
-    #   lanes:
-    #     - min: 7_500_000_000
-    #       max: 7_500_000_000
-    #       count: 1
-    #       strategy: linear
-
-  monitoring:
-    enable_metrics: true
-    route_labels: true         # 指标上打 route 名称标签
-
-copy_strategy:
-  copy_dispatch:
-    # copy 触发交易的调度方式："parallel" 立即并发落地；"queued" 入队串行提交的流程
-    mode: "queued"
-    # 并发模式的在飞上限；表示最多允许多少条组装交易同时执行落地。
-    # 通过信号量实现，Permit 释放后新任务才能提交；在 queued 模式下忽略。
-    max_inflight: 32
-    # 队列模式的缓冲容量；所有触发交易扇出的组装任务都会排进同一个队列。
-    # 超出容量时会丢弃队首的旧任务，让最新触发交易优先入队。
-    queue_capacity: 256
-    # 指定毫秒数再处理下一笔，防止 gRPC 源头过快导致组装交易爆发。
-    replay_interval_ms: 100
-    # 队列模式下组装交易异步提交之间的最小间隔；0 表示不额外等待
-    # 仅在队列模式生效；队列消费者异步提交一笔组装交易后，会等待
-    queue_send_interval_ms: 100
-    # 每笔触发交易扇出的组装交易数量；parallel 模式一次性并发提交，
-    # queued 模式按 queue_send_interval_ms 依次异步提交，共计 fanout_count 笔。
-    fanout_count: 3
-  wallets:
-    - address: "AAAAA4WQFj5MByDDxmraSAtumvWk8eNTAL5421SAdLRA"
-      # 计算单元限制系数；影响落地交易时分配的计算单元数量。
-      cu_limit_multiplier: 0.94
-      # accounts 来源
-      source:
-        # 来源类型 rpc 或者 grpc
-        type: "grpc"
-        rpc:
-          # 拉取交易的间隔 分钟
-          pull_interval_minutes: 10
-          # 拉取交易的数量
-          pull_count: 100
-          # 节点列表
-          pull_endpoints:
-            - "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
-        grpc:
-          yellowstone_grpc_url: "http://185.26.10.237:10000"
-          # yellowstone grpc token
-          yellowstone_grpc_token: ""
-          # 包含的 program id
-          include_program_ids:
-            - "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
-          # 排除的 program id
-          exclude_program_ids: 
-            - ""
-        enable_landers:
-          - "jito"
-
-# 后跑策略
-# Backrun 策略的工作原理如下：
-# 1. 机器人将监控您在 enable_dexs 中定义的市场，以及您上面定义的所有中间铸币厂
-# 2. 如果交易导致池子价格波动超过 min_price_impact_pct，机器人会尝试创建交易来回滚它
-# 3. 机器人将使用您在 TRADE_CONFIGS 中定义的交易规模，根据您正在运行的交易，随机生成一个介于
-#    MIN_TRADE_BP 和 MAX_TRADE_BP 之间的交易规模。或者，您也可以在此处定义一个 FIXED_SIZE 作为交易规模。
-# 4. 机器人将通过聚合器报价另一笔规模，创建一个完整的套利交易 tx
-# 5. 如果交易有利润，且利润高于 MIN_QUOTE_PROFIT，机器人就会将其发送出去
-back_run_strategy:
-  # 只允许交易这些 dex
-  enable_dexs: ["Perps", "SolFi"]
-  # 允许使用的 lander 类型
-  enable_landers: []
-  # 交易备注
-  memo: ""
-  # 触发我们整一个套利交易的 slot 和 tx 的 memo
-  trigger_memo: ""
-
-  base_mints:
-    - # 触发交易金额
-      trigger_amount: 100
-      # SOL
-      mint: "So11111111111111111111111111111111111111112"
-      # 最小报价利润
-      min_quote_profit: 100000
-      # 最小模拟利润
-      min_simulated_profit: 100000
-      # 跳过报价利润检查，jup 报价可能非常不准确，您可以与模拟一起使用来获取实际利润
-      skip_profit_check_for_quote: false
-      # 最小交易规模，如果生成的交易规模小于这个，机器人会跳过交易
-      min_trade_size: 500000000
-      # 最大交易规模，如果生成的交易规模大于这个，机器人会限制在这个规模
-      max_trade_size: 150000000000
-      trade_configs:
-        - # 机器人会随机选择一个交易规模，介于 min_trade_bp 和 max_trade_bp 之间
-          # 您可以定义多个配置，机器人将为相同的交易创建不同的 tx
-          # 可以使用 trade bp 或者 fixed_size
-          min_trade_bp: 2000
-          max_trade_bp: 2000
-        - # 固定交易规模，机器人会使用这个规模
-          fixed_size: 1000000000
-          # 路由类型，目前只支持 2hop
-          route_types:
-            - "2hop"
-
-    - # 触发交易金额
-      trigger_amount: 100
-      # USDC
-      mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-      # 最小报价利润
-      min_quote_profit: 100000
-      # 最小模拟利润
-      min_simulated_profit: 100000
-      # 跳过报价利润检查，jup 报价可能非常不准确，您可以与模拟一起使用来获取实际利润
-      skip_profit_check_for_quote: false
-      # 最小交易规模，如果生成的交易规模小于这个，机器人会跳过交易
-      min_trade_size: 500000000
-      # 最大交易规模，如果生成的交易规模大于这个，机器人会限制在这个规模
-      max_trade_size: 150000000000
-      trade_configs:
-        - # 机器人会随机选择一个交易规模，介于 min_trade_bp 和 max_trade_bp 之间
-          # 您可以定义多个配置，机器人将为相同的交易创建不同的 tx
-          # 可以使用 trade bp 或者 fixed_size
-          min_trade_bp: 2000
-          max_trade_bp: 2000
-        - # 固定交易规模，机器人会使用这个规模
-          fixed_size: 1000000000
-          # 路由类型，目前只支持 2hop
-          route_types:
-            - "2hop"
+# 策略配置已拆分到 strategies/ 目录
+# 如需修改策略配置，请编辑以下文件：
+# - strategies/blind_strategy.yaml
+# - strategies/pure_blind_strategy.yaml
+# - strategies/copy_strategy.yaml
+# - strategies/back_run_strategy.yaml

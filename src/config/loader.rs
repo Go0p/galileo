@@ -5,7 +5,8 @@ use serde::de::DeserializeOwned;
 
 use thiserror::Error;
 
-use super::wallet::{parse_keypair_string, process_wallet};
+use super::strategy_loader::load_strategy_configs;
+use super::wallet::{parse_keypair_string, process_wallet_keys};
 use super::{AppConfig, GalileoConfig, LanderConfig};
 use solana_sdk::signer::Signer;
 use tracing::info;
@@ -35,10 +36,15 @@ pub fn load_config(path: Option<PathBuf>) -> Result<AppConfig, ConfigError> {
 
     let (mut galileo, galileo_dir) = load_first_available_yaml::<GalileoConfig>(&candidate_paths)?;
     let galileo_path = first_existing_path(&candidate_paths);
-    let wallet_result = process_wallet(&mut galileo.global.wallet, galileo_path.as_deref())?;
+
+    // 加载策略配置（从外部文件或使用主配置中的值）
+    load_strategy_configs(&mut galileo, galileo_dir.as_deref())?;
+
+    // 处理 wallet_keys：解密并填充 private_key
+    let wallet_result = process_wallet_keys(&mut galileo, galileo_path.as_deref())?;
     if wallet_result.config_updated {
         if let Some(remark) = wallet_result.selected_remark.as_ref() {
-            match parse_keypair_string(galileo.global.wallet.private_key.trim()) {
+            match parse_keypair_string(galileo.private_key.trim()) {
                 Ok(keypair) => {
                     println!("🔐 已保存钱包 [{}]，公钥 {}", remark, keypair.pubkey());
                 }
@@ -66,7 +72,7 @@ pub fn load_config(path: Option<PathBuf>) -> Result<AppConfig, ConfigError> {
     }
 
     if let Some(remark) = wallet_result.selected_remark.as_ref() {
-        match parse_keypair_string(galileo.global.wallet.private_key.trim()) {
+        match parse_keypair_string(galileo.private_key.trim()) {
             Ok(keypair) => {
                 println!("🔓 已解锁钱包 [{}]，公钥 {}", remark, keypair.pubkey());
             }

@@ -5,11 +5,9 @@ use serde_yaml;
 use solana_sdk::signer::Signer;
 
 use crate::cli::args::WalletCmd;
+use crate::config::GalileoConfig;
 use crate::config::loader::DEFAULT_CONFIG_PATHS;
-use crate::config::wallet::{
-    WalletProcessingResult, add_wallet_entry_interactive, parse_keypair_string,
-};
-use crate::config::{GalileoConfig, WalletConfig};
+use crate::config::wallet::{WalletProcessingResult, add_wallet_to_config, parse_keypair_string};
 
 pub fn handle_wallet_command(cmd: &WalletCmd, override_path: Option<PathBuf>) -> Result<()> {
     match cmd {
@@ -21,18 +19,16 @@ fn handle_wallet_add(override_path: Option<PathBuf>) -> Result<()> {
     let target_path = resolve_config_path(override_path)?;
     let contents = std::fs::read_to_string(&target_path)
         .map_err(|err| anyhow!("读取配置文件失败 {}: {err}", target_path.display()))?;
-    let config: GalileoConfig = serde_yaml::from_str(&contents)
+    let mut config: GalileoConfig = serde_yaml::from_str(&contents)
         .map_err(|err| anyhow!("解析配置文件失败 {}: {err}", target_path.display()))?;
-    let mut wallet: WalletConfig = config.global.wallet;
-    wallet.private_key.clear();
 
     let WalletProcessingResult {
         selected_remark, ..
-    } = add_wallet_entry_interactive(&mut wallet, Some(target_path.as_path()))
+    } = add_wallet_to_config(&mut config, Some(target_path.as_path()))
         .map_err(|err| anyhow!(err.to_string()))?;
 
     if let Some(remark) = selected_remark.as_ref() {
-        match parse_keypair_string(wallet.private_key.trim()) {
+        match parse_keypair_string(config.private_key.trim()) {
             Ok(keypair) => {
                 println!("🔐 已新增钱包 [{}]，公钥 {}", remark, keypair.pubkey());
             }

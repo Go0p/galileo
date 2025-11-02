@@ -36,8 +36,8 @@ pub async fn run_copy_strategy(
 
     let resolved_rpc = resolve_rpc_client(&config.galileo.global, dry_run.rpc_override())?;
     let rpc_client = resolved_rpc.client.clone();
-    let identity =
-        EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
+    let identity = EngineIdentity::from_private_key(&config.galileo.private_key)
+        .map_err(|err| anyhow!(err))?;
 
     let builder_config = crate::engine::BuilderConfig::new(resolve_instruction_memo(
         &config.galileo.global.instruction,

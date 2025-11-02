@@ -23,12 +23,18 @@ mod strategy;
 mod wallet;
 
 use crate::cli::args::{Cli, Command};
+use crate::cli::console_ui::ConsoleUi;
 use crate::cli::context::{init_tracing, load_configuration};
 use crate::config::{AppConfig, CpuAffinityConfig};
+use crate::engine::ConsoleSummarySink;
 
 #[cfg_attr(feature = "hotpath", hotpath::measure)]
-async fn async_entry(cli: Cli, config: AppConfig) -> Result<()> {
-    crate::cli::run(cli, config).await
+async fn async_entry(
+    cli: Cli,
+    config: AppConfig,
+    summary_sink: Option<Arc<dyn ConsoleSummarySink>>,
+) -> Result<()> {
+    crate::cli::run(cli, config, summary_sink).await
 }
 
 #[derive(Debug)]
@@ -127,18 +133,33 @@ impl AffinityPlan {
     }
 }
 
-fn bootstrap() -> Result<(Cli, AppConfig, RuntimeOptions)> {
+fn bootstrap() -> Result<(Cli, AppConfig, RuntimeOptions, Option<ConsoleUi>)> {
     let cli = Cli::parse();
     if let Command::Wallet(cmd) = &cli.command {
         crate::cli::wallet::handle_wallet_command(cmd, cli.config.clone())?;
         std::process::exit(0);
     }
     let config = load_configuration(cli.config.clone()).map_err(|err| anyhow!(err))?;
-    init_tracing(&config.galileo.global.logging)?;
+    let mut console_ui = None;
+    let wants_console_summary = matches!(&cli.command, Command::Run | Command::StrategyDryRun)
+        && config.galileo.engine.enable_console_summary;
+    if wants_console_summary {
+        match ConsoleUi::start() {
+            Ok(ui) => {
+                console_ui = Some(ui);
+            }
+            Err(err) => {
+                eprintln!("初始化控制台摘要面板失败：{err}");
+            }
+        }
+    }
+
+    let writer = console_ui.as_ref().map(|ui| ui.make_writer());
+    init_tracing(&config.galileo.global.logging, writer)?;
 
     let runtime_opts = prepare_runtime_options(&config.galileo.bot.cpu_affinity)?;
 
-    Ok((cli, config, runtime_opts))
+    Ok((cli, config, runtime_opts, console_ui))
 }
 
 fn prepare_runtime_options(config: &CpuAffinityConfig) -> Result<RuntimeOptions> {
@@ -276,7 +297,7 @@ mod tests {
     feature = "hotpath-alloc-count-total"
 ))]
 fn main() -> Result<()> {
-    let (cli, config, opts) = bootstrap()?;
+    let (cli, config, opts, console_ui) = bootstrap()?;
 
     if let Some(plan) = opts.plan.as_ref() {
         plan.bind_main_thread();
@@ -286,7 +307,8 @@ fn main() -> Result<()> {
         .enable_all()
         .build()?;
 
-    runtime.block_on(async_entry(cli, config))
+    let summary_sink = console_ui.as_ref().map(|ui| ui.summary_sink());
+    runtime.block_on(async_entry(cli, config, summary_sink))
 }
 
 #[cfg(not(any(
@@ -294,7 +316,7 @@ fn main() -> Result<()> {
     feature = "hotpath-alloc-count-total"
 )))]
 fn main() -> Result<()> {
-    let (cli, config, opts) = bootstrap()?;
+    let (cli, config, opts, console_ui) = bootstrap()?;
 
     if let Some(plan) = opts.plan.as_ref() {
         plan.bind_main_thread();
@@ -317,5 +339,6 @@ fn main() -> Result<()> {
     }
 
     let runtime = builder.enable_all().build()?;
-    runtime.block_on(async_entry(cli, config))
+    let summary_sink = console_ui.as_ref().map(|ui| ui.summary_sink());
+    runtime.block_on(async_entry(cli, config, summary_sink))
 }

@@ -1,5 +1,6 @@
 pub mod args;
 pub mod commands;
+pub mod console_ui;
 pub mod context;
 pub mod lander;
 pub mod runtime;

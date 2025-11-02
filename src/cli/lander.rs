@@ -40,8 +40,8 @@ async fn send_transaction(
 ) -> Result<()> {
     let resolved_rpc = resolve_rpc_client(&config.galileo.global, None)?;
     let rpc_client = resolved_rpc.client.clone();
-    let identity =
-        EngineIdentity::from_wallet(&config.galileo.global.wallet).map_err(|err| anyhow!(err))?;
+    let identity = EngineIdentity::from_private_key(&config.galileo.private_key)
+        .map_err(|err| anyhow!(err))?;
 
     let builder_config = BuilderConfig::new(memo).with_yellowstone(
         config.galileo.global.yellowstone_grpc_url.clone(),

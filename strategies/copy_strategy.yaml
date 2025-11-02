@@ -1,0 +1,49 @@
+# Copy 策略配置
+
+copy_dispatch:
+  # copy 触发交易的调度方式："parallel" 立即并发落地；"queued" 入队串行提交的流程
+  mode: "queued"
+  # 并发模式的在飞上限；表示最多允许多少条组装交易同时执行落地。
+  # 通过信号量实现，Permit 释放后新任务才能提交；在 queued 模式下忽略。
+  max_inflight: 32
+  # 队列模式的缓冲容量；所有触发交易扇出的组装任务都会排进同一个队列。
+  # 超出容量时会丢弃队首的旧任务，让最新触发交易优先入队。
+  queue_capacity: 256
+  # 指定毫秒数再处理下一笔，防止 gRPC 源头过快导致组装交易爆发。
+  replay_interval_ms: 100
+  # 队列模式下组装交易异步提交之间的最小间隔；0 表示不额外等待
+  # 仅在队列模式生效；队列消费者异步提交一笔组装交易后，会等待
+  queue_send_interval_ms: 100
+  # 每笔触发交易扇出的组装交易数量；parallel 模式一次性并发提交，
+  # queued 模式按 queue_send_interval_ms 依次异步提交，共计 fanout_count 笔。
+  fanout_count: 3
+
+wallets:
+  - address: "AAAAA4WQFj5MByDDxmraSAtumvWk8eNTAL5421SAdLRA"
+    # 计算单元限制系数；影响落地交易时分配的计算单元数量。
+    cu_limit_multiplier: 0.94
+    # accounts 来源
+    source:
+      # 来源类型 rpc 或者 grpc
+      type: "grpc"
+      rpc:
+        # 拉取交易的间隔 分钟
+        pull_interval_minutes: 10
+        # 拉取交易的数量
+        pull_count: 100
+        # 节点列表
+        pull_endpoints:
+          - "https://rpc.shyft.to?api_key=FgU1AVt-7pIiUk2j"
+      grpc:
+        yellowstone_grpc_url: "http://185.26.10.237:10000"
+        # yellowstone grpc token
+        yellowstone_grpc_token: ""
+        # 包含的 program id
+        include_program_ids:
+          - "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+        # 排除的 program id
+        exclude_program_ids: 
+          - ""
+      enable_landers:
+        - "jito"
+

@@ -381,10 +381,12 @@ pub fn ip_cooldown(ip: IpAddr, reason: &str, duration: Duration) {
     }
 }
 
-fn batch_label(batch_id: Option<u64>) -> String {
-    batch_id
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_string())
+fn batch_label(batch_id: Option<u64>) -> &'static str {
+    if batch_id.is_some() {
+        "present"
+    } else {
+        "none"
+    }
 }
 
 pub fn quote_start(
@@ -476,7 +478,7 @@ pub fn quote_end(
             "strategy" => strategy.to_string(),
             "result" => result,
             "local_ip" => ip_value.clone(),
-            "batch_id" => batch_label(batch_id)
+            "batch" => batch_label(batch_id)
         )
         .increment(1);
         histogram!(
@@ -484,7 +486,7 @@ pub fn quote_end(
             "strategy" => strategy.to_string(),
             "result" => result,
             "local_ip" => ip_value,
-            "batch_id" => batch_label(batch_id)
+            "batch" => batch_label(batch_id)
         )
         .record(latency_ms);
     }
@@ -542,29 +544,21 @@ pub fn profit_shortfall(
     let reverse_latency_str = reverse_latency_ms.map(|ms| format!("{ms:.3}"));
     let forward_latency_display = forward_latency_str.as_deref().unwrap_or("-");
     let reverse_latency_display = reverse_latency_str.as_deref().unwrap_or("-");
+
     info!(
         target: "monitoring::profit",
         event = "shortfall",
         aggregator,
-        forward_in,
-        forward_out,
-        forward_latency_ms = forward_latency_display,
-        reverse_in,
-        reverse_out,
-        reverse_latency_ms = reverse_latency_display,
         profit,
         expected_profit,
-        "利润不足,base_mint={},aggregator={},forward_quote={{in_amount={},out_amount={},latency_ms={}}},reverse_quote={{in_amount={},out_amount={},latency_ms={}}},profit={},expect_profit={}",
+        "利润不足 base_mint={} forward={{in={},out={},latency_ms={}}} reverse={{in={},out={},latency_ms={}}}",
         base_display,
-        aggregator,
         forward_in,
         forward_out,
         forward_latency_display,
         reverse_in,
         reverse_out,
-        reverse_latency_display,
-        profit,
-        expected_profit
+        reverse_latency_display
     );
 }
 
@@ -605,38 +599,38 @@ pub fn profit_opportunity(
             target: "monitoring::profit",
             event = "opportunity",
             aggregator,
-            base_mint = %base_display,
-            forward_in,
-            forward_out,
-            forward_latency_ms = forward_latency_display,
-            reverse_in,
-            reverse_out,
-            reverse_latency_ms = reverse_latency_display,
-            quote_total_latency_ms = total_latency_display,
-            profit,
             net_profit,
             expected_profit,
-            forward_ip = %forward_ip_display,
-            reverse_ip = %reverse_ip_display,
-            "利润达标"
+            total_latency_ms = total_latency_display,
+            "发现机会 base_mint={} profit={} forward={{in={},out={},latency_ms={},ip={}}} reverse={{in={},out={},latency_ms={},ip={}}}",
+            base_display,
+            profit,
+            forward_in,
+            forward_out,
+            forward_latency_display,
+            forward_ip_display,
+            reverse_in,
+            reverse_out,
+            reverse_latency_display,
+            reverse_ip_display
         );
     } else {
         info!(
             target: "monitoring::profit",
             event = "opportunity",
             aggregator,
-            base_mint = %base_display,
-            forward_in,
-            forward_out,
-            forward_latency_ms = forward_latency_display,
-            reverse_in,
-            reverse_out,
-            reverse_latency_ms = reverse_latency_display,
-            quote_total_latency_ms = total_latency_display,
-            profit,
             net_profit,
             expected_profit,
-            "利润达标"
+            total_latency_ms = total_latency_display,
+            "发现机会 base_mint={} profit={} forward={{in={},out={},latency_ms={}}} reverse={{in={},out={},latency_ms={}}}",
+            base_display,
+            profit,
+            forward_in,
+            forward_out,
+            forward_latency_display,
+            reverse_in,
+            reverse_out,
+            reverse_latency_display
         );
     }
 }

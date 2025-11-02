@@ -4,19 +4,24 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
+use bincode::serde::decode_from_slice;
 use futures::StreamExt;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::instruction::Instruction;
+use solana_sdk::native_token::LAMPORTS_PER_SOL;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_sdk::transaction::VersionedTransaction;
+use solana_system_interface::instruction::SystemInstruction;
 use tracing::{debug, error, info, warn};
 use yellowstone_grpc_proto::tonic::metadata::AsciiMetadataValue;
 
 use crate::config::{
     CopyDispatchConfig, CopyDispatchMode, CopySourceKind, CopyWalletConfig, LanderSettings,
 };
-use crate::engine::assembly::decorators::{ComputeBudgetDecorator, GuardBudgetDecorator};
+use crate::engine::assembly::decorators::{
+    ComputeBudgetDecorator, GuardBudgetDecorator, TipDecorator,
+};
 use crate::engine::assembly::{AssemblyContext, DecoratorChain, InstructionBundle};
 use crate::engine::{
     ComputeUnitPriceMode, DispatchStrategy, EngineIdentity, MultiLegInstructions,
@@ -30,7 +35,7 @@ use crate::wallet::WalletStateManager;
 use flume::{self, Receiver, Sender, TrySendError};
 use parking_lot::Mutex as ParkingMutex;
 
-use super::constants::MAX_SEEN_SIGNATURES;
+use super::constants::{MAX_SEEN_SIGNATURES, SYSTEM_PROGRAM_ID};
 use super::grpc::{YellowstoneTransactionClient, parse_transaction_update};
 use super::transaction::filter_transaction;
 use super::transaction::{
@@ -73,6 +78,7 @@ struct CopyTaskQueue {
 }
 
 const BASE_GUARD_LAMPORTS: u64 = 5_000;
+const TEMP_WALLET_TIP_DEDUCTION_LAMPORTS: u64 = LAMPORTS_PER_SOL / 1_000;
 
 impl CopyTaskQueue {
     fn new(capacity: usize, wallet: Pubkey) -> Self {
@@ -805,6 +811,66 @@ impl CopyWalletRunner {
             extract_compute_unit_limit(&compute_budget).unwrap_or(crate::engine::FALLBACK_CU_LIMIT);
         let compute_unit_limit = self.scale_compute_unit_limit(raw_compute_unit_limit);
 
+        let transfer_info = Self::detect_temp_wallet_transfer(&instructions, &route_ctx.authority);
+        let mut tip_lamports = 0;
+        if let Some((temp_wallet, raw_lamports)) = transfer_info {
+            match raw_lamports.checked_sub(TEMP_WALLET_TIP_DEDUCTION_LAMPORTS) {
+                Some(adjusted) if adjusted > 0 => {
+                    tip_lamports = adjusted;
+                    debug!(
+                        target: "strategy::copy",
+                        wallet = %self.wallet_pubkey,
+                        signature = %signature,
+                        temp_wallet = %temp_wallet,
+                        raw_lamports,
+                        tip_lamports,
+                        deduction = TEMP_WALLET_TIP_DEDUCTION_LAMPORTS,
+                        "已解析临时钱包转账金额并用于 Jito tip"
+                    );
+                }
+                Some(_) => {
+                    debug!(
+                        target: "strategy::copy",
+                        wallet = %self.wallet_pubkey,
+                        signature = %signature,
+                        temp_wallet = %temp_wallet,
+                        raw_lamports,
+                        deduction = TEMP_WALLET_TIP_DEDUCTION_LAMPORTS,
+                        "临时钱包转账金额扣除 0.001 SOL 后为 0，跳过 tip"
+                    );
+                }
+                None => {
+                    debug!(
+                        target: "strategy::copy",
+                        wallet = %self.wallet_pubkey,
+                        signature = %signature,
+                        temp_wallet = %temp_wallet,
+                        raw_lamports,
+                        deduction = TEMP_WALLET_TIP_DEDUCTION_LAMPORTS,
+                        "临时钱包转账金额不足 0.001 SOL，跳过 tip"
+                    );
+                }
+            }
+        }
+
+        let mut jito_tip_plan = self.lander_stack.draw_jito_tip_plan();
+        if tip_lamports > 0 {
+            if let Some(plan) = jito_tip_plan.as_mut() {
+                plan.lamports = tip_lamports;
+            } else {
+                debug!(
+                    target: "strategy::copy",
+                    wallet = %self.wallet_pubkey,
+                    signature = %signature,
+                    tip_lamports,
+                    "检测到临时钱包转账，但未启用 Jito tip plan，tip 指令将被跳过"
+                );
+                tip_lamports = 0;
+            }
+        } else {
+            jito_tip_plan = None;
+        }
+
         let mut multi_leg = MultiLegInstructions::new(
             compute_budget.clone(),
             main_instructions.clone(),
@@ -830,10 +896,14 @@ impl CopyWalletRunner {
         assembly_ctx.compute_unit_limit = compute_unit_limit;
         assembly_ctx.compute_unit_price = sampled_price;
         assembly_ctx.guard_required = BASE_GUARD_LAMPORTS;
+        assembly_ctx.tip_lamports = tip_lamports;
+        assembly_ctx.jito_tip_budget = tip_lamports;
+        assembly_ctx.jito_tip_plan = jito_tip_plan.clone();
         assembly_ctx.variant = Some(&mut variant);
 
         let mut decorators = DecoratorChain::new();
         decorators.register(ComputeBudgetDecorator);
+        decorators.register(TipDecorator);
         decorators.register(GuardBudgetDecorator);
 
         if let Err(err) = decorators.apply_all(&mut bundle, &mut assembly_ctx).await {
@@ -850,7 +920,13 @@ impl CopyWalletRunner {
         let final_sequence = bundle.flatten();
         let prepared = self
             .tx_builder
-            .build_with_sequence(&self.identity, &variant, final_sequence, 0, None)
+            .build_with_sequence(
+                &self.identity,
+                &variant,
+                final_sequence,
+                tip_lamports,
+                jito_tip_plan.clone(),
+            )
             .await
             .map_err(|err| anyhow!("构建复制交易失败: {err}"))?;
 
@@ -1196,6 +1272,39 @@ impl CopyWalletRunner {
         }
 
         Ok(AmountAdjustment::NotNeeded)
+    }
+
+    fn detect_temp_wallet_transfer(
+        instructions: &[Instruction],
+        authority: &Pubkey,
+    ) -> Option<(Pubkey, u64)> {
+        instructions
+            .iter()
+            .filter(|ix| ix.program_id == SYSTEM_PROGRAM_ID)
+            .filter_map(|ix| {
+                if ix.accounts.len() < 2 {
+                    return None;
+                }
+                if ix.accounts.first()?.pubkey != *authority {
+                    return None;
+                }
+                let destination = ix.accounts.get(1)?.pubkey;
+                let lamports = Self::decode_system_transfer_lamports(&ix.data)?;
+                Some((destination, lamports))
+            })
+            .max_by_key(|(_, lamports)| *lamports)
+    }
+
+    fn decode_system_transfer_lamports(data: &[u8]) -> Option<u64> {
+        let config = bincode::config::standard()
+            .with_fixed_int_encoding()
+            .with_little_endian();
+        let (instruction, _) = decode_from_slice::<SystemInstruction, _>(data, config).ok()?;
+        match instruction {
+            SystemInstruction::Transfer { lamports }
+            | SystemInstruction::TransferWithSeed { lamports, .. } => Some(lamports),
+            _ => None,
+        }
     }
 }
 

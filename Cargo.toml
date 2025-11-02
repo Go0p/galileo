@@ -57,7 +57,7 @@ metrics-exporter-prometheus = { version = "0.17.2", default-features = false, fe
 url = "2.5.7"
 aes-gcm = { version = "0.10.3", features = ["aes"] }
 argon2 = "0.5.3"
-console = "0.16.1"
+crossterm = "0.29.0"
 sha2 = "0.10.9"
 core_affinity = "0.8.3"
 bytemuck = { version = "1.15.0", features = ["derive"] }

@@ -8,7 +8,7 @@ use solana_sdk::signature::{Keypair, Signer};
 
 use crate::api::dflow::SwapInstructionsResponse as DflowSwapInstructionsResponse;
 use crate::api::dflow::swap_instructions::BlockhashWithMetadata;
-use crate::config::{AutoUnwrapConfig, FlashloanMarginfiConfig, WalletConfig};
+use crate::config::FlashloanMarginfiConfig;
 use crate::engine::{EngineIdentity, SwapInstructionsVariant, SwapOpportunity};
 use crate::strategy::types::TradePair;
 
@@ -22,13 +22,7 @@ fn make_identity() -> EngineIdentity {
     let signer = Keypair::new();
     let private_key =
         serde_json::to_string(&signer.to_bytes().to_vec()).expect("serialize keypair");
-    let wallet = WalletConfig {
-        private_key,
-        auto_unwrap: AutoUnwrapConfig::default(),
-        wallet_keys: Vec::new(),
-        legacy_wallet_keys: None,
-    };
-    EngineIdentity::from_wallet(&wallet).expect("build engine identity")
+    EngineIdentity::from_private_key(&private_key).expect("build engine identity")
 }
 
 fn make_instruction(tag: u8) -> Instruction {

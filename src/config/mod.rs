@@ -7,6 +7,7 @@ use serde::de::Deserializer;
 
 pub mod launch;
 pub mod loader;
+pub mod strategy_loader;
 pub mod types;
 pub mod wallet;
 
@@ -86,6 +87,10 @@ pub(crate) fn default_health_check_retry_count() -> u32 {
     3
 }
 
+pub(crate) fn default_strategy_config_dir() -> String {
+    "strategies".to_string()
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum RpcUrlField {
@@ -126,6 +131,9 @@ impl Default for cfg::GalileoConfig {
             global: cfg::GlobalConfig::default(),
             engine: cfg::EngineConfig::default(),
             intermedium: cfg::IntermediumConfig::default(),
+            wallet_keys: Vec::new(),
+            auto_unwrap: cfg::AutoUnwrapConfig::default(),
+            private_key: String::new(),
             bot: cfg::BotConfig::default(),
             flashloan: cfg::FlashloanConfig::default(),
             blind_strategy: cfg::BlindStrategyConfig::default(),
@@ -143,7 +151,6 @@ impl Default for cfg::GlobalConfig {
             proxy: None,
             yellowstone_grpc_url: None,
             yellowstone_grpc_token: None,
-            wallet: cfg::WalletConfig::default(),
             instruction: cfg::InstructionConfig::default(),
             logging: cfg::LoggingConfig::default(),
         }
@@ -155,7 +162,7 @@ impl Default for cfg::EngineConfig {
         Self {
             backend: cfg::EngineBackend::default(),
             time_out: cfg::EngineTimeoutConfig::default(),
-            console_summary: cfg::ConsoleSummaryConfig::default(),
+            enable_console_summary: false,
             dflow: cfg::DflowEngineConfig::default(),
             ultra: cfg::UltraEngineConfig::default(),
             titan: cfg::TitanEngineConfig::default(),
@@ -215,16 +222,7 @@ impl Default for cfg::DflowSwapConfig {
     }
 }
 
-impl Default for cfg::WalletConfig {
-    fn default() -> Self {
-        Self {
-            private_key: String::new(),
-            auto_unwrap: cfg::AutoUnwrapConfig::default(),
-            wallet_keys: Vec::new(),
-            legacy_wallet_keys: None,
-        }
-    }
-}
+// WalletConfig 已删除
 
 impl Default for cfg::AutoUnwrapConfig {
     fn default() -> Self {

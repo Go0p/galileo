@@ -1,0 +1,75 @@
+# 纯盲发策略（与 blind_strategy 并行配置，互不影响）
+
+# 纯盲发策略允许使用的落地器（顺序影响优先级）
+enable_landers: []
+
+market_cache:
+  path: "./cache/pure_markets.json"              
+  # 自动拉取更新时用
+  download_url: "https://cache.jup.ag/markets?v=4" 
+  proxy: "http://192.168.124.4:2080"
+  # 可选：定时刷新缓存（0=禁用）
+  auto_refresh_minutes: 120
+  # 当设置为 true 时，dexes 下有实现的，盲发支持的，才会保留，否则会过滤掉
+  exclude_other_dex_program_ids: true
+  exclude_dex_program_ids: [
+    "CAMMCz6GM1DNKyvHRAAmcX6vLLANBYdmsKtfgfcJQ68X",
+    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+    "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"
+  ]
+  # 可选：按 TVL/深度阈值过滤
+  min_liquidity_usd: 50000                       
+
+# 描述闭环入口资产以及想要探索的中间资产集合
+assets:
+  base_mints:
+    - mint: "So11111111111111111111111111111111111111112"
+      lanes:
+        - min: 5_000_000_000
+          max: 5_000_000_000
+          count: 1
+          strategy: linear
+        - min: 10_000_000_000
+          max: 10_000_000_000
+          count: 1
+          strategy: linear
+      # 限制发送的频率，单位为毫秒
+      # 路由类型，是 3 跳还是 2 跳
+      route_type: "2hop"
+    - mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+      lanes:
+        - min: 1_000_000_000
+          max: 1_000_000_000
+          count: 1
+          strategy: linear
+        - min: 2_000_000_000
+          max: 2_000_000_000
+          count: 1
+          strategy: linear
+      # 限制发送的频率，单位为毫秒
+      # 路由类型，是 3 跳还是 2 跳
+      route_type: "3hop"
+  intermediates:
+    - "So11111111111111111111111111111111111111112"
+    - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+  blacklist_mints: []        # 明确禁用的中间资产
+
+overrides:                   # 手工指定的闭环（自动生成失败时可兜底）
+  # - name: "humidifi_whirlpool_zerofi_cycle"
+  #   legs:
+  #     - market: "DB3sUCP2H4icbeKmK6yb6nUxU5ogbcRHtGuq7W2RoRwW" # HumidiFi
+  #     - market: "HktfL7iwGKT5QHjywQkcDnZXScoh811k7akrMZJkCcEF" # Whirlpools
+  #     - market: "BqkNuLTbUZLifWuUtfF5CkyRegTQhYYgUnNeUaxoWC8S" # ZeroFi
+  #   lookup_tables:
+  #     - "3RRynG7FN6FkVaAyZPHwZSAGYUWzxb1EmtM5CfrShhsw"
+  #     - "AW3raiF9cvqu8d5JgCXmCi8kh16Aba86gWVi9pbNYNNc"
+  #   lanes:
+  #     - min: 7_500_000_000
+  #       max: 7_500_000_000
+  #       count: 1
+  #       strategy: linear
+
+monitoring:
+  enable_metrics: true
+  route_labels: true         # 指标上打 route 名称标签
+

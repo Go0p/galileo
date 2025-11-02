@@ -1,0 +1,74 @@
+# 后跑策略配置
+# Backrun 策略的工作原理如下：
+# 1. 机器人将监控您在 enable_dexs 中定义的市场，以及您上面定义的所有中间铸币厂
+# 2. 如果交易导致池子价格波动超过 min_price_impact_pct，机器人会尝试创建交易来回滚它
+# 3. 机器人将使用您在 TRADE_CONFIGS 中定义的交易规模，根据您正在运行的交易，随机生成一个介于
+#    MIN_TRADE_BP 和 MAX_TRADE_BP 之间的交易规模。或者，您也可以在此处定义一个 FIXED_SIZE 作为交易规模。
+# 4. 机器人将通过聚合器报价另一笔规模，创建一个完整的套利交易 tx
+# 5. 如果交易有利润，且利润高于 MIN_QUOTE_PROFIT，机器人就会将其发送出去
+
+# 只允许交易这些 dex
+enable_dexs: ["Perps", "SolFi"]
+
+# 允许使用的 lander 类型
+enable_landers: []
+
+# 交易备注
+memo: ""
+
+# 触发我们整一个套利交易的 slot 和 tx 的 memo
+trigger_memo: ""
+
+base_mints:
+  - # 触发交易金额
+    trigger_amount: 100
+    # SOL
+    mint: "So11111111111111111111111111111111111111112"
+    # 最小报价利润
+    min_quote_profit: 100000
+    # 最小模拟利润
+    min_simulated_profit: 100000
+    # 跳过报价利润检查，jup 报价可能非常不准确，您可以与模拟一起使用来获取实际利润
+    skip_profit_check_for_quote: false
+    # 最小交易规模，如果生成的交易规模小于这个，机器人会跳过交易
+    min_trade_size: 500000000
+    # 最大交易规模，如果生成的交易规模大于这个，机器人会限制在这个规模
+    max_trade_size: 150000000000
+    trade_configs:
+      - # 机器人会随机选择一个交易规模，介于 min_trade_bp 和 max_trade_bp 之间
+        # 您可以定义多个配置，机器人将为相同的交易创建不同的 tx
+        # 可以使用 trade bp 或者 fixed_size
+        min_trade_bp: 2000
+        max_trade_bp: 2000
+      - # 固定交易规模，机器人会使用这个规模
+        fixed_size: 1000000000
+        # 路由类型，目前只支持 2hop
+        route_types:
+          - "2hop"
+
+  - # 触发交易金额
+    trigger_amount: 100
+    # USDC
+    mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    # 最小报价利润
+    min_quote_profit: 100000
+    # 最小模拟利润
+    min_simulated_profit: 100000
+    # 跳过报价利润检查，jup 报价可能非常不准确，您可以与模拟一起使用来获取实际利润
+    skip_profit_check_for_quote: false
+    # 最小交易规模，如果生成的交易规模小于这个，机器人会跳过交易
+    min_trade_size: 500000000
+    # 最大交易规模，如果生成的交易规模大于这个，机器人会限制在这个规模
+    max_trade_size: 150000000000
+    trade_configs:
+      - # 机器人会随机选择一个交易规模，介于 min_trade_bp 和 max_trade_bp 之间
+        # 您可以定义多个配置，机器人将为相同的交易创建不同的 tx
+        # 可以使用 trade bp 或者 fixed_size
+        min_trade_bp: 2000
+        max_trade_bp: 2000
+      - # 固定交易规模，机器人会使用这个规模
+        fixed_size: 1000000000
+        # 路由类型，目前只支持 2hop
+        route_types:
+          - "2hop"
+

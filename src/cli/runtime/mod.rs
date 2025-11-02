@@ -14,6 +14,7 @@ use crate::cli::lander::handle_lander_cmd;
 use crate::cli::strategy::{StrategyMode, run_strategy};
 use crate::config::launch::resources::{build_http_client_pool, build_http_client_with_options};
 use crate::config::{AppConfig, StrategyToggle};
+use crate::engine::ConsoleSummarySink;
 
 enum AggregatorContext {
     Dflow {
@@ -30,7 +31,11 @@ enum AggregatorContext {
     None,
 }
 
-pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
+pub async fn run(
+    cli: Cli,
+    config: AppConfig,
+    summary_sink: Option<Arc<dyn ConsoleSummarySink>>,
+) -> Result<()> {
     if config.galileo.bot.prometheus.enable {
         crate::monitoring::try_init_prometheus(&config.galileo.bot.prometheus.listen)
             .map_err(|err| anyhow!(err))?;
@@ -240,13 +245,14 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         }
     };
 
-    dispatch(cli.command, config, aggregator).await
+    dispatch(cli.command, config, aggregator, summary_sink).await
 }
 
 async fn dispatch(
     command: Command,
     config: AppConfig,
     aggregator: AggregatorContext,
+    summary_sink: Option<Arc<dyn ConsoleSummarySink>>,
 ) -> Result<()> {
     // 统一的命令分发入口，便于后续按子命令拆分到专门模块。
     match command {
@@ -262,7 +268,7 @@ async fn dispatch(
         Command::Run => match &aggregator {
             AggregatorContext::Dflow { api_client } => {
                 let backend = crate::cli::strategy::StrategyBackend::Dflow { api_client };
-                run_strategy(&config, &backend, StrategyMode::Live).await?;
+                run_strategy(&config, &backend, StrategyMode::Live, summary_sink.clone()).await?;
             }
             AggregatorContext::Kamino {
                 api_client,
@@ -272,7 +278,7 @@ async fn dispatch(
                     api_client,
                     rpc_client: rpc_client.clone(),
                 };
-                run_strategy(&config, &backend, StrategyMode::Live).await?;
+                run_strategy(&config, &backend, StrategyMode::Live, summary_sink.clone()).await?;
             }
             AggregatorContext::Ultra {
                 api_client,
@@ -282,17 +288,23 @@ async fn dispatch(
                     api_client,
                     rpc_client: rpc_client.clone(),
                 };
-                run_strategy(&config, &backend, StrategyMode::Live).await?;
+                run_strategy(&config, &backend, StrategyMode::Live, summary_sink.clone()).await?;
             }
             AggregatorContext::None => {
                 let backend = crate::cli::strategy::StrategyBackend::None;
-                run_strategy(&config, &backend, StrategyMode::Live).await?;
+                run_strategy(&config, &backend, StrategyMode::Live, summary_sink.clone()).await?;
             }
         },
         Command::StrategyDryRun => match &aggregator {
             AggregatorContext::Dflow { api_client } => {
                 let backend = crate::cli::strategy::StrategyBackend::Dflow { api_client };
-                run_strategy(&config, &backend, StrategyMode::DryRun).await?;
+                run_strategy(
+                    &config,
+                    &backend,
+                    StrategyMode::DryRun,
+                    summary_sink.clone(),
+                )
+                .await?;
             }
             AggregatorContext::Kamino {
                 api_client,
@@ -302,7 +314,13 @@ async fn dispatch(
                     api_client,
                     rpc_client: rpc_client.clone(),
                 };
-                run_strategy(&config, &backend, StrategyMode::DryRun).await?;
+                run_strategy(
+                    &config,
+                    &backend,
+                    StrategyMode::DryRun,
+                    summary_sink.clone(),
+                )
+                .await?;
             }
             AggregatorContext::Ultra {
                 api_client,
@@ -312,11 +330,23 @@ async fn dispatch(
                     api_client,
                     rpc_client: rpc_client.clone(),
                 };
-                run_strategy(&config, &backend, StrategyMode::DryRun).await?;
+                run_strategy(
+                    &config,
+                    &backend,
+                    StrategyMode::DryRun,
+                    summary_sink.clone(),
+                )
+                .await?;
             }
             AggregatorContext::None => {
                 let backend = crate::cli::strategy::StrategyBackend::None;
-                run_strategy(&config, &backend, StrategyMode::DryRun).await?;
+                run_strategy(
+                    &config,
+                    &backend,
+                    StrategyMode::DryRun,
+                    summary_sink.clone(),
+                )
+                .await?;
             }
         },
         Command::Init(args) => {

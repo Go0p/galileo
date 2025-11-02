@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::net::IpAddr;
 
-use serde::de::{Deserializer, Error as DeError, IgnoredAny, Unexpected, Visitor};
+use serde::de::{Deserializer, Error as DeError, Unexpected, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_with::serde_as;
@@ -27,10 +27,18 @@ pub struct GalileoConfig {
     pub engine: EngineConfig,
     #[serde(default)]
     pub intermedium: IntermediumConfig,
+    #[serde(default, deserialize_with = "deserialize_wallet_entries")]
+    pub wallet_keys: Vec<WalletKeyEntry>,
+    #[serde(default)]
+    pub auto_unwrap: AutoUnwrapConfig,
+    /// 解密后的私钥字符串（运行时填充，配置文件中不需要）
+    #[serde(skip)]
+    pub private_key: String,
     #[serde(default)]
     pub bot: BotConfig,
     #[serde(default)]
     pub flashloan: FlashloanConfig,
+    /// 策略配置：可以在主文件中配置（向后兼容），也可以从外部文件加载
     #[serde(default)]
     pub blind_strategy: BlindStrategyConfig,
     #[serde(default)]
@@ -51,8 +59,6 @@ pub struct GlobalConfig {
     pub yellowstone_grpc_url: Option<String>,
     #[serde(default)]
     pub yellowstone_grpc_token: Option<String>,
-    #[serde(default)]
-    pub wallet: WalletConfig,
     #[serde(default)]
     pub instruction: InstructionConfig,
     #[serde(default)]
@@ -100,18 +106,7 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct WalletConfig {
-    #[serde(default)]
-    pub private_key: String,
-    #[serde(default)]
-    pub auto_unwrap: AutoUnwrapConfig,
-    #[serde(default, deserialize_with = "deserialize_wallet_entries")]
-    pub wallet_keys: Vec<WalletKeyEntry>,
-    #[serde(default, rename = "wallets_key")]
-    #[allow(dead_code)]
-    pub legacy_wallet_keys: Option<IgnoredAny>,
-}
+// WalletConfig 已废弃，wallet_keys 已提升到 GalileoConfig 根级别
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AutoUnwrapConfig {
@@ -156,7 +151,7 @@ pub struct EngineConfig {
     #[serde(default)]
     pub time_out: EngineTimeoutConfig,
     #[serde(default)]
-    pub console_summary: ConsoleSummaryConfig,
+    pub enable_console_summary: bool,
     #[serde(default)]
     pub dflow: DflowEngineConfig,
     #[serde(default)]
@@ -165,12 +160,6 @@ pub struct EngineConfig {
     pub titan: TitanEngineConfig,
     #[serde(default)]
     pub kamino: KaminoEngineConfig,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct ConsoleSummaryConfig {
-    #[serde(default)]
-    pub enable: bool,
 }
 
 fn deserialize_wallet_entries<'de, D>(deserializer: D) -> Result<Vec<WalletKeyEntry>, D::Error>
@@ -816,6 +805,8 @@ pub struct LightHouseBotConfig {
 #[derive(Debug, Clone, Default)]
 pub struct StrategyToggleSet {
     pub enabled: Vec<StrategyToggle>,
+    /// 策略配置文件目录，默认为 "strategies/"
+    pub config_dir: String,
 }
 
 impl StrategyToggleSet {
@@ -838,11 +829,14 @@ impl<'de> Deserialize<'de> for StrategyToggleSet {
                 enabled: Vec<StrategyToggle>,
                 #[serde(default, alias = "enable_strategys")]
                 enable_strategys: Vec<StrategyToggle>,
+                #[serde(default = "crate::config::default_strategy_config_dir")]
+                config_dir: String,
             },
         }
 
         let option = Option::<Raw>::deserialize(deserializer)?;
         let mut enabled = Vec::new();
+        let mut config_dir = crate::config::default_strategy_config_dir();
 
         if let Some(value) = option {
             match value {
@@ -852,6 +846,7 @@ impl<'de> Deserialize<'de> for StrategyToggleSet {
                 Raw::Map {
                     enabled: mut list_a,
                     enable_strategys: mut list_b,
+                    config_dir: dir,
                 } => {
                     let mut merged = Vec::new();
                     for entry in list_a.drain(..).chain(list_b.drain(..)) {
@@ -860,11 +855,15 @@ impl<'de> Deserialize<'de> for StrategyToggleSet {
                         }
                     }
                     enabled = merged;
+                    config_dir = dir;
                 }
             }
         }
 
-        Ok(Self { enabled })
+        Ok(Self {
+            enabled,
+            config_dir,
+        })
     }
 }
 

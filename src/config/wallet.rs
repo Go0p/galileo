@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use aes_gcm::aead::rand_core::RngCore;
@@ -8,14 +8,20 @@ use aes_gcm::{Aes256Gcm, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{Engine as _, engine::general_purpose};
 use bs58;
-use console::{Key, Term};
+use crossterm::{
+    cursor,
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    execute,
+    style::Print,
+    terminal,
+};
 use serde_json;
 use solana_sdk::signature::Keypair;
 use tracing::{info, warn};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::ConfigError;
-use crate::config::{WalletConfig, WalletKeyEntry};
+use crate::config::{GalileoConfig, WalletKeyEntry};
 
 const MAGIC: &[u8; 8] = b"GLWALLET";
 const FORMAT_VERSION: u8 = 1;
@@ -28,44 +34,24 @@ pub struct WalletProcessingResult {
     pub selected_remark: Option<String>,
 }
 
-pub fn process_wallet(
-    wallet: &mut WalletConfig,
+pub fn process_wallet_keys(
+    config: &mut GalileoConfig,
     config_path: Option<&Path>,
 ) -> Result<WalletProcessingResult, ConfigError> {
-    if !wallet.private_key.trim().is_empty() {
-        return Err(ConfigError::Parse {
-            path: config_path
-                .map(Path::to_path_buf)
-                .unwrap_or_else(default_wallet_path),
-            message: "global.wallet.private_key 已废弃，请改用 wallet_keys 并清理该字段"
-                .to_string(),
-        });
-    }
-
-    if wallet.legacy_wallet_keys.is_some() {
-        return Err(ConfigError::Parse {
-            path: config_path
-                .map(Path::to_path_buf)
-                .unwrap_or_else(default_wallet_path),
-            message: "检测到 legacy 字段 wallets_key，请重命名为 wallet_keys 并按新格式配置"
-                .to_string(),
-        });
-    }
-
-    if wallet.wallet_keys.is_empty() {
+    if config.wallet_keys.is_empty() {
         info!(target: "config", "wallet_keys 为空，进入私钥录入流程");
-        return interactive_add_wallet_entry(wallet, config_path);
+        return interactive_add_wallet_entry_to_config(config, config_path);
     }
 
     let selected =
-        select_wallet_entry(&wallet.wallet_keys).map_err(|message| ConfigError::Parse {
+        select_wallet_entry(&config.wallet_keys).map_err(|message| ConfigError::Parse {
             path: config_path
                 .map(Path::to_path_buf)
                 .unwrap_or_else(default_wallet_path),
             message,
         })?;
 
-    let encoded = wallet.wallet_keys[selected].encrypted.trim();
+    let encoded = config.wallet_keys[selected].encrypted.trim();
     let cipher = general_purpose::STANDARD
         .decode(encoded.as_bytes())
         .map_err(|err| ConfigError::Parse {
@@ -87,7 +73,7 @@ pub fn process_wallet(
 
         match decrypt_wallet_bytes(&cipher, password.as_ref()) {
             Ok(decrypted) => {
-                wallet.private_key = decrypted;
+                config.private_key = decrypted;
                 break;
             }
             Err(message) => {
@@ -96,7 +82,7 @@ pub fn process_wallet(
                     target: "config",
                     attempts,
                     remaining,
-                    remark = %wallet.wallet_keys[selected].remark,
+                    remark = %config.wallet_keys[selected].remark,
                     "钱包解密失败: {message}"
                 );
                 if remaining == 0 {
@@ -114,12 +100,12 @@ pub fn process_wallet(
 
     Ok(WalletProcessingResult {
         config_updated: false,
-        selected_remark: Some(wallet.wallet_keys[selected].remark.clone()),
+        selected_remark: Some(config.wallet_keys[selected].remark.clone()),
     })
 }
 
-fn interactive_add_wallet_entry(
-    wallet: &mut WalletConfig,
+fn interactive_add_wallet_entry_to_config(
+    config: &mut GalileoConfig,
     config_path: Option<&Path>,
 ) -> Result<WalletProcessingResult, ConfigError> {
     let private_key = prompt_private_key_segments().map_err(|message| ConfigError::Parse {
@@ -134,7 +120,7 @@ fn interactive_add_wallet_entry(
             .unwrap_or_else(default_wallet_path),
         message,
     })?;
-    if wallet
+    if config
         .wallet_keys
         .iter()
         .any(|entry| entry.remark.eq_ignore_ascii_case(&remark))
@@ -163,14 +149,14 @@ fn interactive_add_wallet_entry(
         })?;
     let encoded = general_purpose::STANDARD.encode(encrypted);
 
-    wallet.private_key = private_key.clone();
-    wallet.wallet_keys.push(WalletKeyEntry {
+    config.private_key = private_key.clone();
+    config.wallet_keys.push(WalletKeyEntry {
         remark: remark.clone(),
         encrypted: encoded.clone(),
     });
 
     if let Some(path) = config_path {
-        persist_wallet_keys(path, &wallet.wallet_keys)?;
+        persist_wallet_keys(path, &config.wallet_keys)?;
         info!(
             target: "config",
             path = %path.display(),
@@ -184,11 +170,12 @@ fn interactive_add_wallet_entry(
     })
 }
 
-pub fn add_wallet_entry_interactive(
-    wallet: &mut WalletConfig,
+// 用于 CLI wallet add 命令的辅助函数
+pub fn add_wallet_to_config(
+    config: &mut GalileoConfig,
     config_path: Option<&Path>,
 ) -> Result<WalletProcessingResult, ConfigError> {
-    interactive_add_wallet_entry(wallet, config_path)
+    interactive_add_wallet_entry_to_config(config, config_path)
 }
 
 pub fn parse_keypair_string(raw: &str) -> Result<Keypair, anyhow::Error> {
@@ -410,9 +397,9 @@ fn select_wallet_entry(entries: &[WalletKeyEntry]) -> Result<usize, String> {
         return Ok(0);
     }
 
-    let term = Term::stderr();
-    if term.is_term() {
-        return interactive_select_wallet_entry(&term, entries);
+    // 尝试使用交互式选择
+    if io::stderr().is_terminal() {
+        return interactive_select_wallet_entry(entries);
     }
 
     println!("检测到多个加密私钥，请输入序号：");
@@ -435,109 +422,171 @@ fn select_wallet_entry(entries: &[WalletKeyEntry]) -> Result<usize, String> {
     }
 }
 
-fn interactive_select_wallet_entry(
-    term: &Term,
-    entries: &[WalletKeyEntry],
-) -> Result<usize, String> {
+fn interactive_select_wallet_entry(entries: &[WalletKeyEntry]) -> Result<usize, String> {
     let mut current = 0usize;
-    let mut rendered = false;
     let mut typed = String::new();
+    let mut stderr = io::stderr();
+
+    // 启用 raw mode
+    terminal::enable_raw_mode().map_err(|err| format!("启用终端原始模式失败: {err}"))?;
+
+    // 渲染和循环
+    let result = select_wallet_loop(&mut stderr, entries, &mut current, &mut typed);
+
+    // 恢复终端
+    let _ = terminal::disable_raw_mode();
+
+    result
+}
+
+fn select_wallet_loop(
+    stderr: &mut io::Stderr,
+    entries: &[WalletKeyEntry],
+    current: &mut usize,
+    typed: &mut String,
+) -> Result<usize, String> {
+    // 初始渲染
+    render_wallet_menu(stderr, entries, *current, typed)?;
 
     loop {
-        if rendered {
-            term.clear_last_lines(entries.len() + 3)
-                .map_err(|err| format!("终端输出失败: {err}"))?;
-        }
-        rendered = true;
-        render_wallet_menu(term, entries, current, &typed)?;
+        let evt = event::read().map_err(|err| format!("读取终端输入失败: {err}"))?;
 
-        let key = term
-            .read_key()
-            .map_err(|err| format!("读取终端输入失败: {err}"))?;
-        match key {
-            Key::ArrowUp => {
-                typed.clear();
-                if current == 0 {
-                    current = entries.len() - 1;
-                } else {
-                    current -= 1;
+        match evt {
+            Event::Key(key_event) => {
+                if key_event.kind != KeyEventKind::Press {
+                    continue;
                 }
-            }
-            Key::ArrowDown => {
-                typed.clear();
-                current = (current + 1) % entries.len();
-            }
-            Key::Char('k') | Key::Char('K') => {
-                typed.clear();
-                if current == 0 {
-                    current = entries.len() - 1;
-                } else {
-                    current -= 1;
-                }
-            }
-            Key::Char('j') | Key::Char('J') => {
-                typed.clear();
-                current = (current + 1) % entries.len();
-            }
-            Key::Char(c) if c.is_ascii_digit() => {
-                typed.push(c);
-                if let Ok(value) = typed.parse::<usize>() {
-                    if value >= 1 && value <= entries.len() {
-                        current = value - 1;
+                match key_event.code {
+                    KeyCode::Up => {
+                        typed.clear();
+                        if *current == 0 {
+                            *current = entries.len() - 1;
+                        } else {
+                            *current -= 1;
+                        }
+                        clear_and_redraw(stderr, entries, *current, typed)?;
                     }
-                }
-            }
-            Key::Backspace => {
-                typed.pop();
-            }
-            Key::Enter => {
-                let chosen = if let Ok(value) = typed.parse::<usize>() {
-                    if value >= 1 && value <= entries.len() {
-                        value - 1
-                    } else {
-                        current
+                    KeyCode::Down => {
+                        typed.clear();
+                        *current = (*current + 1) % entries.len();
+                        clear_and_redraw(stderr, entries, *current, typed)?;
                     }
-                } else {
-                    current
-                };
-                term.clear_last_lines(entries.len() + 3)
-                    .map_err(|err| format!("终端输出失败: {err}"))?;
-                return Ok(chosen);
-            }
-            Key::Char('q') | Key::Char('Q') => {
-                term.clear_last_lines(entries.len() + 3)
-                    .map_err(|err| format!("终端输出失败: {err}"))?;
-                return Err("已取消钱包选择".to_string());
+                    KeyCode::Char('k') | KeyCode::Char('K') => {
+                        typed.clear();
+                        if *current == 0 {
+                            *current = entries.len() - 1;
+                        } else {
+                            *current -= 1;
+                        }
+                        clear_and_redraw(stderr, entries, *current, typed)?;
+                    }
+                    KeyCode::Char('j') | KeyCode::Char('J') => {
+                        typed.clear();
+                        *current = (*current + 1) % entries.len();
+                        clear_and_redraw(stderr, entries, *current, typed)?;
+                    }
+                    KeyCode::Char(c) if c.is_ascii_digit() => {
+                        typed.push(c);
+                        if let Ok(value) = typed.parse::<usize>() {
+                            if value >= 1 && value <= entries.len() {
+                                *current = value - 1;
+                            }
+                        }
+                        clear_and_redraw(stderr, entries, *current, typed)?;
+                    }
+                    KeyCode::Backspace => {
+                        typed.pop();
+                        clear_and_redraw(stderr, entries, *current, typed)?;
+                    }
+                    KeyCode::Enter => {
+                        let chosen = if let Ok(value) = typed.parse::<usize>() {
+                            if value >= 1 && value <= entries.len() {
+                                value - 1
+                            } else {
+                                *current
+                            }
+                        } else {
+                            *current
+                        };
+                        // 清除菜单
+                        clear_menu(stderr, entries.len() + 3)?;
+                        return Ok(chosen);
+                    }
+                    KeyCode::Char('q') | KeyCode::Char('Q') => {
+                        clear_menu(stderr, entries.len() + 3)?;
+                        return Err("已取消钱包选择".to_string());
+                    }
+                    KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                        clear_menu(stderr, entries.len() + 3)?;
+                        return Err("用户取消选择".to_string());
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }
     }
 }
 
-fn render_wallet_menu(
-    term: &Term,
+fn clear_and_redraw(
+    stderr: &mut io::Stderr,
     entries: &[WalletKeyEntry],
     current: usize,
     typed: &str,
 ) -> Result<(), String> {
-    term.write_line("请选择要解锁的钱包（↑/↓ 切换，回车确认）：")
-        .map_err(|err| format!("终端输出失败: {err}"))?;
+    clear_menu(stderr, entries.len() + 3)?;
+    render_wallet_menu(stderr, entries, current, typed)
+}
+
+fn clear_menu(stderr: &mut io::Stderr, lines: usize) -> Result<(), String> {
+    for _ in 0..lines {
+        execute!(
+            stderr,
+            cursor::MoveUp(1),
+            cursor::MoveToColumn(0),
+            terminal::Clear(terminal::ClearType::CurrentLine)
+        )
+        .map_err(|err| format!("清除菜单失败: {err}"))?;
+    }
+    Ok(())
+}
+
+fn render_wallet_menu(
+    stderr: &mut io::Stderr,
+    entries: &[WalletKeyEntry],
+    current: usize,
+    typed: &str,
+) -> Result<(), String> {
+    execute!(
+        stderr,
+        Print("请选择要解锁的钱包（↑/↓ 切换，回车确认）：\n")
+    )
+    .map_err(|err| format!("终端输出失败: {err}"))?;
+
     for (idx, entry) in entries.iter().enumerate() {
         if idx == current {
-            term.write_line(&format!("  ➤ [{}] {}", idx + 1, entry.remark))
-                .map_err(|err| format!("终端输出失败: {err}"))?;
+            execute!(
+                stderr,
+                Print(format!("  ➤ [{}] {}\n", idx + 1, entry.remark))
+            )
+            .map_err(|err| format!("终端输出失败: {err}"))?;
         } else {
-            term.write_line(&format!("    [{}] {}", idx + 1, entry.remark))
-                .map_err(|err| format!("终端输出失败: {err}"))?;
+            execute!(
+                stderr,
+                Print(format!("    [{}] {}\n", idx + 1, entry.remark))
+            )
+            .map_err(|err| format!("终端输出失败: {err}"))?;
         }
     }
+
     if typed.is_empty() {
-        term.write_line("  （也可直接输入序号并回车确认）")
+        execute!(stderr, Print("  （也可直接输入序号并回车确认）\n"))
             .map_err(|err| format!("终端输出失败: {err}"))?;
     } else {
-        term.write_line(&format!("  当前输入序号: {}", typed))
+        execute!(stderr, Print(format!("  当前输入序号: {}\n", typed)))
             .map_err(|err| format!("终端输出失败: {err}"))?;
     }
+
     Ok(())
 }
 
@@ -566,19 +615,19 @@ fn obtain_existing_password() -> Result<Zeroizing<String>, String> {
 }
 
 fn prompt_new_password_interactive() -> Result<Zeroizing<String>, String> {
-    let term = Term::stderr();
-    if !term.is_term() {
+    // 检查是否在终端环境
+    if !terminal::is_raw_mode_enabled().is_ok() && !io::stderr().is_terminal() {
         return Err("当前终端不支持交互式输入".to_string());
     }
 
     loop {
-        let password = read_masked_password(&term, "🔐 设置钱包密码: ")?;
+        let password = read_masked_password("🔐 设置钱包密码: ")?;
         if password.is_empty() {
             println!("密码不能为空，请重新输入。");
             continue;
         }
 
-        let confirmation = read_masked_password(&term, "🔐 确认钱包密码: ")?;
+        let confirmation = read_masked_password("🔐 确认钱包密码: ")?;
         if password != confirmation {
             println!("两次输入的密码不一致，请重试。");
             continue;
@@ -589,66 +638,147 @@ fn prompt_new_password_interactive() -> Result<Zeroizing<String>, String> {
 }
 
 fn prompt_existing_password_interactive() -> Result<Zeroizing<String>, String> {
-    let term = Term::stderr();
-    if !term.is_term() {
+    // 检查是否在终端环境
+    if !terminal::is_raw_mode_enabled().is_ok() && !io::stderr().is_terminal() {
         return Err("当前终端不支持交互式输入".to_string());
     }
 
-    let password = read_masked_password(&term, "🔓 请输入钱包密码: ")?;
+    let password = read_masked_password("🔓 请输入钱包密码: ")?;
     if password.is_empty() {
         return Err("钱包密码不能为空".to_string());
     }
     Ok(Zeroizing::new(password))
 }
 
-fn read_masked_password(term: &Term, prompt: &str) -> Result<String, String> {
-    if let Err(err) = term.write_str(prompt) {
-        return Err(format!("写入提示失败: {err}"));
-    }
-    if let Err(err) = term.flush() {
-        return Err(format!("刷新输出失败: {err}"));
-    }
+fn read_masked_password(prompt: &str) -> Result<String, String> {
+    let mut stderr = io::stderr();
 
+    // 输出提示
+    execute!(stderr, Print(prompt)).map_err(|err| format!("写入提示失败: {err}"))?;
+
+    // 保存提示文本后的光标位置（输入区域起点）
+    execute!(stderr, cursor::SavePosition).map_err(|err| format!("保存光标位置失败: {err}"))?;
+
+    // 启用 raw mode 以捕获键盘事件
+    terminal::enable_raw_mode().map_err(|err| format!("启用终端原始模式失败: {err}"))?;
+
+    let result = read_password_input(&mut stderr);
+
+    // 恢复终端状态
+    let _ = terminal::disable_raw_mode();
+
+    // 输出换行
+    let _ = execute!(stderr, Print("\n"));
+
+    result
+}
+
+fn read_password_input(stderr: &mut io::Stderr) -> Result<String, String> {
     let mut buffer = String::new();
-    loop {
-        let ch = term
-            .read_char()
-            .map_err(|err| format!("读取输入失败: {err}"))?;
+    let mut cursor_pos = 0usize; // 当前光标在 buffer 中的位置
 
-        match ch {
-            '\n' | '\r' => {
-                if let Err(err) = term.write_str("\n") {
-                    return Err(format!("写入换行失败: {err}"));
+    loop {
+        // 读取事件
+        let evt = event::read().map_err(|err| format!("读取输入失败: {err}"))?;
+
+        match evt {
+            Event::Key(key_event) => {
+                // 只处理 Press 事件，忽略 Release 和 Repeat 事件
+                if key_event.kind != KeyEventKind::Press {
+                    continue;
                 }
-                if let Err(err) = term.flush() {
-                    return Err(format!("刷新输出失败: {err}"));
+                match key_event.code {
+                    KeyCode::Enter => {
+                        break;
+                    }
+                    KeyCode::Backspace => {
+                        if cursor_pos > 0 {
+                            buffer.remove(cursor_pos - 1);
+                            cursor_pos -= 1;
+                            redraw_masked_input(stderr, &buffer, cursor_pos)?;
+                        }
+                    }
+                    KeyCode::Delete => {
+                        if cursor_pos < buffer.len() {
+                            buffer.remove(cursor_pos);
+                            redraw_masked_input(stderr, &buffer, cursor_pos)?;
+                        }
+                    }
+                    KeyCode::Left => {
+                        if cursor_pos > 0 {
+                            cursor_pos -= 1;
+                            let _ = execute!(stderr, cursor::MoveLeft(1));
+                        }
+                    }
+                    KeyCode::Right => {
+                        if cursor_pos < buffer.len() {
+                            cursor_pos += 1;
+                            let _ = execute!(stderr, cursor::MoveRight(1));
+                        }
+                    }
+                    KeyCode::Home => {
+                        if cursor_pos > 0 {
+                            let _ = execute!(stderr, cursor::MoveLeft(cursor_pos as u16));
+                            cursor_pos = 0;
+                        }
+                    }
+                    KeyCode::End => {
+                        if cursor_pos < buffer.len() {
+                            let move_right = buffer.len() - cursor_pos;
+                            let _ = execute!(stderr, cursor::MoveRight(move_right as u16));
+                            cursor_pos = buffer.len();
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        // Ctrl+C / Ctrl+D 退出
+                        if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                            if c == 'c' || c == 'd' {
+                                return Err("用户取消输入".to_string());
+                            }
+                        } else {
+                            buffer.insert(cursor_pos, c);
+                            cursor_pos += 1;
+                            redraw_masked_input(stderr, &buffer, cursor_pos)?;
+                        }
+                    }
+                    _ => {
+                        // 忽略其他按键
+                    }
                 }
-                break;
-            }
-            '\u{7f}' | '\u{8}' => {
-                if !buffer.is_empty() {
-                    buffer.pop();
-                    // 退格一位并用空格覆盖，兼容不支持 clear_chars 的终端
-                    let _ = term.write_str("\u{8} \u{8}");
-                    let _ = term.flush();
-                }
-            }
-            c if c.is_control() => {
-                // 忽略其它控制字符
             }
             _ => {
-                buffer.push(ch);
-                if let Err(err) = term.write_str("*") {
-                    return Err(format!("写入掩码失败: {err}"));
-                }
-                if let Err(err) = term.flush() {
-                    return Err(format!("刷新输出失败: {err}"));
-                }
+                // 忽略非键盘事件
             }
         }
     }
 
     Ok(buffer)
+}
+
+fn redraw_masked_input(
+    stderr: &mut io::Stderr,
+    buffer: &str,
+    cursor_pos: usize,
+) -> Result<(), String> {
+    // 使用保存的光标位置（输入区域起点）来重绘
+    // 1. 恢复到输入区域起点
+    // 2. 清除到行尾
+    // 3. 输出掩码
+    // 4. 再次保存位置（为下次使用）
+    // 5. 移动光标到正确位置
+    let masked = "●".repeat(buffer.len());
+
+    execute!(
+        stderr,
+        cursor::RestorePosition,
+        terminal::Clear(terminal::ClearType::UntilNewLine),
+        Print(&masked),
+        cursor::RestorePosition,
+        cursor::MoveRight(cursor_pos as u16)
+    )
+    .map_err(|err| format!("重绘输入失败: {err}"))?;
+
+    Ok(())
 }
 
 fn encrypt_wallet_key(plaintext: &[u8], password: &str) -> Result<Vec<u8>, String> {

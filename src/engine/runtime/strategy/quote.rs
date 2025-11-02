@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 use crate::engine::context::QuoteBatchPlan;
 use crate::engine::quote::{aggregator_kinds_match, second_leg_amount};
@@ -13,7 +13,7 @@ use crate::monitoring::events;
 use crate::network::{IpLeaseMode, IpTaskKind};
 use crate::strategy::{Strategy, StrategyEvent};
 
-use super::StrategyEngine;
+use super::{ConsoleSummaryUpdate, StrategyEngine};
 
 #[derive(Default)]
 struct BatchStats {
@@ -209,6 +209,11 @@ where
         }
 
         let should_summarize = self.settings.console_summary.enable && self.multi_leg.is_none();
+        let summary_sink = if should_summarize {
+            self.settings.console_summary.sink.clone()
+        } else {
+            None
+        };
         let mut batch_stats = if should_summarize {
             Some(BatchStats::new(total_groups))
         } else {
@@ -272,7 +277,12 @@ where
         }
 
         if let Some(stats) = batch_stats {
-            info!(target = "engine::summary", "{}", stats.summary_line());
+            let line = stats.summary_line();
+            if let Some(sink) = summary_sink.as_ref() {
+                sink.publish(ConsoleSummaryUpdate::new(line.clone()));
+            } else {
+                trace!(target: "engine::summary", "{line}");
+            }
         }
 
         Ok(max_wave_cooldown)

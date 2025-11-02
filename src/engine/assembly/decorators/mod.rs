@@ -67,7 +67,7 @@ impl<'a> AssemblyContext<'a> {
 mod tests {
     use super::*;
     use crate::config;
-    use crate::config::types::{AutoUnwrapConfig, FlashloanMarginfiConfig, WalletConfig};
+    use crate::config::types::{AutoUnwrapConfig, FlashloanMarginfiConfig};
     use crate::engine::aggregator::MultiLegInstructions;
     use crate::engine::assembly::bundle::InstructionBundle;
     use crate::engine::plugins::flashloan::{
@@ -99,18 +99,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(",")
         );
-        let wallet = WalletConfig {
-            private_key,
-            auto_unwrap: AutoUnwrapConfig {
-                enable: false,
-                unwrap_amount_lamports: config::default_auto_unwrap_amount_lamports(),
-                min_sol_balance_lamports: config::default_auto_unwrap_min_balance_lamports(),
-                compute_unit_price_micro_lamports: 0,
-            },
-            wallet_keys: Vec::new(),
-            legacy_wallet_keys: None,
-        };
-        EngineIdentity::from_wallet(&wallet).expect("identity from wallet config")
+        EngineIdentity::from_private_key(&private_key).expect("identity from private key")
     }
 
     fn dummy_instruction() -> Instruction {
