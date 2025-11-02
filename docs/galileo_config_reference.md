@@ -44,6 +44,7 @@
 - `.jupiter_running`/`kill-process.sh` 中的重启机制 → `[jupiter.process]`，后续由 `JupiterBinaryManager` 统一调度；可通过 `auto_restart_minutes` + `max_restart_attempts` 控制重启频率与次数
 - `jupiter-api.log` 的日志级别 → `[jupiter.environment].RUST_LOG`
 - `--metrics-port`/`--enable-markets --enable-tokens` 已纳入 `effective_args`，默认开启 Prometheus 指标与市集加载检查。
+- Galileo 运行时指标 → `[galileo.bot.prometheus]`，可配置 `enable`/`listen` 暴露 `/metrics`，指标名称与标签详见《策略与执行架构》第 6/11 章。
 - 日志输出策略 → `[galileo.global.logging]`：
   - `profile`：`lean`（默认）只保留关键信息，`verbose` 打开调试细节。
   - `slow_quote_warn_ms` / `slow_swap_warn_ms`：配置慢请求阈值，超限时会额外落 Warn 日志并计入指标。
@@ -100,6 +101,13 @@ Marginfi 的账户创建、Bank 映射、借款规模等均内置处理：首次
 - `[galileo.engine.kamino.quote_config].cu_limit_multiplier`：对 `/kswap/all-routes` 返回的 compute budget 指令中的 compute unit limit 乘以系数并写回，默认 `1.0`；用于在保存吞吐的前提下压缩或放大 Kamino 给出的上限估计。
 - `[galileo.engine.kamino.quote_config].parallelism`：Kamino 报价请求并发度（同 Jupiter/DFlow 语义），支持 `"auto"` 或正整数。
 - `[galileo.engine.kamino.quote_config].batch_interval_ms`：Kamino 报价批次之间的最小间隔，毫秒；`0` 表示不额外延迟。
+
+## Multi-Legs 模式
+- `galileo.engine.backend = "multi-legs"`：启用多腿组合运行时；保持 `blind_strategy.enable = true` 以提供 trade pair 配置。
+- 各聚合器腿的角色来源于 `galileo.engine.{dflow,ultra,titan}.leg`，需保证至少各有一条 `buy` / `sell` 腿；Titan 固定为 `buy`，Ultra/DFlow 可配置。
+- `galileo.engine.dflow.swap_config` 与 `galileo.engine.kamino.quote_config` 的 `wrap_and_unwrap_sol`、`dynamic_compute_unit_limit`、`cu_limit_multiplier` 会在 runtime 初始化时写入 `MultiLegEngineContext`，影响腿级别的 compute budget 估算。
+- 运行时会在启动时打印 `multi_leg::init` 日志（包含腿数量与笛卡尔组合），并为每个批次输出 `engine::multi_leg` debug 日志记录最佳收益、失败组合等关键信息。
+- 指标仍沿用统一事件体系：多腿收益不足时会触发 `events::profit_shortfall`（`galileo_profit_shortfall_total`），装配完成路径复用 `galileo_assembly_*` 系列指标；Prometheus 可通过 `strategy="multi-legs"` / `base_mint` 标签区分。
 
 ## 后续建议
 1. 根据环境补全 RPC、Yellowstone、Jito 等敏感信息。

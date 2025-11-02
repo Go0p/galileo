@@ -12,12 +12,13 @@ use solana_sdk::transaction::Transaction;
 use tracing::{info, warn};
 
 use super::{EngineError, EngineIdentity, EngineResult};
-use crate::lighthouse::program::LIGHTHOUSE_PROGRAM_ID;
-use crate::flashloan::FlashloanError;
-use crate::flashloan::marginfi::{
-    MarginfiAccountRegistry, MarginfiFlashloanPreparation, build_initialize_instruction,
+use crate::cache::cached_associated_token_address;
+use crate::engine::plugins::flashloan::{
+    FlashloanError, MarginfiAccountRegistry, MarginfiFlashloanPreparation,
     find_marginfi_account_by_authority, marginfi_account_matches_authority,
 };
+use crate::instructions::flashloan::marginfi::build_initialize_instruction;
+use crate::instructions::guards::lighthouse::program::LIGHTHOUSE_PROGRAM_ID;
 use crate::strategy::types::TradePair;
 
 static TOKEN_PROGRAM_ID: Lazy<Pubkey> = Lazy::new(|| {
@@ -40,22 +41,13 @@ const MAX_RPC_BATCH_SIZE: usize = 100;
 const CREATION_BATCH_SIZE: usize = 20;
 const MAX_MEMORY_ID: u16 = u8::MAX as u16;
 
-fn derive_associated_token_address(
-    owner: &Pubkey,
-    mint: &Pubkey,
-    token_program: &Pubkey,
-) -> Pubkey {
-    let seeds: [&[u8]; 3] = [owner.as_ref(), token_program.as_ref(), mint.as_ref()];
-    Pubkey::find_program_address(&seeds, &ASSOCIATED_TOKEN_PROGRAM_ID).0
-}
-
 fn build_create_associated_token_account_idempotent(
     payer: &Pubkey,
     owner: &Pubkey,
     mint: &Pubkey,
     token_program: &Pubkey,
 ) -> Instruction {
-    let associated = derive_associated_token_address(owner, mint, token_program);
+    let associated = cached_associated_token_address(owner, mint, token_program);
     Instruction {
         program_id: *ASSOCIATED_TOKEN_PROGRAM_ID,
         accounts: vec![
@@ -252,9 +244,9 @@ impl AccountPrechecker {
             match Pubkey::from_str(&mint_text) {
                 Ok(mint) => {
                     let ata_normal =
-                        derive_associated_token_address(&owner, &mint, &TOKEN_PROGRAM_ID);
+                        cached_associated_token_address(&owner, &mint, &TOKEN_PROGRAM_ID);
                     let ata_2022 =
-                        derive_associated_token_address(&owner, &mint, &TOKEN_2022_PROGRAM_ID);
+                        cached_associated_token_address(&owner, &mint, &TOKEN_2022_PROGRAM_ID);
                     candidates.push(MintCandidate {
                         mint,
                         mint_text,

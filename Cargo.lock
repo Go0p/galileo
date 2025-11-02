@@ -1886,6 +1886,7 @@ dependencies = [
  "serde_with",
  "serde_yaml",
  "sha2 0.10.9",
+ "smallvec",
  "solana-account-decoder",
  "solana-address-lookup-table-interface 3.0.0",
  "solana-address-lookup-table-program",

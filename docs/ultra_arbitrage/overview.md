@@ -1,17 +1,17 @@
 # 多腿组合方案概览
 
-> 目标：在现有 Galileo 引擎“一聚合器双腿”能力的基础上，构建可复用的多聚合器腿组合层（`src/multi_leg/`），最终通过 Jito bundle 实现原子落地。
+> 目标：在现有 Galileo 引擎“一聚合器双腿”能力的基础上，构建可复用的多聚合器腿组合层（`src/engine/multi_leg/`），最终通过 Jito bundle 实现原子落地。
 
 ## 当前进度与基础能力
-- `engine::QuoteExecutor` / `engine::SwapInstructionFetcher` 已封装单聚合器双腿流程，可继续为各腿 provider 所复用。
+- `engine::QuoteExecutor` / `engine::swap_preparer::SwapPreparer` 已封装单聚合器双腿流程，可继续为各腿 provider 所复用。
 - `TransactionBuilder`、`ProfitEvaluator`、`Scheduler` 等引擎组件已经稳定运行，无需为多腿方案重写。
 - 新增 `engine.backend = none` 配置，允许策略在无单聚合器后端的前提下运行纯盲发模式，为多腿 orchestrator 接管报价/落地链路铺路。（当前纯盲发仍是唯一策略入口）
-- `multi_leg::providers::dflow`、`multi_leg::providers::ultra`、`multi_leg::providers::titan` 均已落地：
+- `engine::multi_leg::providers::dflow`、`engine::multi_leg::providers::ultra`、`engine::multi_leg::providers::titan` 均已落地：
   - Ultra provider 会解码 `/order` 返回的 base64 交易，拆分 ComputeBudget 指令并保留原始 `VersionedTransaction`，暂仅支持无 ALT 的 v0/legacy 消息。
   - Titan provider 通过抽象 `TitanQuoteSource` 将 WS 报价映射为标准 `LegPlan`，默认仅承担买腿。
 - `LegPlan` 新增 `quote` 元数据（实际 in/out、保底 out、slippage、request_id 等），统一提供收益评估所需的上下文。
-- `multi_leg::orchestrator` 在腿注册后自动完成配对、规模对齐与收益计算：买腿 `min_out_amount` 会传递到卖腿的 `QuoteIntent`，再结合 `plan_pair_batch_with_profit` 的收益降序排序筛出最优组合。
-- 引入 `multi_leg::alt_cache` 与 `multi_leg::runtime`：支持在构建腿计划后批量获取 ALT（`getMultipleAccounts` + 缓存），并在 orchestrator 内部并发规划买/卖腿，降低 Quote→Plan 延迟。
+- `engine::multi_leg::orchestrator` 在腿注册后自动完成配对、规模对齐与收益计算：买腿 `min_out_amount` 会传递到卖腿的 `QuoteIntent`，再结合 `plan_pair_batch_with_profit` 的收益降序排序筛出最优组合。
+- 引入 `engine::multi_leg::alt_cache` 与 `engine::multi_leg::runtime`：支持在构建腿计划后批量获取 ALT（`getMultipleAccounts` + 缓存），并在 orchestrator 内部并发规划买/卖腿，降低 Quote→Plan 延迟。
 - `MultiLegRuntime` 已对关键流程加固：
   - `plan_pair_with_alts` 自动以买腿保底产出调整卖腿规模，确保两腿严格对接。
   - `plan_pair_batch_with_profit` 支持多 trade size 并发规划并返回收益降序列表，可直接输送给收益评估。
@@ -22,7 +22,7 @@
 
 ## multi_leg 模块新增内容
 - **类型抽象**：`LegSide`、`QuoteIntent`、`LegBuildContext`、`LegPlan`、`LegDescriptor` 描述腿角色、报价意图与输出计划。
-- **交易工具**：`transaction::decoder` / `transaction::sanitizer` 支持 base64 ↔ `VersionedTransaction` 转换与指令去重。
+- **交易工具**：`transaction::decoder` 负责 base64 ↔ `VersionedTransaction` 转换，ComputeBudget 拆分/指令去重逻辑现已集成到各腿 provider 与装配阶段，避免重复维护辅助模块。
 - **提供方接口**：`LegProvider` trait 统一定义腿的报价 + 指令构建流程，现已提供 DFlow/Ultra/Titan 三个实现，便于 orchestrator 直接组合。
 - `LegPlan` 新增 `raw_transaction` 字段，Ultra 提供方会将未签名交易完整保留，后续 orchestrator 可在准备阶段处理 ALT 或重新拼装。
 - **运行时封装**：`MultiLegRuntime` 将 orchestrator、AltCache、RPC 结合，提供 `plan_side_with_alts/plan_pair_with_alts` 等接口，为后续策略接入（engine.backend=none）铺路。

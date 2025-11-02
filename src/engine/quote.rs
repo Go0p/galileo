@@ -290,7 +290,6 @@ impl QuoteExecutor {
                                 "Kamino 采用首条路线"
                             );
                             let quote = KaminoQuote {
-                                input_mint: pair.input_pubkey,
                                 output_mint: pair.output_pubkey,
                                 route: route.clone(),
                             };

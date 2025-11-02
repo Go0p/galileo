@@ -8,7 +8,6 @@ use solana_sdk::hash::Hash;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::message::compiled_instruction::CompiledInstruction;
 use solana_sdk::message::{AddressLookupTableAccount, VersionedMessage};
-use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::VersionedTransaction;
@@ -82,40 +81,14 @@ impl<'de> Deserialize<'de> for DispatchStrategy {
 }
 
 #[derive(Clone, Debug)]
-pub struct TipOverride {
-    lamports: u64,
-    recipient: Option<Pubkey>,
-}
-
-impl TipOverride {
-    #[allow(dead_code)]
-    pub fn new(lamports: u64, recipient: Option<Pubkey>) -> Self {
-        Self {
-            lamports,
-            recipient,
-        }
-    }
-
-    pub fn lamports(&self) -> u64 {
-        self.lamports
-    }
-
-    pub fn recipient(&self) -> Option<Pubkey> {
-        self.recipient
-    }
-}
-
-#[derive(Clone, Debug)]
 pub struct TxVariant {
     id: VariantId,
     transaction: VersionedTransaction,
     blockhash: Hash,
     slot: u64,
-    #[allow(dead_code)]
     last_valid_block_height: Option<u64>,
     signer: Arc<Keypair>,
     base_tip_lamports: u64,
-    tip_override: Option<TipOverride>,
     instructions: Vec<Instruction>,
     lookup_accounts: Vec<AddressLookupTableAccount>,
 }
@@ -140,16 +113,9 @@ impl TxVariant {
             last_valid_block_height,
             signer,
             base_tip_lamports,
-            tip_override: None,
             instructions,
             lookup_accounts,
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn with_tip_override(mut self, tip_override: TipOverride) -> Self {
-        self.tip_override = Some(tip_override);
-        self
     }
 
     pub fn id(&self) -> VariantId {
@@ -160,11 +126,6 @@ impl TxVariant {
         &self.transaction
     }
 
-    #[allow(dead_code)]
-    pub fn into_transaction(self) -> VersionedTransaction {
-        self.transaction
-    }
-
     pub fn blockhash(&self) -> Hash {
         self.blockhash
     }
@@ -173,7 +134,6 @@ impl TxVariant {
         self.slot
     }
 
-    #[allow(dead_code)]
     pub fn last_valid_block_height(&self) -> Option<u64> {
         self.last_valid_block_height
     }
@@ -184,10 +144,6 @@ impl TxVariant {
 
     pub fn tip_lamports(&self) -> u64 {
         self.base_tip_lamports
-    }
-
-    pub fn tip_override(&self) -> Option<&TipOverride> {
-        self.tip_override.as_ref()
     }
 
     pub fn instructions(&self) -> &[Instruction] {

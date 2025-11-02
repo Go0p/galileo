@@ -51,7 +51,7 @@ engine:
   # 可选值：jupiter / dflow / ultra / multi-legs / kamino / none
   # backend: "none"
   # backend: "kamino"
-  backend: "multi-legs"
+  backend: "dflow"
   # backend: "multi-legs"
   # backend: "dflow"
   jupiter:
@@ -108,12 +108,14 @@ engine:
     swap_config:
       cu_limit_multiplier: 0.92
   dflow:
-    enable: false
+    enable: true
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
     leg: "sell"
     # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
     api_quote_base: "https://quote-api.dflow.net"
     api_swap_base: "https://quote-api.dflow.net"
+    # api_quote_base: "http://109.94.98.33:9800"
+    # api_swap_base: "http://109.94.98.33:9800"
     api_proxy: "http://192.168.124.4:9999"
     quote_config:
       use_auto_slippage: false

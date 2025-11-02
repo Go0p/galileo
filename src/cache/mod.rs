@@ -5,6 +5,9 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use dashmap::DashMap;
 
+pub mod alt;
+pub mod ata;
+
 /// 缓存后端抽象：统一 `get` / `put` / `remove` 接口，支持插拔式实现。
 #[async_trait]
 pub trait CacheBackend: Send + Sync + 'static {
@@ -18,13 +21,12 @@ pub trait CacheBackend: Send + Sync + 'static {
     async fn remove(&self, key: &Self::Key);
 }
 
-/// 高层缓存封装，提供 `load_or_fetch` 等常用操作，并内建 per-key 并发锁。
+/// 高层缓存封装，围绕 `get` / `insert` / `remove` 提供通用 API。
 pub struct Cache<B>
 where
     B: CacheBackend,
 {
     backend: B,
-    locks: DashMap<B::Key, Arc<tokio::sync::Mutex<()>>>,
 }
 
 impl<B> Clone for Cache<B>
@@ -34,7 +36,6 @@ where
     fn clone(&self) -> Self {
         Self {
             backend: self.backend.clone(),
-            locks: DashMap::new(),
         }
     }
 }
@@ -53,10 +54,7 @@ where
     B: CacheBackend,
 {
     pub fn new(backend: B) -> Self {
-        Self {
-            backend,
-            locks: DashMap::new(),
-        }
+        Self { backend }
     }
 
     pub async fn get(&self, key: &B::Key) -> Option<Arc<B::Value>> {
@@ -71,53 +69,13 @@ where
         self.backend.insert(key, value, ttl).await;
     }
 
-    pub async fn load_or_fetch<F, Fut>(
-        &self,
-        key: B::Key,
-        fetcher: F,
-    ) -> anyhow::Result<Arc<B::Value>>
-    where
-        F: FnOnce(&B::Key) -> Fut + Send,
-        Fut: std::future::Future<Output = anyhow::Result<FetchOutcome<B::Value>>> + Send,
-    {
-        if let Some(hit) = self.backend.get(&key).await {
-            return Ok(hit);
-        }
-
-        let lock = self
-            .locks
-            .entry(key.clone())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone();
-
-        let _guard = lock.lock().await;
-
-        if let Some(hit) = self.backend.get(&key).await {
-            return Ok(hit);
-        }
-
-        let FetchOutcome { value, ttl } = fetcher(&key).await?;
-        let arc = Arc::new(value);
-        self.backend.insert(key.clone(), arc.clone(), ttl).await;
-        Ok(arc)
-    }
-
     pub async fn remove(&self, key: &B::Key) {
         self.backend.remove(key).await;
     }
 }
 
-/// fetch 回源的返回值：包含实体及 TTL。
-pub struct FetchOutcome<V> {
-    pub value: V,
-    pub ttl: Option<Duration>,
-}
-
-impl<V> FetchOutcome<V> {
-    pub fn new(value: V, ttl: Option<Duration>) -> Self {
-        Self { value, ttl }
-    }
-}
+pub use alt::AltCache;
+pub use ata::cached_associated_token_address;
 
 /// 默认内存后端，基于 DashMap + Arc 实现，支持 TTL。
 #[derive(Clone)]

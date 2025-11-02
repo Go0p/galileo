@@ -8,6 +8,7 @@ use thiserror::Error;
 use crate::api::dflow::DflowError;
 use crate::api::kamino::KaminoError;
 use crate::api::ultra::UltraError;
+use crate::engine::plugins::flashloan::FlashloanError;
 use crate::jupiter::error::JupiterError;
 use crate::network::NetworkError;
 
@@ -33,6 +34,8 @@ pub enum EngineError {
     NetworkResource(#[from] NetworkError),
     #[error("网络请求失败: {0}")]
     Network(#[from] ReqwestError),
+    #[error("闪电贷处理失败: {0}")]
+    Flashloan(#[from] FlashloanError),
     #[error("交易构建失败: {0}")]
     Transaction(#[from] Error),
     #[error("落地失败: {0}")]

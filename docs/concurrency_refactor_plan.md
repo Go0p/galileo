@@ -5,17 +5,17 @@
 ## 里程碑概览
 
 1. **调度与评估并行化**
-   - 将 `multi_leg::runtime::plan_pair_batch_with_profit` 换成流式收敛（`FuturesUnordered` / `JoinSet`），边出结果边评估。
+   - 将 `engine::multi_leg::runtime::plan_pair_batch_with_profit` 换成流式收敛（`FuturesUnordered` / `JoinSet`），边出结果边评估。
    - 收集的腿计划交给常驻 `rayon::ThreadPool` 并行计算收益与排序，回写结果结构保持不变。
    - 为新线程池添加热路径打点（metrics/tracing），方便量化收益。
 
 2. **复制策略队列与缓存优化**
-   - `copy_strategy::wallet` 的任务队列改用 `flume::Receiver`/`Sender`，替代 `tokio::Mutex<VecDeque<_>>`。
+   - `strategy::copy::wallet` 的任务队列改用 `flume::Receiver`/`Sender`，替代 `tokio::Mutex<VecDeque<_>>`。
    - ATA / Token 账户缓存改为 `DashMap` 或细粒度 `RwLock`，并清理旧互斥结构。
    - 确保 `scale_compute_unit_limit` 等路径不受修改影响。
 
 3. **锁与状态颗粒度调整**
-   - 对不含 `await` 的锁（如 `multi_leg::runtime` throttle、测试桩）换成 `parking_lot::Mutex` 或原子变量。
+   - 对不含 `await` 的锁（如 `engine::multi_leg::runtime` throttle、测试桩）换成 `parking_lot::Mutex` 或原子变量。
    - `cache::mod` 保留 `DashMap`，但对热点键增加分区或 TTL 逻辑（如有必要）。
 
 4. **策略执行器队列与落地管线**
@@ -27,7 +27,7 @@
 | 阶段 | 关键改动 | 交付物 | 验证 |
 | ---- | -------- | ------ | ---- |
 | M1 | 引入 `rayon::ThreadPool`，重写 `plan_pair_batch_with_profit` | 新的并发评估模块 + benchmark 脚本 | 单元测试 + 10k 批次压测 |
-| M2 | `copy_strategy` 队列重构 | `CopyWallet` 任务处理重构 | integration test（dry-run） |
+| M2 | `strategy::copy` 队列重构 | `CopyWallet` 任务处理重构 | integration test（dry-run） |
 | M3 | 锁替换与代码清理 | `parking_lot` 替换、删除废弃结构 | `cargo fmt/clippy` + 热路径 tracing |
 | M4 | 文档与监控更新 | 更新 `docs/strategy_arch.md`、`monitoring` 指标 | 手动验证 + Grafana 面板说明 |
 

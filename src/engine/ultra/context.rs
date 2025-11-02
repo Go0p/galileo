@@ -3,7 +3,7 @@ use std::sync::Arc;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 
-use crate::multi_leg::alt_cache::AltCache;
+use crate::cache::AltCache;
 
 /// Ultra 交易预处理所需的运行环境。
 #[derive(Clone)]

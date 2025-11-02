@@ -12,6 +12,179 @@ use super::format::short_mint_str;
 use super::metrics::prometheus_enabled;
 use metrics::{counter, gauge, histogram};
 
+fn base_mint_label(base_mint: Option<&Pubkey>) -> String {
+    base_mint
+        .map(|mint| short_mint_str(&mint.to_string()).into_owned())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+pub fn assembly_pipeline_started(base_mint: Option<&Pubkey>, decorator_count: usize) {
+    let mint_label = base_mint_label(base_mint);
+    trace!(
+        target: "monitoring::assembly",
+        event = "pipeline_start",
+        base_mint = %mint_label,
+        decorators = decorator_count,
+        "instruction assembly pipeline started"
+    );
+
+    if prometheus_enabled() {
+        counter!(
+            "galileo_assembly_pipeline_total",
+            "base_mint" => mint_label.clone()
+        )
+        .increment(1);
+        histogram!(
+            "galileo_assembly_decorator_count",
+            "base_mint" => mint_label
+        )
+        .record(decorator_count as f64);
+    }
+}
+
+pub fn assembly_decorator_applied(
+    decorator: &str,
+    base_mint: Option<&Pubkey>,
+    before_limit: u32,
+    after_limit: u32,
+    before_guard: u64,
+    after_guard: u64,
+    before_price: Option<u64>,
+    after_price: Option<u64>,
+) {
+    let mint_label = base_mint_label(base_mint);
+    trace!(
+        target: "monitoring::assembly",
+        event = "decorator_applied",
+        decorator,
+        base_mint = %mint_label,
+        before_limit,
+        after_limit,
+        before_guard,
+        after_guard,
+        before_price = before_price.unwrap_or(0),
+        after_price = after_price.unwrap_or(0),
+        "assembly decorator applied"
+    );
+
+    if prometheus_enabled() {
+        let decorator_label = decorator.to_string();
+        counter!(
+            "galileo_assembly_decorator_total",
+            "decorator" => decorator_label.clone(),
+            "base_mint" => mint_label.clone()
+        )
+        .increment(1);
+        histogram!(
+            "galileo_assembly_compute_units",
+            "decorator" => decorator_label.clone(),
+            "base_mint" => mint_label.clone()
+        )
+        .record(after_limit as f64);
+        histogram!(
+            "galileo_assembly_guard_lamports",
+            "decorator" => decorator_label.clone(),
+            "base_mint" => mint_label.clone()
+        )
+        .record(after_guard as f64);
+        if let Some(price) = after_price {
+            histogram!(
+                "galileo_assembly_compute_price",
+                "decorator" => decorator_label,
+                "base_mint" => mint_label
+            )
+            .record(price as f64);
+        }
+    }
+}
+
+pub fn assembly_decorator_failed(decorator: &str, base_mint: Option<&Pubkey>, error: &str) {
+    let mint_label = base_mint_label(base_mint);
+    warn!(
+        target: "monitoring::assembly",
+        event = "decorator_failed",
+        decorator,
+        base_mint = %mint_label,
+        error,
+        "assembly decorator failed"
+    );
+
+    if prometheus_enabled() {
+        counter!(
+            "galileo_assembly_decorator_failures_total",
+            "decorator" => decorator.to_string(),
+            "base_mint" => mint_label
+        )
+        .increment(1);
+    }
+}
+
+pub fn assembly_pipeline_completed(
+    base_mint: Option<&Pubkey>,
+    decorator_count: usize,
+    compute_len: usize,
+    pre_len: usize,
+    main_len: usize,
+    post_len: usize,
+    compute_unit_limit: u32,
+    compute_unit_price: Option<u64>,
+    guard_required: u64,
+    flashloan_applied: bool,
+) {
+    let mint_label = base_mint_label(base_mint);
+    let total_instructions = compute_len + pre_len + main_len + post_len;
+    let compute_price = compute_unit_price.unwrap_or(0);
+
+    debug!(
+        target: "monitoring::assembly",
+        event = "pipeline_complete",
+        base_mint = %mint_label,
+        decorators = decorator_count,
+        total_instructions,
+        compute_unit_limit,
+        compute_unit_price = compute_price,
+        guard_required,
+        flashloan = flashloan_applied,
+        "instruction assembly pipeline finished"
+    );
+
+    if prometheus_enabled() {
+        let final_label = "final".to_string();
+        histogram!(
+            "galileo_assembly_instruction_span",
+            "base_mint" => mint_label.clone()
+        )
+        .record(total_instructions as f64);
+        histogram!(
+            "galileo_assembly_compute_units",
+            "decorator" => final_label.clone(),
+            "base_mint" => mint_label.clone()
+        )
+        .record(compute_unit_limit as f64);
+        histogram!(
+            "galileo_assembly_guard_lamports",
+            "decorator" => final_label.clone(),
+            "base_mint" => mint_label.clone()
+        )
+        .record(guard_required as f64);
+        if let Some(price) = compute_unit_price {
+            histogram!(
+                "galileo_assembly_compute_price",
+                "decorator" => final_label.clone(),
+                "base_mint" => mint_label.clone()
+            )
+            .record(price as f64);
+        }
+        if flashloan_applied {
+            counter!(
+                "galileo_assembly_flashloan_total",
+                "base_mint" => mint_label
+            )
+            .increment(1);
+        }
+    }
+}
+
 pub fn accounts_precheck(
     strategy: &str,
     total_mints: usize,

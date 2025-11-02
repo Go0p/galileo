@@ -6,11 +6,14 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::api::jupiter::SwapInstructionsResponse;
+use crate::cache::AltCache;
 use crate::cli::args::{LanderCmd, LanderSendArgs};
 use crate::cli::context::{resolve_global_http_proxy, resolve_rpc_client};
-use crate::cli::strategy::{build_http_client_pool, build_ip_allocator, build_rpc_client_pool};
 use crate::config;
 use crate::config::AppConfig;
+use crate::config::launch::resources::{
+    build_http_client_pool, build_ip_allocator, build_rpc_client_pool,
+};
 use crate::engine::{
     BuilderConfig, EngineIdentity, SwapInstructionsVariant, TransactionBuilder, TxVariantPlanner,
 };
@@ -62,6 +65,7 @@ async fn send_transaction(
         builder_config,
         Arc::clone(&ip_allocator),
         Some(rpc_client_pool),
+        AltCache::new(),
     );
     let mut submission_builder = reqwest::Client::builder();
     if let Some(proxy_url) = global_proxy.as_ref() {

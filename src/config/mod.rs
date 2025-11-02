@@ -6,6 +6,7 @@ use crate::engine::DispatchStrategy;
 use serde::Deserialize;
 use serde::de::Deserializer;
 
+pub mod launch;
 pub mod loader;
 pub mod types;
 pub mod wallet;

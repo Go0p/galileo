@@ -137,19 +137,19 @@ impl JitoLander {
         }
 
         let configured_tip = self.tip_selector.select_tip();
-        let base_tip = (variant.tip_lamports() > 0).then(|| variant.tip_lamports());
-        let tip_lamports = variant
-            .tip_override()
-            .map(|override_tip| override_tip.lamports())
-            .or(configured_tip)
-            .or(base_tip)
-            .unwrap_or(0);
+        let base_tip = (variant.tip_lamports() > 0).then_some(variant.tip_lamports());
+        let tip_lamports = configured_tip.or(base_tip).unwrap_or(0);
+
+        if let Some(last_valid) = variant.last_valid_block_height() {
+            debug!(
+                target: "lander::jito",
+                last_valid_block_height = last_valid,
+                "准备提交变体"
+            );
+        }
 
         let tip_recipient = if tip_lamports > 0 {
-            variant
-                .tip_override()
-                .and_then(|override_tip| override_tip.recipient())
-                .or_else(random_tip_wallet)
+            random_tip_wallet()
         } else {
             None
         };

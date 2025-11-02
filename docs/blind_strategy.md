@@ -87,7 +87,7 @@
 1. **配置 → 交易对生成重构**：允许在 blind 配置中声明 DEX 组合或默认矩阵（如 Tessera ↔ HumidiFi ↔ SolFiV2）。  
 2. **账户解析模块完善**：为 TesseraV / HumidiFi 引入 `fetch_*_swap_info()`，与 SolFiV2 对齐。  
 3. **Route 构造器**：新增 `BlindRouteBuilder`，输入（amount, forward|reverse, dex pair）→ 输出 `SwapInstructionsResponse`。  
-4. **执行引擎改造**：`SwapInstructionFetcher::fetch` 增加盲发分支；当检测到“纯手搓”模式时跳过 Jupiter API，并通过 `src/strategy/pure_blind_strategy.rs` 调度 `Action::DispatchBlind`。  
+4. **执行引擎改造**：`SwapPreparer::prepare` 增加盲发分支；当检测到“纯手搓”模式时跳过 Jupiter API，并通过 `src/strategy/pure_blind/runner.rs` 调度 `Action::DispatchBlind`。  
 5. **测试与干运行**：  
    - 单元测试：对每个 DEX 组合校验 `Instruction` 序列与 `data`。  
   - `cargo run --features=hotpath` 文档更新，说明如何启用性能采样。  

@@ -1,0 +1,281 @@
+{
+  "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK": {
+    "name": "Raydium CLMM",
+    "fields": [
+      "dex_program",
+      "swap_authority",
+      "user_source",
+      "user_destination",
+      "amm_config",
+      "pool",
+      "input_vault",
+      "output_vault",
+      "observation",
+      "tick_array0",
+      "tick_bitmap",
+      "tick_array1",
+      "tick_array2",
+      "token_program"
+    ]
+  },
+  "SSwapUtytfBdBn1b9NUGG6foMVPtcWgpRU32HToDUZr": {
+    "name": "Saros",
+    "fields": [
+      "dex_program",
+      "swap_authority",
+      "user_source",
+      "user_destination",
+      "pool",
+      "pool_authority",
+      "pool_token_in",
+      "pool_token_out",
+      "pool_lp_mint",
+      "protocol_lp_token",
+      "token_program"
+    ]
+  },
+  "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH": {
+    "name": "TesseraV",
+    "fields": [
+      "dex_program",
+      "swap_authority",
+      "user_source",
+      "user_destination",
+      "global_state",
+      "pool_state",
+      "base_vault",
+      "quote_vault",
+      "base_mint",
+      "quote_mint",
+      "base_token_program",
+      "quote_token_program",
+      "sysvar_instructions"
+    ]
+  },
+  "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp": {
+    "name": "HumidiFi",
+    "fields": [
+      "dex_program",
+      "swap_authority",
+      "user_source",
+      "user_destination",
+      "param",
+      "pool",
+      "pool_base_vault",
+      "pool_quote_vault",
+      "clock",
+      "token_program",
+      "sysvar_instructions"
+    ]
+  },
+  "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo": {
+    "name": "Meteora DLMM",
+    "fields": [
+      "dex_program",
+      "swap_authority",
+      "user_source",
+      "user_destination",
+      "lb_pair",
+      "bitmap_ext",
+      "reserve_x",
+      "reserve_y",
+      "token_x_mint",
+      "token_y_mint",
+      "oracle",
+      "host_fee_account",
+      "token_x_program",
+      "token_y_program",
+      "event_authority",
+      "bin_array0",
+      "bin_array1",
+      "bin_array2"
+    ]
+  },
+  "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY": {
+    "name": "ZeroFi",
+    "fields": [
+      "dex_program",
+      "swap_authority",
+      "user_source",
+      "user_destination",
+      "pair",
+      "vault_info_base",
+      "vault_base",
+      "vault_info_quote",
+      "vault_quote",
+      "token_program",
+      "sysvar_instructions"
+    ]
+  },
+  "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc": {
+    "name": "Whirlpool",
+    "fields": [
+      "dex_program",
+      "swap_authority",
+      "user_source",
+      "user_destination",
+      "whirlpool",
+      "token_program",
+      "memo_program",
+      "tick_array0",
+      "tick_array1",
+      "tick_array2",
+      "oracle"
+    ]
+  },
+  "goonERTdGsjnkZqWuVjs73BZ3Pb9qoCUdBUL17BnS5j": {
+    "name": "GoonFi",
+    "fields": [
+      "dex_program",
+      "swap_authority",
+      "user_source",
+      "user_destination",
+      "pool",
+      "pool_authority",
+      "base_vault",
+      "quote_vault",
+      "token_program",
+      "system_program"
+    ]
+  },
+  "HpNfyc2Saw7RKkQd8nEL4khUcuPhQ7WwY1B2qjx8jxFq": {
+    "name": "PancakeSwap",
+    "fields": [
+      "dex_program",
+      "swap_authority",
+      "user_source",
+      "user_destination",
+      "state",
+      "pool",
+      "pool_token_a",
+      "pool_token_b",
+      "tick_array0",
+      "tick_array1",
+      "tick_array2",
+      "token_program",
+      "token_program_2022",
+      "memo_program"
+    ]
+  },
+  "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C": {
+    "name": "Raydium CP",
+    "fields": [
+      "dex_program",
+      "swap_authority",
+      "user_source",
+      "user_destination",
+      "authority",
+      "amm_config",
+      "pool_state",
+      "input_vault",
+      "output_vault",
+      "input_token_program",
+      "output_token_program",
+      "input_token_mint",
+      "output_token_mint",
+      "observation_state"
+    ]
+  },
+  "SV2EYYJyRz2YhfXwXnhNAevDEui5Q6yrfyo13WtupPF": {
+    "name": "SolFi V2",
+    "fields": [
+      "dex_program",
+      "swap_authority",
+      "user_source",
+      "user_destination",
+      "pool",
+      "pool_authority",
+      "pool_base_vault",
+      "pool_quote_vault",
+      "pool_bond_vault",
+      "token_program",
+      "token_program_2022",
+      "memo_program"
+    ]
+  },
+  "2wT8Yq49kHgDzXuPxZSaeLaH1qbmGXtEyPy64bL7aD3c": {
+    "name": "Lifinity V2",
+    "fields": [
+      "dex_program",
+      "swap_authority",
+      "user_source",
+      "user_destination",
+      "pool",
+      "pool_authority",
+      "pool_token_in",
+      "pool_token_out",
+      "token_program",
+      "curve_program"
+    ]
+  },
+  "REALQqNEomY6cQGZJUGwywTBD2UmDT32rZcNnfxQ5N2": {
+    "name": "Byreal",
+    "fields": [
+      "dex_program",
+      "swap_authority",
+      "user_source",
+      "user_destination",
+      "payer",
+      "amm_config",
+      "pool_state",
+      "pool_input_token",
+      "pool_output_token",
+      "input_vault",
+      "output_vault",
+      "observation_state",
+      "token_program",
+      "token_program_2022",
+      "memo_program",
+      "input_vault_mint",
+      "output_vault_mint",
+      "tick_bitmap_ext",
+      "tick_array0",
+      "tick_array1",
+      "tick_array2",
+      "tick_array3",
+      "tick_array4",
+      "tick_array5"
+    ]
+  },
+  "AQU1FRd7papthgdrwPTTq5JacJh8YtwEXaBfKU3bTz45": {
+    "name": "Aquifer",
+    "fields": [
+      "dex_program",
+      "swap_authority",
+      "user_source",
+      "user_destination",
+      "pool",
+      "pool_authority",
+      "pool_token_a",
+      "pool_token_b",
+      "tick_array0",
+      "tick_array1",
+      "tick_array2",
+      "token_program"
+    ]
+  },
+  "opnb2LAfJYbRMAHHvqjCwQxanZn7ReEHp1k81EohpZb": {
+    "name": "OpenBook V2",
+    "fields": [
+      "dex_program",
+      "swap_authority",
+      "user_source",
+      "user_destination",
+      "market",
+      "market_authority",
+      "bids",
+      "asks",
+      "market_base_vault",
+      "market_quote_vault",
+      "event_heap",
+      "oracle_a",
+      "oracle_b",
+      "token_program",
+      "system_program",
+      "open_orders_admin",
+      "open_orders_account0",
+      "open_orders_account1",
+      "open_orders_account2"
+    ]
+  }
+}

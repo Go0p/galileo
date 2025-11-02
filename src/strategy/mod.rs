@@ -1,9 +1,14 @@
-pub mod blind_strategy;
-pub mod pure_blind_strategy;
-pub mod types;
+pub mod blind;
+pub mod common;
+pub mod copy;
+pub mod pure_blind;
 
-pub use blind_strategy::BlindStrategy;
-pub use pure_blind_strategy::{PureBlindRouteBuilder, PureBlindStrategy};
+pub use blind::BlindStrategy;
+pub use copy::run_copy_strategy;
+pub use pure_blind::{PureBlindRouteBuilder, PureBlindStrategy};
+pub mod types {
+    pub use super::common::types::*;
+}
 
 use crate::engine::{StrategyContext, StrategyDecision, StrategyTick};
 

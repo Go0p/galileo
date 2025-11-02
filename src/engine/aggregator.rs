@@ -30,7 +30,6 @@ pub enum QuoteResponseVariant {
 
 #[derive(Debug, Clone)]
 pub struct KaminoQuote {
-    pub input_mint: Pubkey,
     pub output_mint: Pubkey,
     pub route: kamino::Route,
 }
@@ -38,7 +37,6 @@ pub struct KaminoQuote {
 #[derive(Debug, Clone)]
 pub struct KaminoQuotePayload {
     pub route: kamino::Route,
-    pub input_mint: Pubkey,
     pub output_mint: Pubkey,
     pub context_slot: u64,
     pub time_taken_ms: f64,
@@ -54,42 +52,21 @@ impl QuoteResponseVariant {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn input_mint(&self) -> Pubkey {
-        match self {
-            QuoteResponseVariant::Jupiter(resp) => resp.input_mint,
-            QuoteResponseVariant::Dflow(resp) => resp.payload().input_mint,
-            QuoteResponseVariant::Ultra(resp) => ultra_input_mint(&resp),
-            QuoteResponseVariant::Kamino(resp) => resp.input_mint,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn output_mint(&self) -> Pubkey {
-        match self {
-            QuoteResponseVariant::Jupiter(resp) => resp.output_mint,
-            QuoteResponseVariant::Dflow(resp) => resp.payload().output_mint,
-            QuoteResponseVariant::Ultra(resp) => ultra_output_mint(&resp),
-            QuoteResponseVariant::Kamino(resp) => resp.output_mint,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn in_amount(&self) -> u64 {
-        match self {
-            QuoteResponseVariant::Jupiter(resp) => resp.in_amount,
-            QuoteResponseVariant::Dflow(resp) => resp.payload().in_amount,
-            QuoteResponseVariant::Ultra(resp) => ultra_in_amount(&resp),
-            QuoteResponseVariant::Kamino(resp) => resp.route.amount_in(),
-        }
-    }
-
     pub fn out_amount(&self) -> u64 {
         match self {
             QuoteResponseVariant::Jupiter(resp) => resp.out_amount,
             QuoteResponseVariant::Dflow(resp) => resp.payload().out_amount,
             QuoteResponseVariant::Ultra(resp) => ultra_out_amount(&resp),
             QuoteResponseVariant::Kamino(resp) => resp.route.amount_out(),
+        }
+    }
+
+    pub fn in_amount(&self) -> u64 {
+        match self {
+            QuoteResponseVariant::Jupiter(resp) => resp.in_amount,
+            QuoteResponseVariant::Dflow(resp) => resp.payload().in_amount,
+            QuoteResponseVariant::Ultra(resp) => ultra_in_amount(&resp),
+            QuoteResponseVariant::Kamino(resp) => resp.route.amount_in(),
         }
     }
 
@@ -110,7 +87,6 @@ impl QuoteResponseVariant {
                 let time_taken_ms = route.response_time_get_quote_ms as f64;
                 QuotePayloadVariant::Kamino(KaminoQuotePayload {
                     route,
-                    input_mint: resp.input_mint,
                     output_mint: resp.output_mint,
                     context_slot: 0,
                     time_taken_ms,
@@ -136,57 +112,12 @@ pub struct UltraQuotePayload {
 }
 
 impl QuotePayloadVariant {
-    #[allow(dead_code)]
-    pub fn kind(&self) -> AggregatorKind {
-        match self {
-            QuotePayloadVariant::Jupiter(_) => AggregatorKind::Jupiter,
-            QuotePayloadVariant::Dflow(_) => AggregatorKind::Dflow,
-            QuotePayloadVariant::Ultra(_) => AggregatorKind::Ultra,
-            QuotePayloadVariant::Kamino(_) => AggregatorKind::Kamino,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn input_mint(&self) -> Pubkey {
-        match self {
-            QuotePayloadVariant::Jupiter(payload) => payload.input_mint,
-            QuotePayloadVariant::Dflow(payload) => payload.input_mint,
-            QuotePayloadVariant::Ultra(payload) => ultra_input_mint_from_payload(&payload.payload),
-            QuotePayloadVariant::Kamino(payload) => payload.input_mint,
-        }
-    }
-
     pub fn output_mint(&self) -> Pubkey {
         match self {
             QuotePayloadVariant::Jupiter(payload) => payload.output_mint,
             QuotePayloadVariant::Dflow(payload) => payload.output_mint,
             QuotePayloadVariant::Ultra(payload) => ultra_output_mint_from_payload(&payload.payload),
             QuotePayloadVariant::Kamino(payload) => payload.output_mint,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn out_amount(&self) -> u64 {
-        match self {
-            QuotePayloadVariant::Jupiter(payload) => payload.out_amount,
-            QuotePayloadVariant::Dflow(payload) => payload.out_amount,
-            QuotePayloadVariant::Ultra(payload) => ultra_out_amount_from_payload(&payload.payload),
-            QuotePayloadVariant::Kamino(payload) => payload.route.amount_out(),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn other_amount_threshold(&self) -> u64 {
-        match self {
-            QuotePayloadVariant::Jupiter(payload) => payload.other_amount_threshold,
-            QuotePayloadVariant::Dflow(payload) => payload.other_amount_threshold,
-            QuotePayloadVariant::Ultra(payload) => payload
-                .payload
-                .other_amount_threshold
-                .unwrap_or_else(|| ultra_out_amount_from_payload(&payload.payload)),
-            QuotePayloadVariant::Kamino(payload) => {
-                payload.route.amounts_exact_in.amount_out_guaranteed
-            }
         }
     }
 
@@ -466,17 +397,6 @@ impl KaminoSwapBundle {
 }
 
 impl SwapInstructionsVariant {
-    #[allow(dead_code)]
-    pub fn kind(&self) -> AggregatorKind {
-        match self {
-            SwapInstructionsVariant::Jupiter(_) => AggregatorKind::Jupiter,
-            SwapInstructionsVariant::Dflow(_) => AggregatorKind::Dflow,
-            SwapInstructionsVariant::Ultra(_) => AggregatorKind::Ultra,
-            SwapInstructionsVariant::MultiLeg(_) => AggregatorKind::Jupiter,
-            SwapInstructionsVariant::Kamino(_) => AggregatorKind::Kamino,
-        }
-    }
-
     pub fn compute_unit_limit(&self) -> u32 {
         match self {
             SwapInstructionsVariant::Jupiter(response) => response.compute_unit_limit,
@@ -575,34 +495,12 @@ impl SwapInstructionsVariant {
     }
 }
 
-fn ultra_input_mint(response: &OrderResponse) -> Pubkey {
-    ultra_input_mint_from_payload(response.deref())
-}
-
-fn ultra_output_mint(response: &OrderResponse) -> Pubkey {
-    ultra_output_mint_from_payload(response.deref())
-}
-
 fn ultra_in_amount(response: &OrderResponse) -> u64 {
     ultra_in_amount_from_payload(response.deref())
 }
 
 fn ultra_out_amount(response: &OrderResponse) -> u64 {
     ultra_out_amount_from_payload(response.deref())
-}
-
-fn ultra_input_mint_from_payload(payload: &OrderResponsePayload) -> Pubkey {
-    payload
-        .input_mint
-        .or_else(|| first_route_step(payload).map(|step| step.swap_info.input_mint))
-        .unwrap_or_default()
-}
-
-fn ultra_output_mint_from_payload(payload: &OrderResponsePayload) -> Pubkey {
-    payload
-        .output_mint
-        .or_else(|| last_route_step(payload).map(|step| step.swap_info.output_mint))
-        .unwrap_or_default()
 }
 
 fn ultra_in_amount_from_payload(payload: &OrderResponsePayload) -> u64 {
@@ -619,12 +517,11 @@ fn ultra_out_amount_from_payload(payload: &OrderResponsePayload) -> u64 {
         .unwrap_or_default()
 }
 
-fn first_route_step(payload: &OrderResponsePayload) -> Option<&RoutePlanStep> {
-    payload.route_plan.first()
-}
-
-fn last_route_step(payload: &OrderResponsePayload) -> Option<&RoutePlanStep> {
-    payload.route_plan.last()
+fn ultra_output_mint_from_payload(payload: &OrderResponsePayload) -> Pubkey {
+    payload
+        .output_mint
+        .or_else(|| last_route_step(payload).map(|step| step.swap_info.output_mint))
+        .unwrap_or_default()
 }
 
 fn sum_route_plan_amount<F>(steps: &[RoutePlanStep], mut extractor: F) -> Option<u64>
@@ -637,6 +534,10 @@ where
     steps
         .iter()
         .try_fold(0u64, |acc, step| acc.checked_add(extractor(step)))
+}
+
+fn last_route_step(payload: &OrderResponsePayload) -> Option<&RoutePlanStep> {
+    payload.route_plan.last()
 }
 
 #[cfg(test)]
@@ -697,7 +598,6 @@ mod tests {
 
     #[test]
     fn extend_route_combines_kamino_instructions() {
-        let input_mint = Pubkey::new_unique();
         let output_mint = Pubkey::new_unique();
         let intermediate = Pubkey::new_unique();
 
@@ -706,14 +606,12 @@ mod tests {
 
         let mut lhs = QuotePayloadVariant::Kamino(KaminoQuotePayload {
             route: route_a,
-            input_mint,
             output_mint: intermediate,
             context_slot: 0,
             time_taken_ms: 5.0,
         });
         let rhs = QuotePayloadVariant::Kamino(KaminoQuotePayload {
             route: route_b,
-            input_mint: intermediate,
             output_mint,
             context_slot: 0,
             time_taken_ms: 7.0,

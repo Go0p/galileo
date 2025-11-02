@@ -15,12 +15,12 @@ use crate::api::dflow::{
 use crate::api::jupiter::{
     ComputeUnitPriceMicroLamports, JupiterApiClient, SwapInstructionsRequest,
 };
+use crate::cache::AltCache;
 use crate::config::{DflowSwapConfig, JupiterSwapConfig, KaminoQuoteConfig, UltraSwapConfig};
 use crate::engine::ultra::{
     UltraAdapter, UltraAdapterError, UltraContext, UltraFinalizedSwap, UltraLookupResolver,
     UltraPreparationParams, UltraPreparedSwap,
 };
-use crate::multi_leg::alt_cache::AltCache;
 use crate::network::IpLeaseHandle;
 use rand::Rng;
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -121,12 +121,13 @@ impl SwapPreparer {
         rpc: Arc<RpcClient>,
         defaults: KaminoQuoteConfig,
         compute_unit_price: Option<ComputeUnitPriceMode>,
+        alt_cache: AltCache,
     ) -> Self {
         let multiplier = sanitize_multiplier(defaults.cu_limit_multiplier).unwrap_or(1.0);
         Self {
             backend: SwapPreparerBackend::Kamino {
                 rpc,
-                alt_cache: AltCache::new(),
+                alt_cache,
                 cu_limit_multiplier: multiplier,
                 resolve_lookup_tables_via_rpc: defaults.resolve_lookup_tables_via_rpc,
             },
@@ -138,11 +139,12 @@ impl SwapPreparer {
         rpc: Arc<RpcClient>,
         defaults: UltraSwapConfig,
         compute_unit_price: Option<ComputeUnitPriceMode>,
+        alt_cache: AltCache,
     ) -> Self {
         Self {
             backend: SwapPreparerBackend::Ultra {
                 rpc,
-                alt_cache: AltCache::new(),
+                alt_cache,
                 defaults,
             },
             compute_unit_price,

@@ -11,10 +11,10 @@ use std::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use tokio::time::{Instant as TokioInstant, sleep_until};
 
-use crate::monitoring::events;
-use crate::multi_leg::types::{
+use crate::engine::multi_leg::types::{
     AggregatorKind as MultiLegAggregatorKind, LegSide as MultiLegLegSide,
 };
+use crate::monitoring::events;
 
 use super::{IpInventory, IpSlot, IpSlotKind, IpSlotState, IpSource, NetworkError, NetworkResult};
 

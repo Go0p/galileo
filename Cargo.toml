@@ -67,6 +67,7 @@ dashmap = "6.1.0"
 if-addrs = "0.14.0"
 flume = "0.11.0"
 parking_lot = "0.12.5"
+smallvec = "1.15.1"
 
 yellowstone-vixen-orca-whirlpool-parser = "0.5.0"
 yellowstone-vixen-raydium-clmm-parser = "0.5.0"

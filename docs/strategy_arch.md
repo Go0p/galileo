@@ -13,36 +13,54 @@
 
 ```
 src/
-├── engine/            # 调度、worker、风险、数据管线
-│   ├── context.rs     # EngineContext<TL: Lander>
-│   ├── quote.rs       # QuoteExecutor/Router
-│   ├── swap.rs        # SwapInstructionFetcher
-│   ├── builder.rs     # TransactionBuilder
-│   ├── scheduler.rs   # Tokio/Rayon 协调
-│   └── mod.rs
-├── strategy/          # 业务策略（Blind/未来策略）
-│   ├── blind.rs
-│   ├── backrun_strategy.rs  # 例：未来扩展
-│   └── mod.rs               # 仅做 re-export
-├── lander/            # 上链通道 trait + 实现
-│   ├── traits.rs      # pub trait Lander
-│   ├── jito.rs
-│   ├── third_party.rs
-│   ├── rpc.rs
-│   ├── staked.rs
-│   └── mod.rs
-├── monitoring/        # metrics/tracing/logging 封装
-│   ├── metrics.rs
-│   ├── tracing.rs
-│   ├── events.rs      # 自定义事件上报
-│   └── mod.rs
+├── engine/
+│   ├── assembly/
+│   │   ├── bundle.rs          # InstructionBundle 分段结构
+│   │   └── decorators/        # ComputeBudget / Guard / Flashloan / Profit 装饰器
+│   ├── runtime/
+│   │   └── strategy/
+│   │       ├── mod.rs         # 生命周期入口 + 配置
+│   │       ├── blind.rs       # 盲发批处理
+│   │       ├── quote.rs       # 并发报价调度
+│   │       ├── swap.rs        # 装配落地流水线
+│   │       └── multi_leg.rs   # 多腿机会聚合
+│   ├── quote.rs               # QuoteExecutor / ProfitEvaluator
+│   ├── swap_preparer.rs       # 聚合器指令预处理
+│   ├── planner.rs             # TxVariantPlanner + DispatchPlan
+│   ├── builder.rs             # TransactionBuilder
+│   └── ...
+├── instructions/              # 协议指令原语（无业务状态）
+│   ├── compute_budget.rs
+│   ├── flashloan/
+│   │   ├── error.rs
+│   │   ├── marginfi.rs
+│   │   └── types.rs
+│   ├── guards/
+│   │   └── lighthouse/
+│   │       ├── mod.rs
+│   │       ├── account_delta.rs
+│   │       ├── guard.rs
+│   │       └── memory_write.rs
+│   └── jupiter/
+│       ├── route.rs
+│       ├── route_v2.rs
+│       ├── swaps.rs
+│       └── types.rs
+├── strategy/                  # 业务策略（盲发 / 复制等）
+│   ├── blind/
+│   ├── pure_blind/
+│   ├── common/
+│   └── mod.rs                 # 仅做 re-export
+├── lander/                    # 上链通道 trait + 实现
+├── monitoring/                # metrics / tracing / logging 封装
 └── ...
 ```
 
-- **策略命名规范**：`src/strategy/<策略名>.rs`，例如 `blind.rs`（当前默认策略）；未来策略建议使用 `<name>_strategy.rs` 命名，便于辨识。
-- **Engine 层**：仅关心「如何高效执行」，不关心套利意图；对外暴露 `StrategyEngine<TL: Lander>`。
-- **共享类型**：放在 `types.rs`、`config.rs` 等主题化文件中，不在 `mod.rs` 内定义结构体或 trait。
-- **监控模块**：与 Engine、Strategy、Lander 均解耦，只通过事件/回调传递指标数据。
+- **策略目录**：`src/strategy/<name>/` 组织策略实现，`mod.rs` 负责 re-export 并标注维护者。
+- **Engine 层**：`StrategyEngine<S>` 负责协调 Quote → Assembly → Landing，全链路依赖在构造时注入。
+- **共享类型**：通用结构体与配置放在 `engine/types.rs`、`config/types.rs` 等主题化文件，不在 `mod.rs` 内定义。
+- **指令原语**：所有协议 `Instruction` 构造逻辑集中在 `instructions/`，保持 engine/strategy 纯粹。
+- **监控模块**：与 Engine、Strategy、Lander 解耦，通过 `monitoring::events` 输出日志与指标。
 
 ## 3. Jupiter Quote → Swap → Lander 执行链路
 
@@ -58,29 +76,29 @@ src/
 - 若盈利则将两次 Quote 的返回值（含 `swapMode`, `route_plan` 等）封装为 `SwapOpportunity` 推入 Engine。
 - 可配置的风控门限：`min_profit`, `max_slippage`, `cooldown` 等均在 Strategy 层完成判定，Engine 只负责并发调度。
 
-### 3.3 Swap 指令获取
-- `SwapInstructionFetcher` 通过 `/swap-instructions` API 获取 Jupiter 返回的核心指令集。
-- 按策略要求在指令序列前/后插入扩展指令：
-  - Memo（调试 / 审计）
-  - Jito tip（需额外小费账户）
-  - 第三方加速器 tip
-  - 闪电贷账户指令
-- 指令装配结果形成 `TransactionPlan`，继续交由 Builder。
+### 3.3 指令装配流水线
+- `SwapPreparer` 根据 `SwapOpportunity` 调用 Jupiter / DFlow / Ultra 等聚合器，返回 `SwapInstructionsVariant`（含指令、ALT、compute budget、tip 等元数据）。
+- 引擎将响应转换为 `InstructionBundle`，按 `compute_budget` / `prefix` / `main` / `post` 四段组织，避免后续反复拷贝。
+- `DecoratorChain` 顺序执行装饰器：
+  - `FlashloanDecorator`：若 `MarginfiFlashloanManager` 可用，则调用 `instructions::flashloan::marginfi::MarginfiFlashloan` 将主体指令包裹在 Begin/Borrow/Repay/End 中。
+  - `ComputeBudgetDecorator`：写回 compute unit limit / price，保持 bundle 与 `SwapInstructionsVariant` 一致。
+  - `GuardBudgetDecorator`：合并基础费用、Jito tip、Lighthouse guard 预算。
+  - `ProfitGuardDecorator`：注入 Lighthouse token 守护，记录 guard 相关元数据。
+- 每个阶段都会触发 `monitoring::events::assembly_*` 打点，记录装饰器数量、CU 变化、guard/tip/flashloan 是否生效等细节，便于排障与性能分析。
 
 ### 3.4 交易打包
-- `TransactionBuilder` 将指令序列打包为 `PreparedTransaction`：
+- `InstructionBundle` 完成装配后交给 `TransactionBuilder` 构建 `PreparedTransaction`：
   1. 读取最新 `blockhash` 与 `slot`；
-  2. 使用配置身份 (`EngineIdentity`) 完成签名；
-  3. 记录优先费（优先费策略仍由策略侧决定）；
-  4. 输出结构体供后续生成不同交易变体。
-- 该阶段保持零成本抽象，仅负责构建最原始的可签交易。
+  2. 根据 `EngineIdentity` 与策略参数写入签名、优先费、tip；
+  3. 汇总最终指令（ComputeBudget + Prefix + Main + Post）与 ALT。
+- Builder 保持零成本抽象，不直接感知策略或装饰器，只消费整理好的 bundle。
 
 ### 3.5 交易变体与发送计划
-- `TxVariantPlanner` 根据 `PreparedTransaction`、`DispatchStrategy` 与落地器容量生成 `DispatchPlan`：
+- `TxVariantPlanner` 基于 `PreparedTransaction`、`DispatchStrategy` 与落地器容量生成 `DispatchPlan`：
   - `AllAtOnce`：产出 1 个 `TxVariant`，所有落地器共享同一笔交易；
-  - `OneByOne`：依据落地端点数量生成多个 `TxVariant`，为后续分发预留差异化空间（tip 钱包、序列调整等）。
-- `DispatchPlan` 交给 `LanderStack::submit_plan` 执行，统一处理重试/超时逻辑，并将 `variant_id` 透传至监控。
-- Jito 落地器会利用 `variant_id` 轮换 tip 钱包，并在请求 URL 附带 uuid 池生成的 `uuid`，以最大化可用速率配额。
+  - `OneByOne`：按落地端点生成多个 `TxVariant`，为 tip/优先费微调留下空间。
+- `DispatchPlan` 交由 `LanderStack::submit_plan` 执行，统一处理 IP 退避、重试与超时，并让 `variant_id` 在监控中可追踪。
+- Jito / Lightning 等落地器会结合 `variant_id` 轮换 tip 钱包，同时利用 uuid 池保证速率配额。
 
 ## 4. Lander 栈设计
 
@@ -118,35 +136,40 @@ impl LanderStack {
 ```rust
 pub trait Strategy {
     type Event;
-    fn on_market_event(&mut self, event: &Self::Event, ctx: StrategyContext) -> Action;
-}
 
-pub struct StrategyEngine<S: Strategy> {
-    landers: LanderStack,
-    scheduler: Scheduler,
-    quote_executor: QuoteExecutor,
-    swap_fetcher: SwapInstructionFetcher,
-    tx_builder: TransactionBuilder,
-    strategy: S,
+    fn name(&self) -> &'static str;
+
+    fn on_market_event(
+        &mut self,
+        event: &Self::Event,
+        ctx: StrategyContext<'_>,
+    ) -> StrategyDecision;
 }
 ```
 
-- **策略层**：只关注调度顺序/节奏（例如 Blind 顺序遍历、未来 Back-run 根据触发配置筛选），通过 `StrategyContext` 请求引擎执行 Quote。
-- **Engine 层**：负责资源调度、盈利判定、交易构建、落地与监控打点，细节完全从策略抽离；当配置 `bot.dry_run = true` 或 CLI 以 `galileo dry-run` 启动时，交易会在构建后记录日志并跳过落地提交，用于安全演练。
-- **上下文对象**：策略仅能调用 `schedule_pair_all_amounts` 等接口，无法越级访问底层实现，保证安全与解耦。
-- **扩展流程**：新增策略 -> 新建文件实现 `Strategy` -> 在 `main` 中按模式注册即可。
+- **策略层**：聚焦调度顺序/节奏（如 Blind 批次、PureBlind 复制），通过 `StrategyContext` 唤起 Quote、刷新配置或回收资源，最终返回 `StrategyDecision` 供引擎执行。
+- **引擎层组成**：
+  - `quote.rs` + `quote_dispatcher.rs`：管理多源 Quote 并发、IP 退避、机会封装。
+  - `swap_preparer.rs`：针对 Jupiter / DFlow / Ultra / Kamino 等后端生成 `SwapInstructionsVariant`。
+  - `runtime/strategy/{quote,swap}.rs`：驱动报价批次、执行计划、装配流水线。
+  - `assembly/`：`InstructionBundle` + `DecoratorChain` 抽象，确保装饰器顺序统一。
+  - `planner.rs`：`TxVariantPlanner` 依据落地策略产出 `DispatchPlan`。
+  - `runtime/lighthouse.rs` + `instructions::guards::lighthouse/`：负责利润守护 runtime 与指令原语。
+  - `plugins/flashloan/`：闪电贷 Manager / 账户确保，指令原语位于 `instructions::flashloan/`。
+- **运行流程**：策略只暴露事件处理入口，引擎负责资源调度、盈利判定、指令装配、交易构建、落地与监控打点；`bot.dry_run = true` 或 CLI `galileo dry-run` 时仍会执行完整流水线，只在落地阶段提前返回。
+- **扩展方式**：新增策略 → 在 `src/strategy/<name>/` 下实现 `Strategy` + 配置解析 → 在 `strategy::mod.rs` 中注册即可。
 
 ## 6. 监控贯穿设计
 
 - **统一事件模型**：每个关键步骤向 `ObserverRegistry` 发送结构化事件（QuoteStart/QuoteEnd, SwapFetched, TxBuilt, LanderSubmitted, LanderFailed）。
 - **事件实现**：`monitoring::events` 模块封装 Quote/Swap/Transaction/Lander 的结构化 `tracing` 打点，Engine 调用即可在日志和指标系统中统一呈现。
-- **Prometheus 指标**：`monitoring::events` 会在配置启用时同步通过 `metrics` 宏上报关键指标。
-- **Metrics**：通过 `metrics` crate 暴露
-  - `quote.latency_ms{strategy=blind}`
-  - `swap.fetch.success_total`
-  - `lander.submit.latency_ms{lander=jito}`
-  - `profit.estimated_lamports`
-  - `engine.retry.count{reason=tip_fail}`
+- **Prometheus 指标**：启用 `bot.prometheus.enable` 后，`monitoring::events` 会通过 `metrics` 宏上报下列核心指标族（列出基础名称，Prometheus 会自动衍生 `_bucket/_count/_sum`）：
+  - 报价链路：`galileo_quote_total{strategy,result}`、`galileo_quote_latency_ms{strategy}`、`galileo_opportunity_detected_total{strategy}`、`galileo_opportunity_profit_lamports{strategy}`。
+  - 指令装配：`galileo_assembly_pipeline_total{base_mint}`、`galileo_assembly_decorator_total{decorator,base_mint}`、`galileo_assembly_compute_units{decorator}`、`galileo_assembly_guard_lamports{decorator}`、`galileo_assembly_instruction_span{base_mint}`、`galileo_assembly_decorator_failures_total{decorator}`、`galileo_assembly_flashloan_total{base_mint}`。
+  - 闪电贷：`galileo_flashloan_applied_total{strategy,protocol}`、`galileo_flashloan_amount_lamports{strategy,protocol}`、`galileo_flashloan_inner_instruction_count{strategy,protocol}`。
+  - 交易与落地：`galileo_swap_compute_unit_limit{strategy,local_ip}`、`galileo_swap_prioritization_fee_lamports{strategy,local_ip}`、`galileo_transaction_built_total{strategy}`、`galileo_lander_attempt_total{strategy,lander,variant}`、`galileo_lander_submission_total{strategy,lander,variant,result}`、`galileo_lander_success_total{strategy,lander}`、`galileo_lander_failure_total{strategy,lander}`。
+  - 资源预检与 IP 管理：`galileo_accounts_precheck_total{strategy,result}`、`galileo_accounts_precheck_mints{strategy}`、`galileo_accounts_precheck_created{strategy}`、`galileo_accounts_precheck_skipped{strategy}`、`galileo_ip_inventory_total{task}`、`galileo_ip_inflight{task,local_ip}`、`galileo_ip_cooldown_total{task}`、`galileo_ip_cooldown_ms{task}`。
+  - Copy 工具链：`galileo_copy_queue_depth{wallet}`、`galileo_copy_queue_dropped_total{wallet}`、`galileo_copy_wallet_refresh_total{wallet}`、`galileo_copy_wallet_accounts{wallet}`。
 - **Tracing**：使用 `tracing::span!` 在一次套利流程中传播 `trace_id`，Lander 回执后关闭 span。
 - **Logging**：结构化日志附带 `slot`, `blockhash`, `dex`, `tip`, `profit`, `lander`。
 - **告警**：监控模块支持阈值告警（Quote 失败率、落地失败率、利润分布异常）。
@@ -169,7 +192,7 @@ pub struct StrategyEngine<S: Strategy> {
 | `lander.sending_strategy` | `engine::planner` + `lander::stack` | 选择 `AllAtOnce` 或 `OneByOne` 调度策略，决定交易变体数量与分发方式。 |
 | `lander.tips` | `engine::builder` + `lander::*` | 配置 tip 账户、优先费；Builder 根据策略覆盖 CU。 |
 | `controls.over_trade_process_delay_ms` | `engine::scheduler` | 控制任务节奏，防止过载。 |
-| `monitoring.*` | `monitoring::*` | 指标上报端点、采样率、日志级别等。 |
+| `monitoring.*` | `bot.prometheus` | Prometheus 开关与监听地址；启用后暴露 `/metrics`，指标由 `monitoring::events` 输出。 |
 
 示例：
 
@@ -236,24 +259,13 @@ lander:
 
   启动后，galileo 会在 `listen` 地址暴露 `/metrics`，Jupiter 本身仍通过 `jupiter.core.metrics_port` 对外提供自身指标。
 
-- **指标示例（带有 `strategy`、`lander` 标签）**：
-  - `galileo_quote_total{strategy, result}`
-  - `galileo_quote_latency_ms_bucket`
-  - `galileo_opportunity_detected_total{strategy}`
-  - `galileo_swap_compute_unit_limit_bucket{strategy,local_ip}`
-  - `galileo_transaction_built_total{strategy,local_ip}`
-  - `galileo_lander_attempt_total{strategy, lander, dispatch, variant, local_ip}`
-  - `galileo_lander_success_total{strategy, lander, dispatch, variant, local_ip}`、`galileo_lander_failure_total{strategy, lander, dispatch, variant, local_ip}`
-  - `galileo_lander_submission_total{strategy, lander, dispatch, variant, result, local_ip}`
-  - `galileo_accounts_precheck_total{strategy}`
-  - `galileo_accounts_precheck_mints_bucket{strategy}`
-  - `galileo_accounts_precheck_created_bucket{strategy}`
-  - `galileo_accounts_precheck_skipped_bucket{strategy}`
-  - `galileo_flashloan_precheck_total{strategy, result}`
-  - `galileo_titan_quote_signal_total{strategy, pair, mode, leg, best_provider}`
-  - `galileo_titan_provider_count_bucket{strategy, pair, mode, leg}`
-  - `galileo_titan_best_out_amount_bucket{strategy, pair, mode, leg}`
-  - `galileo_titan_best_in_amount_bucket{strategy, pair, mode, leg}`
+- **指标示例（按模块拆分）**：
+  - Quote：`galileo_quote_total{strategy,result}`、`galileo_quote_latency_ms{strategy}`、`galileo_opportunity_detected_total{strategy}`。
+  - 装配：`galileo_assembly_pipeline_total{base_mint}`、`galileo_assembly_decorator_total{decorator,base_mint}`、`galileo_assembly_compute_units{decorator}`、`galileo_assembly_guard_lamports{decorator}`、`galileo_assembly_flashloan_total{base_mint}`。
+  - Flashloan：`galileo_flashloan_applied_total{strategy,protocol}`、`galileo_flashloan_amount_lamports{strategy,protocol}`。
+  - 交易 / 落地：`galileo_swap_compute_unit_limit{strategy,local_ip}`、`galileo_swap_prioritization_fee_lamports{strategy,local_ip}`、`galileo_transaction_built_total{strategy}`、`galileo_lander_submission_total{strategy,lander,variant,result}`。
+  - 资源：`galileo_accounts_precheck_total{strategy,result}`、`galileo_ip_inflight{task,local_ip}`、`galileo_ip_cooldown_total{task}`。
+  - Copy：`galileo_copy_queue_depth{wallet}`、`galileo_copy_queue_dropped_total{wallet}`、`galileo_copy_wallet_refresh_total{wallet}`。
 
 - **抓取与看板**：
   1. 在 Prometheus `scrape_configs` 中新增 job 指向 galileo 监听端口；Jupiter 端口（默认 `18081`）也保持抓取。
