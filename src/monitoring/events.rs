@@ -870,53 +870,99 @@ pub fn lander_failure(
     variant: VariantId,
     attempt: usize,
     local_ip: Option<IpAddr>,
+    tip: Option<(&str, u64)>,
+    compute_unit_price: Option<(&str, u64)>,
     err: &LanderError,
 ) {
     let ip_repr = local_ip.map(|value| value.to_string());
     let ip_display = ip_repr.as_deref().unwrap_or("unknown");
-    warn!(
-        target: "monitoring::lander",
-        strategy,
-        dispatch,
-        lander = name,
-        variant,
-        attempt,
-        local_ip = ?ip_repr,
-        error = %err,
-        "{}",
-        format_args!(
-            "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 节点={} 错误={}",
-            strategy,
-            dispatch,
-            name,
-            variant,
-            attempt,
-            ip_display,
-            err
-        )
-    );
-
-    if prometheus_enabled() {
-        let ip_value = ip_label(local_ip);
-        counter!(
-            "galileo_lander_failure_total",
-            "strategy" => strategy.to_string(),
-            "lander" => name.to_string(),
-            "dispatch" => dispatch.to_string(),
-            "variant" => variant.to_string(),
-            "local_ip" => ip_value.clone()
-        )
-        .increment(1);
-        counter!(
-            "galileo_lander_submission_total",
-            "strategy" => strategy.to_string(),
-            "lander" => name.to_string(),
-            "dispatch" => dispatch.to_string(),
-            "variant" => variant.to_string(),
-            "local_ip" => ip_value,
-            "result" => "failure".to_string()
-        )
-        .increment(1);
+    match (tip, compute_unit_price) {
+        (Some((tip_strategy, tips)), Some((price_strategy, cu_price))) => {
+            warn!(
+                target: "monitoring::lander",
+                strategy,
+                dispatch,
+                lander = name,
+                variant,
+                attempt,
+                local_ip = ?ip_repr,
+                tip_strategy,
+                tips,
+                compute_unit_price_strategy = price_strategy,
+                cu_price,
+                error = %err,
+                "{}",
+                format_args!(
+                    "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 节点={} tip_strategy={} tips={} compute_unit_price_strategy={} cu_price={} 错误={}",
+                    strategy,
+                    dispatch,
+                    name,
+                    variant,
+                    attempt,
+                    ip_display,
+                    tip_strategy,
+                    tips,
+                    price_strategy,
+                    cu_price,
+                    err
+                )
+            );
+        }
+        (Some((tip_strategy, tips)), None) => {
+            warn!(
+                target: "monitoring::lander",
+                strategy,
+                dispatch,
+                lander = name,
+                variant,
+                attempt,
+                local_ip = ?ip_repr,
+                tip_strategy,
+                tips,
+                error = %err,
+                "{}",
+                format_args!(
+                    "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 节点={} tip_strategy={} tips={} 错误={}",
+                    strategy, dispatch, name, variant, attempt, ip_display, tip_strategy, tips, err
+                )
+            );
+        }
+        (None, Some((price_strategy, cu_price))) => {
+            warn!(
+                target: "monitoring::lander",
+                strategy,
+                dispatch,
+                lander = name,
+                variant,
+                attempt,
+                local_ip = ?ip_repr,
+                compute_unit_price_strategy = price_strategy,
+                cu_price,
+                error = %err,
+                "{}",
+                format_args!(
+                    "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 节点={} compute_unit_price_strategy={} cu_price={} 错误={}",
+                    strategy, dispatch, name, variant, attempt, ip_display, price_strategy, cu_price, err
+                )
+            );
+        }
+        (None, None) => {
+            warn!(
+                target: "monitoring::lander",
+                strategy,
+                dispatch,
+                lander = name,
+                variant,
+                attempt,
+                local_ip = ?ip_repr,
+                error = %err,
+                "{}",
+                format_args!(
+                    "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 节点={} 错误={}",
+                    strategy, dispatch, name, variant, attempt, ip_display, err
+                )
+            );
+        }
     }
 }
 

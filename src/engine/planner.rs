@@ -16,7 +16,6 @@ use tracing::warn;
 use super::COMPUTE_BUDGET_PROGRAM_ID;
 use super::builder::PreparedTransaction;
 use super::types::JitoTipPlan;
-use crate::engine::assembly::decorators::GuardStrategy;
 
 pub type VariantId = u32;
 
@@ -94,9 +93,8 @@ pub struct TxVariant {
     instructions: Vec<Instruction>,
     lookup_accounts: Vec<AddressLookupTableAccount>,
     jito_tip_plan: Option<JitoTipPlan>,
-    guard_lamports: u64,
-    guard_strategy: GuardStrategy,
     tip_strategy_label: &'static str,
+    compute_unit_price_strategy_label: &'static str,
     prioritization_fee_lamports: u64,
     compute_unit_price_micro_lamports: Option<u64>,
 }
@@ -113,9 +111,8 @@ impl TxVariant {
         instructions: Vec<Instruction>,
         lookup_accounts: Vec<AddressLookupTableAccount>,
         jito_tip_plan: Option<JitoTipPlan>,
-        guard_lamports: u64,
-        guard_strategy: GuardStrategy,
         tip_strategy_label: &'static str,
+        compute_unit_price_strategy_label: &'static str,
         prioritization_fee_lamports: u64,
         compute_unit_price_micro_lamports: Option<u64>,
     ) -> Self {
@@ -130,9 +127,8 @@ impl TxVariant {
             instructions,
             lookup_accounts,
             jito_tip_plan,
-            guard_lamports,
-            guard_strategy,
             tip_strategy_label,
+            compute_unit_price_strategy_label,
             prioritization_fee_lamports,
             compute_unit_price_micro_lamports,
         }
@@ -185,16 +181,12 @@ impl TxVariant {
         self.jito_tip_plan.as_ref()
     }
 
-    pub fn guard_lamports(&self) -> u64 {
-        self.guard_lamports
-    }
-
-    pub fn guard_strategy(&self) -> GuardStrategy {
-        self.guard_strategy
-    }
-
     pub fn tip_strategy_label(&self) -> &'static str {
         self.tip_strategy_label
+    }
+
+    pub fn compute_unit_price_strategy_label(&self) -> &'static str {
+        self.compute_unit_price_strategy_label
     }
 
     pub fn prioritization_fee_lamports(&self) -> u64 {
@@ -299,9 +291,8 @@ impl TxVariantPlanner {
                     variant_instructions,
                     prepared_entry.lookup_accounts.clone(),
                     prepared_entry.jito_tip_plan.clone(),
-                    prepared_entry.guard_lamports,
-                    prepared_entry.guard_strategy,
                     prepared_entry.tip_strategy_label,
+                    prepared_entry.compute_unit_price_strategy_label,
                     prepared_entry.prioritization_fee_lamports,
                     prepared_entry.compute_unit_price_micro_lamports,
                 );
@@ -403,6 +394,7 @@ fn resign_variant(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::assembly::decorators::GuardStrategy;
     use solana_sdk::message::{Message, VersionedMessage};
     use solana_sdk::signature::Signer;
 
@@ -425,6 +417,7 @@ mod tests {
             guard_strategy: GuardStrategy::BasePlusTip,
             compute_unit_price_micro_lamports: Some(123),
             tip_strategy_label: "opportunity",
+            compute_unit_price_strategy_label: "fixed",
             instructions: Vec::new(),
             lookup_accounts: Vec::new(),
             jito_tip_plan: None,
@@ -440,11 +433,11 @@ mod tests {
         assert_eq!(plan.variants_for_lander(0).len(), 1);
         assert_eq!(plan.primary_variant().unwrap().id(), 0);
         let variant = plan.primary_variant().unwrap();
-        assert_eq!(variant.guard_lamports(), 42);
         assert_eq!(variant.tip_lamports(), 5);
         assert_eq!(variant.tip_strategy_label(), "opportunity");
         assert_eq!(variant.prioritization_fee_lamports(), 77);
         assert_eq!(variant.compute_unit_price_micro_lamports(), Some(123));
+        assert_eq!(variant.compute_unit_price_strategy_label(), "fixed");
     }
 
     #[test]
@@ -459,7 +452,6 @@ mod tests {
         assert_eq!(plan.strategy(), DispatchStrategy::OneByOne);
         let first_group = plan.variants_for_lander(0);
         assert_eq!(first_group.len(), 2);
-        assert_eq!(first_group[0].guard_lamports(), 42);
         let second_group = plan.variants_for_lander(1);
         assert_eq!(second_group.len(), 1);
 

@@ -8,7 +8,8 @@ use crate::api::kamino::KaminoApiClient;
 use crate::api::ultra::UltraApiClient;
 use crate::cli::args::{Cli, Command};
 use crate::cli::context::{
-    init_configs, resolve_global_http_proxy, resolve_instruction_memo, resolve_rpc_client,
+    init_configs, override_proxy_selection, resolve_global_http_proxy, resolve_instruction_memo,
+    resolve_proxy_profile, resolve_rpc_client,
 };
 use crate::cli::lander::handle_lander_cmd;
 use crate::cli::strategy::{StrategyMode, run_strategy};
@@ -73,31 +74,40 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 .as_ref()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty());
-            let global_proxy = resolve_global_http_proxy(&config.galileo.global)
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty());
-            if let Some(proxy_url) = dflow_proxy.clone() {
+            let proxy_override = dflow_proxy.as_deref();
+            let module_proxy = resolve_proxy_profile(&config.galileo.global, "quote");
+            let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+            let effective_proxy = override_proxy_selection(
+                proxy_override,
+                module_proxy.clone(),
+                global_proxy.clone(),
+            );
+
+            if let Some(url) = proxy_override {
                 info!(
                     target: "dflow",
-                    proxy = %proxy_url,
+                    proxy = %url,
                     "DFlow API 请求将通过配置的代理发送"
                 );
-            } else if let Some(proxy_url) = global_proxy.clone() {
+            } else if let Some(selection) = module_proxy {
                 info!(
                     target: "dflow",
-                    proxy = %proxy_url,
-                    "DFlow API 请求将通过配置的代理发送"
+                    proxy = %selection.url,
+                    per_request = selection.per_request,
+                    "DFlow API 请求将通过 profile 代理发送"
+                );
+            } else if let Some(selection) = global_proxy.clone() {
+                info!(
+                    target: "dflow",
+                    proxy = %selection.url,
+                    per_request = selection.per_request,
+                    "DFlow API 请求将通过全局代理发送"
                 );
             }
-            let api_http_client = build_http_client_with_options(
-                dflow_proxy.as_deref(),
-                global_proxy.clone(),
-                false,
-                None,
-                None,
-            )?;
-            let api_client_pool =
-                build_http_client_pool(dflow_proxy.clone(), global_proxy.clone(), false, None);
+
+            let api_http_client =
+                build_http_client_with_options(effective_proxy.as_ref(), false, None, None)?;
+            let api_client_pool = build_http_client_pool(effective_proxy.clone(), false, None);
             let api_client = DflowApiClient::with_ip_pool(
                 api_http_client,
                 quote_base,
@@ -126,33 +136,37 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let kamino_proxy = kamino_cfg
                 .api_proxy
                 .as_ref()
-                .map(|value| value.trim().to_string())
+                .map(|value| value.trim())
                 .filter(|value| !value.is_empty());
-            let global_proxy = resolve_global_http_proxy(&config.galileo.global)
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty());
-            if let Some(proxy_url) = kamino_proxy.clone() {
+            let module_proxy = resolve_proxy_profile(&config.galileo.global, "quote");
+            let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+            let effective_proxy =
+                override_proxy_selection(kamino_proxy, module_proxy.clone(), global_proxy.clone());
+
+            if let Some(url) = kamino_proxy {
                 info!(
                     target: "kamino",
-                    proxy = %proxy_url,
+                    proxy = %url,
                     "Kamino API 请求将通过配置的代理发送"
                 );
-            } else if let Some(proxy_url) = global_proxy.clone() {
+            } else if let Some(selection) = module_proxy {
                 info!(
                     target: "kamino",
-                    proxy = %proxy_url,
-                    "Kamino API 请求将通过配置的代理发送"
+                    proxy = %selection.url,
+                    per_request = selection.per_request,
+                    "Kamino API 请求将通过 profile 代理发送"
+                );
+            } else if let Some(selection) = global_proxy.clone() {
+                info!(
+                    target: "kamino",
+                    proxy = %selection.url,
+                    per_request = selection.per_request,
+                    "Kamino API 请求将通过全局代理发送"
                 );
             }
-            let api_http_client = build_http_client_with_options(
-                kamino_proxy.as_deref(),
-                global_proxy.clone(),
-                false,
-                None,
-                None,
-            )?;
-            let api_client_pool =
-                build_http_client_pool(kamino_proxy.clone(), global_proxy.clone(), false, None);
+            let api_http_client =
+                build_http_client_with_options(effective_proxy.as_ref(), false, None, None)?;
+            let api_client_pool = build_http_client_pool(effective_proxy.clone(), false, None);
             let api_client = KaminoApiClient::with_ip_pool(
                 api_http_client,
                 quote_base,
@@ -184,33 +198,37 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             let ultra_proxy = ultra_cfg
                 .api_proxy
                 .as_ref()
-                .map(|value| value.trim().to_string())
+                .map(|value| value.trim())
                 .filter(|value| !value.is_empty());
-            let global_proxy = resolve_global_http_proxy(&config.galileo.global)
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty());
-            if let Some(proxy_url) = ultra_proxy.clone() {
+            let module_proxy = resolve_proxy_profile(&config.galileo.global, "quote");
+            let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+            let effective_proxy =
+                override_proxy_selection(ultra_proxy, module_proxy.clone(), global_proxy.clone());
+
+            if let Some(url) = ultra_proxy {
                 info!(
                     target: "ultra",
-                    proxy = %proxy_url,
+                    proxy = %url,
                     "Ultra API 请求将通过配置的代理发送"
                 );
-            } else if let Some(proxy_url) = global_proxy.clone() {
+            } else if let Some(selection) = module_proxy {
                 info!(
                     target: "ultra",
-                    proxy = %proxy_url,
-                    "Ultra API 请求将通过配置的代理发送"
+                    proxy = %selection.url,
+                    per_request = selection.per_request,
+                    "Ultra API 请求将通过 profile 代理发送"
+                );
+            } else if let Some(selection) = global_proxy.clone() {
+                info!(
+                    target: "ultra",
+                    proxy = %selection.url,
+                    per_request = selection.per_request,
+                    "Ultra API 请求将通过全局代理发送"
                 );
             }
-            let http_client = build_http_client_with_options(
-                ultra_proxy.as_deref(),
-                global_proxy.clone(),
-                false,
-                None,
-                None,
-            )?;
-            let http_pool =
-                build_http_client_pool(ultra_proxy.clone(), global_proxy.clone(), false, None);
+            let http_client =
+                build_http_client_with_options(effective_proxy.as_ref(), false, None, None)?;
+            let http_pool = build_http_client_pool(effective_proxy.clone(), false, None);
             let api_client = UltraApiClient::with_ip_pool(
                 http_client,
                 api_base,

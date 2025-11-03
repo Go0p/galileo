@@ -8,11 +8,14 @@ use tracing::info;
 use crate::api::dflow::SwapInstructionsResponse as DflowSwapInstructionsResponse;
 use crate::cache::AltCache;
 use crate::cli::args::{LanderCmd, LanderSendArgs};
-use crate::cli::context::{resolve_global_http_proxy, resolve_rpc_client};
+use crate::cli::context::{
+    override_proxy_selection, resolve_global_http_proxy, resolve_proxy_profile, resolve_rpc_client,
+};
 use crate::config;
 use crate::config::AppConfig;
 use crate::config::launch::resources::{
-    build_http_client_pool, build_ip_allocator, build_rpc_client_pool,
+    build_http_client_pool, build_http_client_with_options, build_ip_allocator,
+    build_rpc_client_pool,
 };
 use crate::engine::{
     BuilderConfig, EngineIdentity, SwapInstructionsVariant, TransactionBuilder, TxVariantPlanner,
@@ -60,16 +63,12 @@ async fn send_transaction(
         AltCache::new(),
         false,
     );
-    let mut submission_builder = reqwest::Client::builder();
-    if let Some(proxy_url) = global_proxy.as_ref() {
-        let proxy = reqwest::Proxy::all(proxy_url.as_str())
-            .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
-        submission_builder = submission_builder
-            .proxy(proxy)
-            .danger_accept_invalid_certs(true);
-    }
-    let submission_client = submission_builder.build()?;
-    let submission_client_pool = build_http_client_pool(None, global_proxy.clone(), false, None);
+    let lander_proxy = resolve_proxy_profile(&config.galileo.global, "lander");
+    let effective_proxy =
+        override_proxy_selection(None, lander_proxy.clone(), global_proxy.clone());
+    let submission_client =
+        build_http_client_with_options(effective_proxy.as_ref(), false, None, None)?;
+    let submission_client_pool = build_http_client_pool(effective_proxy.clone(), false, None);
     let lander_factory = LanderFactory::new(
         rpc_client.clone(),
         submission_client,

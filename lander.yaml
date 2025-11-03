@@ -47,7 +47,7 @@ lander:
     stream_tip_level: "75th"
 
     # 限制 stream tip 的最大值，防止 tip 过于夸张
-    max_stream_tip_lamports: 100000
+    max_stream_tip_lamports: 50000
 
   # 本质上是一个质押的 rpc 节点
   staked:

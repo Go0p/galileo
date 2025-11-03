@@ -233,6 +233,7 @@ impl LandingAssembler for DefaultLandingAssembler {
         prepared.guard_strategy = guard_strategy;
         prepared.compute_unit_price_micro_lamports = compute_unit_price;
         prepared.tip_strategy_label = tip_label;
+        prepared.compute_unit_price_strategy_label = profile.compute_unit_strategy.label();
 
         let guard = GuardComputation {
             kind: guard_strategy,
@@ -258,10 +259,10 @@ mod tests {
     use crate::engine::builder::TransactionBuilder;
     use crate::engine::identity::EngineIdentity;
     use crate::engine::landing::profile::{
-        ComputeUnitPriceStrategy, GuardBudgetKind, LandingProfile, LanderKind, TipStrategy,
+        ComputeUnitPriceStrategy, GuardBudgetKind, LanderKind, LandingProfile, TipStrategy,
     };
-    use crate::engine::{BuilderConfig, JitoTipPlan, LighthouseSettings};
     use crate::engine::types::SwapOpportunity;
+    use crate::engine::{BuilderConfig, JitoTipPlan, LighthouseSettings};
     use crate::network::{CooldownConfig, IpAllocator, IpInventory};
     use crate::strategy::types::TradePair;
     use solana_client::nonblocking::rpc_client::RpcClient;
@@ -311,14 +312,7 @@ mod tests {
     fn build_transaction_builder() -> TransactionBuilder {
         let rpc = Arc::new(RpcClient::new_mock("http://localhost:8899".to_string()));
         let config = BuilderConfig::new(None);
-        TransactionBuilder::new(
-            rpc,
-            config,
-            build_allocator(),
-            None,
-            AltCache::new(),
-            false,
-        )
+        TransactionBuilder::new(rpc, config, build_allocator(), None, AltCache::new(), false)
     }
 
     fn sample_execution_plan(
@@ -332,9 +326,8 @@ mod tests {
             key: lookup_address,
             addresses: vec![Pubkey::new_unique()],
         };
-        let compute_limit_ix = crate::instructions::compute_budget::compute_unit_limit_instruction(
-            compute_unit_limit,
-        );
+        let compute_limit_ix =
+            crate::instructions::compute_budget::compute_unit_limit_instruction(compute_unit_limit);
         let swap_instruction = dummy_instruction();
         let multi_leg = MultiLegInstructions::new(
             vec![compute_limit_ix],
@@ -421,6 +414,9 @@ mod tests {
         assert_eq!(entry.prepared.tip_lamports, 7);
         assert_eq!(entry.prepared.prioritization_fee_lamports, expected_fee);
         assert_eq!(entry.prepared.guard_lamports, 5_000 + expected_fee);
-        assert_eq!(entry.prepared.compute_unit_price_micro_lamports, Some(1_000));
+        assert_eq!(
+            entry.prepared.compute_unit_price_micro_lamports,
+            Some(1_000)
+        );
     }
 }

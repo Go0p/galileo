@@ -148,7 +148,7 @@ impl Default for cfg::GlobalConfig {
     fn default() -> Self {
         Self {
             rpc_urls: Vec::new(),
-            proxy: None,
+            proxy: cfg::ProxyConfig::default(),
             yellowstone_grpc_url: None,
             yellowstone_grpc_token: None,
             instruction: cfg::InstructionConfig::default(),

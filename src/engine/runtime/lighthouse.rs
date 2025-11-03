@@ -129,7 +129,9 @@ impl LighthouseRuntime {
                     )
                 })?;
                 let price = feed.latest().await?;
-                convert_lamports_to_token(lamports_required, config.decimals, &price)
+                let converted =
+                    convert_lamports_to_token(lamports_required, config.decimals, &price);
+                converted.saturating_add(feed.guard_padding)
             }
         };
 
@@ -173,6 +175,7 @@ struct SolPriceFeed {
     refresh: Duration,
     last_updated: Option<Instant>,
     last_price: Option<SolUsdPrice>,
+    guard_padding: u64,
 }
 
 impl SolPriceFeed {
@@ -183,6 +186,7 @@ impl SolPriceFeed {
             refresh: settings.refresh,
             last_updated: None,
             last_price: None,
+            guard_padding: settings.guard_padding,
         }
     }
 

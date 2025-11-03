@@ -60,6 +60,7 @@ pub struct LighthouseSettings {
 pub struct SolPriceFeedSettings {
     pub url: String,
     pub refresh: Duration,
+    pub guard_padding: u64,
 }
 
 impl Default for SolPriceFeedSettings {
@@ -67,6 +68,7 @@ impl Default for SolPriceFeedSettings {
         Self {
             url: String::new(),
             refresh: Duration::from_secs(1),
+            guard_padding: 200,
         }
     }
 }

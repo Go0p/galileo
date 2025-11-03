@@ -1,35 +1,33 @@
-# 盲发策略配置
-memo: ""
 
+memo: ""
 # 只允许交易这些 dex
 enable_dexs: [
-    # "HumidiFi",
-    # "SolFi",
-    # "SolFi V2",
-    # "Tessera V",
-    # "ZeroFi",
-    # "Whirlpools",
-    # "Obric V2",
-    # "Aquifer",
-    # "Lifinity V2",
+    "HumidiFi",
+    "SolFi",
+    "SolFi V2",
+    "Tessera V",
+    "ZeroFi",
+    "Whirlpools",
+    "Obric V2",
+    "Aquifer",
+    "Meteora DLMM",
+    "PancakeSwap",
+    "Gamma",
+    "Lifinity V2",
     # "DFlow JIT Router"
   ]
-
 exclude_dexes: [
     # 通过 exclude_dexes 会在 DFlow /quote 请求中拼接为 excludeDexes 参数
     # "DFlow JIT Router",
   ]
-
 enable_landers: [
     # "staked"
     "jito",
   ]
-
 # 自动根据 IP 容量扩展各 lane 的交易规模数量，避免手动维护庞大的 trade size 列表。
 auto_scale_to_ip:
   enable: false
-  max_multiplier: 3.0
-
+  max_multiplier: 2.0
 base_mints:
   # - mint: "So11111111111111111111111111111111111111112"
   #   # 每个 lane 描述一个交易规模区间与生成策略：
@@ -38,16 +36,22 @@ base_mints:
   #   # - strategy：linear / exponential / random
   #   # - weight：auto_scale 启用时的扩容权重（可选，默认 1.0）
   #   lanes:
-  #     - min: 1_000_000_000
-  #       max: 6_000_000_000
-  #       count: 1
+  #     - min: 500_000_000
+  #       max: 10_000_000_000
+  #       count: 10          # 初始 5 档 → 乘以 2.0 至多 10 档
+  #       weight: 1.0       # 权重较小，只拿到少量扩容
   #       strategy: linear
   #   # 最小利润
-  #   min_quote_profit: 10000
+  #   min_quote_profit: 11000
   - mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     lanes:
-      - min: 600_000_000
-        max: 1_200_000_000
-        count: 1
+      - min: 200_000_000
+        max: 1_000_000_000
+        count: 12
         strategy: linear
-    min_quote_profit: 1000
+      - min: 1_000_000_000
+        max: 4_000_000_000
+        count: 5
+        strategy: linear
+    # 最小利润
+    min_quote_profit: 15000

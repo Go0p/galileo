@@ -79,6 +79,7 @@ struct CopyTaskQueue {
 
 const BASE_GUARD_LAMPORTS: u64 = 5_000;
 const TEMP_WALLET_TIP_DEDUCTION_LAMPORTS: u64 = LAMPORTS_PER_SOL / 1_000;
+const MIN_SOURCE_TIP_LAMPORTS: u64 = 1_000;
 
 impl CopyTaskQueue {
     fn new(capacity: usize, wallet: Pubkey) -> Self {
@@ -817,9 +818,18 @@ impl CopyWalletRunner {
 
         let transfer_info = Self::detect_temp_wallet_transfer(&instructions, &route_ctx.authority);
         let mut tip_lamports = 0;
-        if let Some((temp_wallet, raw_lamports)) = transfer_info {
-            match raw_lamports.checked_sub(TEMP_WALLET_TIP_DEDUCTION_LAMPORTS) {
-                Some(adjusted) if adjusted > 0 => {
+        let mut jito_tip_plan = self.lander_stack.draw_jito_tip_plan();
+        if self.wallet.use_source_tip {
+            if let Some((temp_wallet, raw_lamports)) = transfer_info {
+                let deducted = raw_lamports.saturating_sub(TEMP_WALLET_TIP_DEDUCTION_LAMPORTS);
+                let adjusted = if deducted < MIN_SOURCE_TIP_LAMPORTS {
+                    MIN_SOURCE_TIP_LAMPORTS
+                } else {
+                    deducted
+                };
+
+                if adjusted > 0 {
+                    let min_applied = adjusted != deducted;
                     tip_lamports = adjusted;
                     debug!(
                         target: "strategy::copy",
@@ -829,10 +839,11 @@ impl CopyWalletRunner {
                         raw_lamports,
                         tip_lamports,
                         deduction = TEMP_WALLET_TIP_DEDUCTION_LAMPORTS,
+                        min_tip = MIN_SOURCE_TIP_LAMPORTS,
+                        min_applied,
                         "已解析临时钱包转账金额并用于 Jito tip"
                     );
-                }
-                Some(_) => {
+                } else {
                     debug!(
                         target: "strategy::copy",
                         wallet = %self.wallet_pubkey,
@@ -840,39 +851,29 @@ impl CopyWalletRunner {
                         temp_wallet = %temp_wallet,
                         raw_lamports,
                         deduction = TEMP_WALLET_TIP_DEDUCTION_LAMPORTS,
-                        "临时钱包转账金额扣除 0.001 SOL 后为 0，跳过 tip"
-                    );
-                }
-                None => {
-                    debug!(
-                        target: "strategy::copy",
-                        wallet = %self.wallet_pubkey,
-                        signature = %signature,
-                        temp_wallet = %temp_wallet,
-                        raw_lamports,
-                        deduction = TEMP_WALLET_TIP_DEDUCTION_LAMPORTS,
-                        "临时钱包转账金额不足 0.001 SOL，跳过 tip"
+                        "解析临时钱包转账金额后仍为 0，tip 指令将被跳过"
                     );
                 }
             }
-        }
 
-        let mut jito_tip_plan = self.lander_stack.draw_jito_tip_plan();
-        if tip_lamports > 0 {
-            if let Some(plan) = jito_tip_plan.as_mut() {
-                plan.lamports = tip_lamports;
+            if tip_lamports > 0 {
+                if let Some(plan) = jito_tip_plan.as_mut() {
+                    plan.lamports = tip_lamports;
+                } else {
+                    debug!(
+                        target: "strategy::copy",
+                        wallet = %self.wallet_pubkey,
+                        signature = %signature,
+                        tip_lamports,
+                        "检测到临时钱包转账，但未启用 Jito tip plan，tip 指令将被跳过"
+                    );
+                    tip_lamports = 0;
+                }
             } else {
-                debug!(
-                    target: "strategy::copy",
-                    wallet = %self.wallet_pubkey,
-                    signature = %signature,
-                    tip_lamports,
-                    "检测到临时钱包转账，但未启用 Jito tip plan，tip 指令将被跳过"
-                );
-                tip_lamports = 0;
+                jito_tip_plan = None;
             }
-        } else {
-            jito_tip_plan = None;
+        } else if let Some(plan) = jito_tip_plan.as_ref() {
+            tip_lamports = plan.lamports;
         }
 
         let mut multi_leg = MultiLegInstructions::new(

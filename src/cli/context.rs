@@ -14,7 +14,7 @@ use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::config::{
-    AppConfig, ConfigError, DryRunConfig, GlobalConfig, LoggingProfile, load_config,
+    AppConfig, ConfigError, DryRunConfig, GlobalConfig, LoggingProfile, ProxyProfile, load_config,
 };
 
 #[derive(Debug)]
@@ -173,13 +173,52 @@ pub fn load_configuration(path: Option<PathBuf>) -> Result<AppConfig, ConfigErro
     load_config(path)
 }
 
-pub fn resolve_global_http_proxy(global: &GlobalConfig) -> Option<String> {
+#[derive(Debug, Clone)]
+pub struct ProxySelection {
+    pub url: String,
+    pub per_request: bool,
+}
+
+impl ProxySelection {
+    pub fn from_profile(profile: &ProxyProfile) -> Self {
+        Self {
+            url: profile.url.clone(),
+            per_request: profile.per_request,
+        }
+    }
+}
+
+pub fn resolve_global_http_proxy(global: &GlobalConfig) -> Option<ProxySelection> {
+    global.proxy.default_url().map(|url| ProxySelection {
+        url: url.to_string(),
+        per_request: false,
+    })
+}
+
+pub fn resolve_proxy_profile(global: &GlobalConfig, target: &str) -> Option<ProxySelection> {
     global
         .proxy
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
+        .resolve_for(target)
+        .map(ProxySelection::from_profile)
+}
+
+pub fn override_proxy_selection(
+    override_url: Option<&str>,
+    module_proxy: Option<ProxySelection>,
+    global_proxy: Option<ProxySelection>,
+) -> Option<ProxySelection> {
+    if let Some(url) = override_url {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        return Some(ProxySelection {
+            url: trimmed.to_string(),
+            per_request: false,
+        });
+    }
+
+    module_proxy.or(global_proxy)
 }
 
 pub fn rpc_default_headers(endpoint: &str) -> reqwest::header::HeaderMap {
@@ -293,16 +332,26 @@ pub fn resolve_rpc_client(
         .timeout(Duration::from_secs(30))
         .pool_idle_timeout(Duration::from_secs(30));
 
-    if let Some(proxy_url) = proxy.as_ref() {
-        let proxy = reqwest::Proxy::all(proxy_url)
-            .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
-        info!(
-            target: "rpc::client",
-            proxy = %proxy_url,
-            url = %primary_url,
-            "RPC 客户端将通过 global.proxy 访问"
-        );
-        builder = builder.proxy(proxy).danger_accept_invalid_certs(true);
+    if let Some(selection) = proxy.as_ref() {
+        if selection.per_request {
+            builder = builder
+                .pool_max_idle_per_host(0)
+                .pool_idle_timeout(Some(Duration::from_secs(0)));
+        }
+        let trimmed = selection.url.trim();
+        if trimmed.is_empty() {
+            builder = builder.no_proxy();
+        } else {
+            let proxy = reqwest::Proxy::all(trimmed)
+                .map_err(|err| anyhow!("global.proxy 地址无效 {trimmed}: {err}"))?;
+            info!(
+                target: "rpc::client",
+                proxy = %selection.url,
+                url = %primary_url,
+                "RPC 客户端将通过 global.proxy 访问"
+            );
+            builder = builder.proxy(proxy).danger_accept_invalid_certs(true);
+        }
     } else {
         builder = builder.no_proxy();
     }

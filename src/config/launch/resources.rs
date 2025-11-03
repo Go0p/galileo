@@ -7,7 +7,9 @@ use dashmap::DashMap;
 use reqwest::Proxy;
 use tracing::info;
 
-use crate::cli::context::{RpcEndpointRotator, resolve_global_http_proxy, resolve_rpc_client};
+use crate::cli::context::{
+    ProxySelection, RpcEndpointRotator, resolve_global_http_proxy, resolve_rpc_client,
+};
 use crate::config::{self, AppConfig};
 use crate::network::{
     CooldownConfig, IpAllocator, IpBoundClientPool, IpInventory, IpInventoryConfig, NetworkError,
@@ -71,8 +73,7 @@ pub fn build_ip_allocator(cfg: &config::NetworkConfig) -> Result<Arc<IpAllocator
 
 /// 构造 HTTP client pool
 pub fn build_http_client_with_options(
-    proxy: Option<&str>,
-    global_proxy: Option<String>,
+    proxy: Option<&ProxySelection>,
     bypass_proxy: bool,
     local_ip: Option<IpAddr>,
     user_agent: Option<&str>,
@@ -89,22 +90,18 @@ pub fn build_http_client_with_options(
 
     if bypass_proxy {
         builder = builder.no_proxy();
-    } else if let Some(proxy_url) = proxy.and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
+    } else if let Some(selection) = proxy {
+        if selection.per_request {
+            builder = builder
+                .pool_max_idle_per_host(0)
+                .pool_idle_timeout(Some(Duration::from_secs(0)));
         }
-    }) {
-        let proxy = Proxy::all(&proxy_url)
-            .map_err(|err| anyhow!("HTTP 代理地址无效 {proxy_url}: {err}"))?;
-        builder = builder.proxy(proxy).danger_accept_invalid_certs(true);
-    } else if let Some(proxy_url) = global_proxy {
-        let trimmed = proxy_url.trim().to_string();
-        if !trimmed.is_empty() {
-            let proxy = Proxy::all(&trimmed)
-                .map_err(|err| anyhow!("global.proxy 地址无效 {trimmed}: {err}"))?;
+        let trimmed = selection.url.trim();
+        if trimmed.is_empty() {
+            builder = builder.no_proxy();
+        } else {
+            let proxy =
+                Proxy::all(trimmed).map_err(|err| anyhow!("HTTP 代理地址无效 {trimmed}: {err}"))?;
             builder = builder.proxy(proxy).danger_accept_invalid_certs(true);
         }
     }
@@ -115,23 +112,16 @@ pub fn build_http_client_with_options(
 }
 
 pub fn build_http_client_pool(
-    proxy: Option<String>,
-    global_proxy: Option<String>,
+    proxy: Option<ProxySelection>,
     bypass_proxy: bool,
     user_agent: Option<String>,
 ) -> Arc<IpBoundClientPool<ReqwestClientFactoryFn>> {
     let proxy_clone = proxy.clone();
-    let global_clone = global_proxy.clone();
     let agent_clone = user_agent.clone();
     let factory: ReqwestClientFactoryFn = Box::new(move |ip: IpAddr| {
-        build_http_client_with_options(
-            proxy_clone.as_deref(),
-            global_clone.clone(),
-            bypass_proxy,
-            Some(ip),
-            agent_clone.as_deref(),
-        )
-        .map_err(|err| NetworkError::ClientPool(err.to_string()))
+        let selection = proxy_clone.as_ref();
+        build_http_client_with_options(selection, bypass_proxy, Some(ip), agent_clone.as_deref())
+            .map_err(|err| NetworkError::ClientPool(err.to_string()))
     });
     Arc::new(IpBoundClientPool::new(factory))
 }
@@ -139,7 +129,7 @@ pub fn build_http_client_pool(
 /// 构造 RPC client pool
 pub fn build_rpc_client_pool(
     endpoints: Arc<RpcEndpointRotator>,
-    global_proxy: Option<String>,
+    global_proxy: Option<ProxySelection>,
 ) -> Arc<IpBoundClientPool<RpcClientFactoryFn>> {
     let cache: Arc<DashMap<(IpAddr, usize), Arc<RpcClient>>> = Arc::new(DashMap::new());
     let proxy = Arc::new(global_proxy);
@@ -159,8 +149,8 @@ pub fn build_rpc_client_pool(
             .pool_idle_timeout(Duration::from_secs(30))
             .local_address(ip);
 
-        if let Some(proxy_url) = proxy.as_ref() {
-            let trimmed = proxy_url.trim();
+        if let Some(selection) = proxy.as_ref() {
+            let trimmed = selection.url.trim();
             if trimmed.is_empty() {
                 builder = builder.no_proxy();
             } else {
@@ -168,6 +158,11 @@ pub fn build_rpc_client_pool(
                     NetworkError::ClientPool(format!("global.proxy 地址无效 {trimmed}: {err}"))
                 })?;
                 builder = builder.proxy(proxy).danger_accept_invalid_certs(true);
+            }
+            if selection.per_request {
+                builder = builder
+                    .pool_max_idle_per_host(0)
+                    .pool_idle_timeout(Some(Duration::from_secs(0)));
             }
         } else {
             builder = builder.no_proxy();
@@ -199,10 +194,20 @@ pub fn build_rpc_client_pool(
 pub fn build_submission_client(config: &AppConfig) -> Result<reqwest::Client> {
     let global_proxy = resolve_global_http_proxy(&config.galileo.global);
     let mut builder = reqwest::Client::builder();
-    if let Some(proxy_url) = global_proxy.as_ref() {
-        let proxy = Proxy::all(proxy_url.as_str())
-            .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
-        builder = builder.proxy(proxy).danger_accept_invalid_certs(true);
+    if let Some(selection) = global_proxy {
+        if selection.per_request {
+            builder = builder
+                .pool_max_idle_per_host(0)
+                .pool_idle_timeout(Some(Duration::from_secs(0)));
+        }
+        let trimmed = selection.url.trim();
+        if trimmed.is_empty() {
+            builder = builder.no_proxy();
+        } else {
+            let proxy = Proxy::all(trimmed)
+                .map_err(|err| anyhow!("global.proxy 地址无效 {trimmed}: {err}"))?;
+            builder = builder.proxy(proxy).danger_accept_invalid_certs(true);
+        }
     }
     builder.build().map_err(|err| anyhow!(err))
 }

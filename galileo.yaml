@@ -11,11 +11,18 @@ global:
   #   - "https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b"
 
   rpc_urls:
-    # - "https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
-    # - "https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b"
-    - "http://127.0.0.1:8899"
+    - "https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
+    - "https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b"
+  proxy:
+    default: ""
+    profiles:
+      proxyrack:
+        url: "http://qasizolytipywa:N23L4NF-G9C9XEP-ZHKTIIE-260ZXYE-CD2GZHI-R6OITM2-9CC2JMT@global.rotating.proxyrack.net:10000"
+        per_request: true
+    enable:
+      quote: proxyrack
+      lander: proxyrack
   # yellowstone grpc url
-  # proxy: "http://192.168.3.3:9999"
   yellowstone_grpc_url: ""
   # yellowstone grpc token
   yellowstone_grpc_token: ""
@@ -46,7 +53,7 @@ engine:
     leg: "sell"
     api_quote_base: "https://ultra-api.jup.ag"
     api_swap_base: "https://ultra-api.jup.ag"
-    api_proxy: "http://192.168.124.4:9999"
+    # api_proxy: "http://192.168.124.4:9999"
     quote_config:
       use_wsol: true
       # taker: "k1bWgJv1fdVMCqgDM2jkEfhEzKW7XgGpj8vGGKjgSnJ"
@@ -59,7 +66,7 @@ engine:
           # group_parallelism: 同一波次内允许同时运行的 quote 组数量；
           #   - auto: 以 IP 池容量和 per_ip_inflight_limit 为上限自动推导
           #   - 正整数: 显式限制最大并发度
-          group_parallelism: auto
+          group_parallelism: 10
           # intra_group_spacing_ms: 当前波次内，相邻 quote 组启动之间的最小间隔（毫秒）；
           #   设置为 0 表示同一波次的组可以无缝并发。
           intra_group_spacing_ms: 0
@@ -81,7 +88,8 @@ engine:
     api_swap_base: "https://quote-api.dflow.net"
     # api_quote_base: "http://109.94.98.33:9800"
     # api_swap_base: "http://109.94.98.33:9800"
-    api_proxy: "http://192.168.3.3:9999"
+    # api_proxy: "http://192.168.3.3:9999"
+    # api_proxy: "http://192.168.124.4:9999"
     quote_config:
       use_auto_slippage: false
       only_direct_routes: false
@@ -92,7 +100,7 @@ engine:
           # group_parallelism: 同时运行的 quote 组数量上限
           group_parallelism: auto
           # intra_group_spacing_ms: 同一波次内组与组之间的最小启动间隔（毫秒）
-          intra_group_spacing_ms: 0
+          intra_group_spacing_ms: 3000
           # wave_cooldown_ms: 一波结束后等待下一波的时间（毫秒）
           wave_cooldown_ms: 0
         # per_base_mint: 可选，覆盖指定 base mint 的默认节奏
@@ -200,7 +208,7 @@ bot:
     enable: true
     # dry-run 模式下所有 RPC/落地请求都会路由到该节点，通常指向本地 devnet/sandbox。
     rpc_url: "http://127.0.0.1:8899"
-  get_block_hash_by_grpc: false
+  get_block_hash_by_grpc: true
   enable_simulation: false
   auto_refresh_wallet_minute: 30
   strategies:
@@ -221,7 +229,9 @@ bot:
     enable: true
     sol_price_feed:
       url: "https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d"
-      refresh_ms: 1000    # 订阅 sol 的价格，用于守护 USDC 的情况
+      # 订阅 sol 的价格，用于守护 USDC 的情况
+      refresh_ms: 10000
+      guard_padding: 200 # 额外冗余（USDC 单位），默认 200
     profit_guard_mints:
       - So11111111111111111111111111111111111111112
       - EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
@@ -231,11 +241,11 @@ bot:
     max_blocking_threads: null
     strict: false
   network:
-    enable_multiple_ip: true
+    enable_multiple_ip: false
     manual_ips: []
     blacklist_ips: []
     allow_loopback: false
-    per_ip_inflight_limit: null
+    per_ip_inflight_limit: 0
     cooldown_ms:
       rate_limited_start: 500
       timeout_start: 250

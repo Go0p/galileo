@@ -1,10 +1,11 @@
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::IpAddr;
 
-use serde::de::{Deserializer, Error as DeError, Unexpected, Visitor};
+use serde::de::value::MapAccessDeserializer;
+use serde::de::{Deserializer, Error as DeError, MapAccess, Unexpected, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_with::serde_as;
@@ -49,12 +50,162 @@ pub struct GalileoConfig {
     pub copy_strategy: CopyStrategyConfig,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ProxyConfig {
+    default: Option<String>,
+    profiles: BTreeMap<String, ProxyProfile>,
+    enable: BTreeMap<String, String>,
+}
+
+impl ProxyConfig {
+    pub fn default_url(&self) -> Option<&str> {
+        self.default.as_deref()
+    }
+
+    pub fn resolve_for(&self, module: &str) -> Option<&ProxyProfile> {
+        let key = module.trim().to_ascii_lowercase();
+        let profile_key = self.enable.get(&key)?;
+        self.profiles.get(profile_key)
+    }
+
+    pub fn profile(&self, name: &str) -> Option<&ProxyProfile> {
+        let key = name.trim().to_ascii_lowercase();
+        self.profiles.get(&key)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProxyProfile {
+    pub url: String,
+    #[serde(default)]
+    pub per_request: bool,
+}
+
+impl ProxyProfile {
+    fn normalized(mut self) -> Self {
+        self.url = self.url.trim().to_string();
+        self
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct ProxyConfigMap {
+    #[serde(default)]
+    default: Option<String>,
+    #[serde(default)]
+    profiles: BTreeMap<String, ProxyProfile>,
+    #[serde(default)]
+    enable: BTreeMap<String, String>,
+}
+
+impl ProxyConfig {
+    fn from_map(map: ProxyConfigMap) -> Self {
+        let default = map.default.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+        let mut profiles = BTreeMap::new();
+        for (name, profile) in map.profiles {
+            let key = name.trim().to_ascii_lowercase();
+            if key.is_empty() {
+                continue;
+            }
+            profiles.insert(key, profile.normalized());
+        }
+
+        let mut enable = BTreeMap::new();
+        for (module, profile_name) in map.enable {
+            let module_key = module.trim().to_ascii_lowercase();
+            let profile_key = profile_name.trim().to_ascii_lowercase();
+            if module_key.is_empty() || profile_key.is_empty() {
+                continue;
+            }
+            enable.insert(module_key, profile_key);
+        }
+
+        Self {
+            default,
+            profiles,
+            enable,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ProxyConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ProxyVisitor;
+
+        impl<'de> Visitor<'de> for ProxyVisitor {
+            type Value = ProxyConfig;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("string proxy url or structured proxy configuration")
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                Ok(ProxyConfig::default())
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                Ok(ProxyConfig::default())
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    Ok(ProxyConfig::default())
+                } else {
+                    Ok(ProxyConfig {
+                        default: Some(trimmed.to_string()),
+                        profiles: BTreeMap::new(),
+                        enable: BTreeMap::new(),
+                    })
+                }
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                self.visit_str(&value)
+            }
+
+            fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let map = ProxyConfigMap::deserialize(MapAccessDeserializer::new(map))?;
+                Ok(ProxyConfig::from_map(map))
+            }
+        }
+
+        deserializer.deserialize_any(ProxyVisitor)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct GlobalConfig {
     #[serde(default, deserialize_with = "super::deserialize_rpc_urls")]
     pub rpc_urls: Vec<String>,
     #[serde(default)]
-    pub proxy: Option<String>,
+    pub proxy: ProxyConfig,
     #[serde(default)]
     pub yellowstone_grpc_url: Option<String>,
     #[serde(default)]
@@ -775,6 +926,8 @@ pub struct PriceFeedConfig {
     pub url: String,
     #[serde(default = "default_price_refresh_ms")]
     pub refresh_ms: u64,
+    #[serde(default = "default_guard_padding")]
+    pub guard_padding: u64,
 }
 
 impl Default for PriceFeedConfig {
@@ -782,12 +935,17 @@ impl Default for PriceFeedConfig {
         Self {
             url: String::new(),
             refresh_ms: default_price_refresh_ms(),
+            guard_padding: default_guard_padding(),
         }
     }
 }
 
 const fn default_price_refresh_ms() -> u64 {
     1_000
+}
+
+const fn default_guard_padding() -> u64 {
+    200
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -807,11 +965,17 @@ pub struct StrategyToggleSet {
     pub enabled: Vec<StrategyToggle>,
     /// 策略配置文件目录，默认为 "strategies/"
     pub config_dir: String,
+    /// 自定义策略配置文件（不含或包含扩展名，取决于用户输入）
+    pub profiles: HashMap<StrategyToggle, String>,
 }
 
 impl StrategyToggleSet {
     pub fn is_enabled(&self, strategy: StrategyToggle) -> bool {
         self.enabled.iter().any(|item| *item == strategy)
+    }
+
+    pub fn profile(&self, strategy: StrategyToggle) -> Option<&str> {
+        self.profiles.get(&strategy).map(|s| s.as_str())
     }
 }
 
@@ -823,38 +987,171 @@ impl<'de> Deserialize<'de> for StrategyToggleSet {
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Raw {
-            List(Vec<StrategyToggle>),
+            List(Vec<StrategyEntry>),
             Map {
                 #[serde(default)]
-                enabled: Vec<StrategyToggle>,
+                enabled: Vec<StrategyEntry>,
                 #[serde(default, alias = "enable_strategys")]
-                enable_strategys: Vec<StrategyToggle>,
+                enable_strategys: Vec<StrategyEntry>,
                 #[serde(default = "crate::config::default_strategy_config_dir")]
                 config_dir: String,
             },
         }
 
+        #[derive(Debug)]
+        struct StrategyEntry {
+            toggle: StrategyToggle,
+            profile: Option<String>,
+        }
+
+        impl StrategyEntry {
+            fn from_pair(toggle: StrategyToggle, profile: Option<String>) -> Self {
+                Self { toggle, profile }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for StrategyEntry {
+            fn deserialize<D2>(deserializer: D2) -> Result<Self, D2::Error>
+            where
+                D2: Deserializer<'de>,
+            {
+                use serde_yaml::Value;
+
+                let value = Value::deserialize(deserializer)?;
+                match value {
+                    Value::String(raw) => parse_entry_from_string(&raw),
+                    Value::Mapping(map) => {
+                        let mut toggle: Option<StrategyToggle> = None;
+                        let mut profile: Option<String> = None;
+
+                        for (key, value) in map {
+                            let key_str = key
+                                .as_str()
+                                .ok_or_else(|| D2::Error::custom("策略配置键必须为字符串"))?;
+                            match key_str {
+                                "name" | "strategy" => {
+                                    let raw = value.as_str().ok_or_else(|| {
+                                        D2::Error::custom("strategy/name 字段必须为字符串")
+                                    })?;
+                                    let entry = parse_entry_from_string::<D2::Error>(raw)?;
+                                    toggle = Some(entry.toggle);
+                                    if profile.is_none() {
+                                        profile = entry.profile;
+                                    }
+                                }
+                                "profile" | "file" => {
+                                    let raw = value
+                                        .as_str()
+                                        .ok_or_else(|| {
+                                            D2::Error::custom("profile/file 字段必须为字符串")
+                                        })?
+                                        .trim()
+                                        .to_string();
+                                    if !raw.is_empty() {
+                                        profile = Some(raw);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        let toggle = toggle.ok_or_else(|| {
+                            D2::Error::custom("策略配置映射缺少 strategy/name 字段")
+                        })?;
+
+                        if let Some(ref mut value) = profile {
+                            if !value.contains('/')
+                                && !value.ends_with(".yaml")
+                                && !value.ends_with(".yml")
+                                && !value.starts_with(toggle.key())
+                            {
+                                *value = format!("{}_{}", toggle.key(), value);
+                            }
+                        }
+
+                        Ok(StrategyEntry::from_pair(toggle, profile))
+                    }
+                    other => Err(D2::Error::custom(format!(
+                        "策略开关键须为字符串或映射，收到 {other:?}"
+                    ))),
+                }
+            }
+        }
+
+        fn parse_entry_from_string<'de, E>(raw: &str) -> Result<StrategyEntry, E>
+        where
+            E: DeError,
+        {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err(E::custom("策略开关键为空字符串"));
+            }
+
+            let without_ext = trimmed
+                .strip_suffix(".yaml")
+                .or_else(|| trimmed.strip_suffix(".yml"))
+                .unwrap_or(trimmed);
+
+            for toggle in [
+                StrategyToggle::BlindStrategy,
+                StrategyToggle::PureBlindStrategy,
+                StrategyToggle::CopyStrategy,
+                StrategyToggle::BackRunStrategy,
+            ] {
+                let base = toggle.key();
+                if without_ext == base {
+                    if trimmed == base {
+                        return Ok(StrategyEntry::from_pair(toggle, None));
+                    } else {
+                        return Ok(StrategyEntry::from_pair(toggle, Some(trimmed.to_string())));
+                    }
+                }
+
+                if let Some(rest) = without_ext.strip_prefix(base) {
+                    if rest.starts_with('_') {
+                        return Ok(StrategyEntry::from_pair(toggle, Some(trimmed.to_string())));
+                    }
+                }
+            }
+
+            Err(E::custom(format!(
+                "未知策略 `{}`, 允许的前缀：blind_strategy / pure_blind_strategy / copy_strategy / back_run_strategy",
+                trimmed
+            )))
+        }
+
+        fn merge_entries(
+            entries: Vec<StrategyEntry>,
+            enabled: &mut Vec<StrategyToggle>,
+            profiles: &mut HashMap<StrategyToggle, String>,
+        ) {
+            for entry in entries {
+                if !enabled.contains(&entry.toggle) {
+                    enabled.push(entry.toggle);
+                }
+                if let Some(profile) = entry.profile {
+                    profiles.insert(entry.toggle, profile);
+                }
+            }
+        }
+
         let option = Option::<Raw>::deserialize(deserializer)?;
         let mut enabled = Vec::new();
         let mut config_dir = crate::config::default_strategy_config_dir();
+        let mut profiles = HashMap::new();
 
         if let Some(value) = option {
             match value {
                 Raw::List(list) => {
-                    enabled = list;
+                    merge_entries(list, &mut enabled, &mut profiles);
                 }
                 Raw::Map {
                     enabled: mut list_a,
                     enable_strategys: mut list_b,
                     config_dir: dir,
                 } => {
-                    let mut merged = Vec::new();
-                    for entry in list_a.drain(..).chain(list_b.drain(..)) {
-                        if !merged.contains(&entry) {
-                            merged.push(entry);
-                        }
-                    }
-                    enabled = merged;
+                    list_a.append(&mut list_b);
+                    merge_entries(list_a, &mut enabled, &mut profiles);
                     config_dir = dir;
                 }
             }
@@ -863,6 +1160,7 @@ impl<'de> Deserialize<'de> for StrategyToggleSet {
         Ok(Self {
             enabled,
             config_dir,
+            profiles,
         })
     }
 }
@@ -874,6 +1172,17 @@ pub enum StrategyToggle {
     PureBlindStrategy,
     CopyStrategy,
     BackRunStrategy,
+}
+
+impl StrategyToggle {
+    pub const fn key(self) -> &'static str {
+        match self {
+            StrategyToggle::BlindStrategy => "blind_strategy",
+            StrategyToggle::PureBlindStrategy => "pure_blind_strategy",
+            StrategyToggle::CopyStrategy => "copy_strategy",
+            StrategyToggle::BackRunStrategy => "back_run_strategy",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -1234,6 +1543,8 @@ pub struct CopyWalletConfig {
     pub source: CopySourceConfig,
     #[serde(default = "default_copy_cu_limit_multiplier")]
     pub cu_limit_multiplier: f64,
+    #[serde(default)]
+    pub use_source_tip: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

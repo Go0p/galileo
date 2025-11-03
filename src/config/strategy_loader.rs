@@ -25,11 +25,17 @@ pub fn load_strategy_configs(
     info!(
         target: "config::strategy",
         enabled = ?config.bot.strategies.enabled,
+        profiles = ?config.bot.strategies.profiles,
         strategy_dir = %strategy_dir.display(),
         "开始加载策略配置"
     );
 
     for strategy in &config.bot.strategies.enabled {
+        let profile_override = config
+            .bot
+            .strategies
+            .profile(*strategy)
+            .map(|s| s.to_string());
         match strategy {
             StrategyToggle::BlindStrategy => {
                 load_if_needed(
@@ -37,6 +43,7 @@ pub fn load_strategy_configs(
                     &strategy_dir,
                     "blind_strategy.yaml",
                     "blind_strategy",
+                    profile_override.as_deref(),
                 )?;
             }
             StrategyToggle::PureBlindStrategy => {
@@ -45,6 +52,7 @@ pub fn load_strategy_configs(
                     &strategy_dir,
                     "pure_blind_strategy.yaml",
                     "pure_blind_strategy",
+                    profile_override.as_deref(),
                 )?;
             }
             StrategyToggle::CopyStrategy => {
@@ -53,6 +61,7 @@ pub fn load_strategy_configs(
                     &strategy_dir,
                     "copy_strategy.yaml",
                     "copy_strategy",
+                    profile_override.as_deref(),
                 )?;
             }
             StrategyToggle::BackRunStrategy => {
@@ -61,6 +70,7 @@ pub fn load_strategy_configs(
                     &strategy_dir,
                     "back_run_strategy.yaml",
                     "back_run_strategy",
+                    profile_override.as_deref(),
                 )?;
             }
         }
@@ -92,6 +102,7 @@ fn load_if_needed<T>(
     strategy_dir: &Path,
     filename: &str,
     strategy_name: &str,
+    override_profile: Option<&str>,
 ) -> Result<(), ConfigError>
 where
     T: DeserializeOwned + Default + IsDefault,
@@ -107,9 +118,19 @@ where
     }
 
     // 尝试从外部文件加载
-    let strategy_path = strategy_dir.join(filename);
+    let (strategy_path, custom_profile) = if let Some(profile) = override_profile {
+        (strategy_dir.join(resolve_profile_filename(profile)), true)
+    } else {
+        (strategy_dir.join(filename), false)
+    };
 
     if !strategy_path.exists() {
+        if custom_profile {
+            return Err(ConfigError::Parse {
+                path: strategy_path,
+                message: format!("策略 `{}` 指定的配置文件不存在", override_profile.unwrap()),
+            });
+        }
         debug!(
             target: "config::strategy",
             strategy = strategy_name,
@@ -125,12 +146,16 @@ where
             info!(
                 target: "config::strategy",
                 strategy = strategy_name,
+                profile = override_profile,
                 path = %strategy_path.display(),
                 "已从外部文件加载策略配置"
             );
             Ok(())
         }
         Err(err) => {
+            if custom_profile {
+                return Err(err);
+            }
             warn!(
                 target: "config::strategy",
                 strategy = strategy_name,
@@ -142,6 +167,15 @@ where
             Ok(())
         }
     }
+}
+
+fn resolve_profile_filename(raw: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    let mut path = PathBuf::from(trimmed);
+    if path.extension().is_none() {
+        path.set_extension("yaml");
+    }
+    path
 }
 
 /// 从文件加载策略配置

@@ -6,11 +6,13 @@ use tracing::warn;
 
 use crate::cache::AltCache;
 use crate::cli::context::{
-    DryRunMode, resolve_global_http_proxy, resolve_instruction_memo, resolve_rpc_client,
+    DryRunMode, override_proxy_selection, resolve_global_http_proxy, resolve_instruction_memo,
+    resolve_proxy_profile, resolve_rpc_client,
 };
 use crate::cli::strategy::StrategyBackend;
 use crate::config::launch::resources::{
-    build_http_client_pool, build_ip_allocator, build_rpc_client_pool,
+    build_http_client_pool, build_http_client_with_options, build_ip_allocator,
+    build_rpc_client_pool,
 };
 use crate::config::{AppConfig, LanderSettings, StrategyToggle};
 use crate::engine::{ComputeUnitPriceMode, EngineIdentity, TransactionBuilder};
@@ -58,16 +60,16 @@ pub async fn run_copy_strategy(
     let rpc_client_pool =
         build_rpc_client_pool(resolved_rpc.endpoints.clone(), global_proxy.clone());
 
-    let mut submission_builder = reqwest::Client::builder();
-    if let Some(proxy_url) = global_proxy.as_ref() {
-        let proxy = reqwest::Proxy::all(proxy_url.as_str())
-            .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
-        submission_builder = submission_builder
-            .proxy(proxy)
-            .danger_accept_invalid_certs(true);
-    }
-    let submission_client = submission_builder.build()?;
-    let submission_client_pool = build_http_client_pool(None, global_proxy.clone(), false, None);
+    let lander_proxy = if dry_run_enabled {
+        None
+    } else {
+        resolve_proxy_profile(&config.galileo.global, "lander")
+    };
+    let effective_proxy =
+        override_proxy_selection(None, lander_proxy.clone(), global_proxy.clone());
+    let submission_client =
+        build_http_client_with_options(effective_proxy.as_ref(), false, None, None)?;
+    let submission_client_pool = build_http_client_pool(effective_proxy.clone(), false, None);
 
     let tx_builder = TransactionBuilder::new(
         rpc_client.clone(),

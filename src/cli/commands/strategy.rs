@@ -12,7 +12,8 @@ use crate::api::titan::TitanSubscriptionConfig;
 use crate::api::ultra::UltraApiClient;
 use crate::cache::AltCache;
 use crate::cli::context::{
-    DryRunMode, resolve_global_http_proxy, resolve_instruction_memo, resolve_rpc_client,
+    DryRunMode, override_proxy_selection, resolve_global_http_proxy, resolve_instruction_memo,
+    resolve_proxy_profile, resolve_rpc_client,
 };
 use crate::config;
 use crate::config::launch::resources::{
@@ -256,16 +257,18 @@ async fn run_blind_engine(
         resolve_global_http_proxy(&config.galileo.global)
     };
     let rpc_client_pool = build_rpc_client_pool(rpc_endpoints.clone(), global_proxy.clone());
-    let mut submission_builder = reqwest::Client::builder();
-    if let Some(proxy_url) = global_proxy.as_ref() {
-        let proxy = reqwest::Proxy::all(proxy_url.as_str())
-            .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
-        submission_builder = submission_builder
-            .proxy(proxy)
-            .danger_accept_invalid_certs(true);
-    }
-    let submission_client = submission_builder.build()?;
-    let submission_client_pool = build_http_client_pool(None, global_proxy.clone(), false, None);
+
+    let lander_proxy = if dry_run_enabled {
+        None
+    } else {
+        resolve_proxy_profile(&config.galileo.global, "lander")
+    };
+    let effective_lander_proxy =
+        override_proxy_selection(None, lander_proxy.clone(), global_proxy.clone());
+    let submission_client =
+        build_http_client_with_options(effective_lander_proxy.as_ref(), false, None, None)?;
+    let submission_client_pool =
+        build_http_client_pool(effective_lander_proxy.clone(), false, None);
     let tx_builder = TransactionBuilder::new(
         rpc_client.clone(),
         builder_config,
@@ -540,21 +543,37 @@ fn register_ultra_leg(
     let proxy_override = ultra_cfg
         .api_proxy
         .as_ref()
-        .map(|value| value.trim().to_string())
+        .map(|value| value.trim())
         .filter(|value| !value.is_empty());
-    let global_proxy = resolve_global_http_proxy(&config.galileo.global)
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+    let module_proxy = resolve_proxy_profile(&config.galileo.global, "quote");
+    let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+    let effective_proxy =
+        override_proxy_selection(proxy_override, module_proxy.clone(), global_proxy.clone());
 
-    let http_client = build_http_client_with_options(
-        proxy_override.as_deref(),
-        global_proxy.clone(),
-        false,
-        None,
-        None,
-    )?;
-    let http_pool =
-        build_http_client_pool(proxy_override.clone(), global_proxy.clone(), false, None);
+    if let Some(url) = proxy_override {
+        info!(
+            target: "ultra",
+            proxy = %url,
+            "Ultra API 请求将通过配置的代理发送"
+        );
+    } else if let Some(selection) = module_proxy {
+        info!(
+            target: "ultra",
+            proxy = %selection.url,
+            per_request = selection.per_request,
+            "Ultra API 请求将通过 profile 代理发送"
+        );
+    } else if let Some(selection) = global_proxy.clone() {
+        info!(
+            target: "ultra",
+            proxy = %selection.url,
+            per_request = selection.per_request,
+            "Ultra API 请求将通过全局代理发送"
+        );
+    }
+
+    let http_client = build_http_client_with_options(effective_proxy.as_ref(), false, None, None)?;
+    let http_pool = build_http_client_pool(effective_proxy.clone(), false, None);
 
     let ultra_client = UltraApiClient::with_ip_pool(
         http_client,
@@ -631,20 +650,37 @@ fn register_dflow_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
     let proxy_override = dflow_cfg
         .api_proxy
         .as_ref()
-        .map(|value| value.trim().to_string())
+        .map(|value| value.trim())
         .filter(|value| !value.is_empty());
-    let global_proxy = resolve_global_http_proxy(&config.galileo.global)
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let http_client = build_http_client_with_options(
-        proxy_override.as_deref(),
-        global_proxy.clone(),
-        false,
-        None,
-        None,
-    )?;
-    let http_pool =
-        build_http_client_pool(proxy_override.clone(), global_proxy.clone(), false, None);
+    let module_proxy = resolve_proxy_profile(&config.galileo.global, "quote");
+    let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+    let effective_proxy =
+        override_proxy_selection(proxy_override, module_proxy.clone(), global_proxy.clone());
+
+    if let Some(url) = proxy_override {
+        info!(
+            target: "dflow",
+            proxy = %url,
+            "DFlow API 请求将通过配置的代理发送"
+        );
+    } else if let Some(selection) = module_proxy {
+        info!(
+            target: "dflow",
+            proxy = %selection.url,
+            per_request = selection.per_request,
+            "DFlow API 请求将通过 profile 代理发送"
+        );
+    } else if let Some(selection) = global_proxy.clone() {
+        info!(
+            target: "dflow",
+            proxy = %selection.url,
+            per_request = selection.per_request,
+            "DFlow API 请求将通过全局代理发送"
+        );
+    }
+
+    let http_client = build_http_client_with_options(effective_proxy.as_ref(), false, None, None)?;
+    let http_pool = build_http_client_pool(effective_proxy.clone(), false, None);
 
     let dflow_client = DflowApiClient::with_ip_pool(
         http_client,
@@ -712,20 +748,37 @@ fn register_kamino_leg(
     let proxy_override = kamino_cfg
         .api_proxy
         .as_ref()
-        .map(|value| value.trim().to_string())
+        .map(|value| value.trim())
         .filter(|value| !value.is_empty());
-    let global_proxy = resolve_global_http_proxy(&config.galileo.global)
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let http_client = build_http_client_with_options(
-        proxy_override.as_deref(),
-        global_proxy.clone(),
-        false,
-        None,
-        None,
-    )?;
-    let http_pool =
-        build_http_client_pool(proxy_override.clone(), global_proxy.clone(), false, None);
+    let module_proxy = resolve_proxy_profile(&config.galileo.global, "quote");
+    let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+    let effective_proxy =
+        override_proxy_selection(proxy_override, module_proxy.clone(), global_proxy.clone());
+
+    if let Some(url) = proxy_override {
+        info!(
+            target: "kamino",
+            proxy = %url,
+            "Kamino API 请求将通过配置的代理发送"
+        );
+    } else if let Some(selection) = module_proxy {
+        info!(
+            target: "kamino",
+            proxy = %selection.url,
+            per_request = selection.per_request,
+            "Kamino API 请求将通过 profile 代理发送"
+        );
+    } else if let Some(selection) = global_proxy.clone() {
+        info!(
+            target: "kamino",
+            proxy = %selection.url,
+            per_request = selection.per_request,
+            "Kamino API 请求将通过全局代理发送"
+        );
+    }
+
+    let http_client = build_http_client_with_options(effective_proxy.as_ref(), false, None, None)?;
+    let http_pool = build_http_client_pool(effective_proxy.clone(), false, None);
 
     let kamino_client = KaminoApiClient::with_ip_pool(
         http_client,
@@ -783,6 +836,7 @@ fn parse_lighthouse_settings(cfg: &config::LightHouseBotConfig) -> Result<Lighth
             Some(SolPriceFeedSettings {
                 url: url.to_string(),
                 refresh: Duration::from_millis(feed.refresh_ms.max(1)),
+                guard_padding: feed.guard_padding,
             })
         }
     });
@@ -978,16 +1032,18 @@ async fn run_pure_blind_engine(
         resolve_global_http_proxy(&config.galileo.global)
     };
     let rpc_client_pool = build_rpc_client_pool(rpc_endpoints.clone(), global_proxy.clone());
-    let mut submission_builder = reqwest::Client::builder();
-    if let Some(proxy_url) = global_proxy.as_ref() {
-        let proxy = reqwest::Proxy::all(proxy_url.as_str())
-            .map_err(|err| anyhow!("global.proxy 地址无效 {proxy_url}: {err}"))?;
-        submission_builder = submission_builder
-            .proxy(proxy)
-            .danger_accept_invalid_certs(true);
-    }
-    let submission_client = submission_builder.build()?;
-    let submission_client_pool = build_http_client_pool(None, global_proxy.clone(), false, None);
+
+    let lander_proxy = if dry_run_enabled {
+        None
+    } else {
+        resolve_proxy_profile(&config.galileo.global, "lander")
+    };
+    let effective_lander_proxy =
+        override_proxy_selection(None, lander_proxy.clone(), global_proxy.clone());
+    let submission_client =
+        build_http_client_with_options(effective_lander_proxy.as_ref(), false, None, None)?;
+    let submission_client_pool =
+        build_http_client_pool(effective_lander_proxy.clone(), false, None);
     let tx_builder = TransactionBuilder::new(
         rpc_client.clone(),
         builder_config,

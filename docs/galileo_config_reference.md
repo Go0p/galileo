@@ -5,7 +5,7 @@ Galileo 已移除历史 Jupiter 依赖，所有聚合器配置均通过 `galileo
 ## 1. 全局与运行环境
 - `rpc_url`(s) → `[global].rpc_urls`：按顺序轮询的主链 RPC 列表。
 - `yellowstone_grpc_url` / `yellowstone_grpc_token` → `[bot].yellowstone_grpc_url` / `[bot].yellowstone_grpc_token`。
-- `proxy` → `[global].proxy`：HTTP/WS 统一代理，DFlow / Ultra / Kamino 会自动继承；如需对某聚合器单独设置，可在对应 `engine.<backend>.api_proxy` 覆盖。
+- `proxy` → `[global].proxy`：支持定义命名的代理 `profiles`，并在 `enable.<module>` 中引用（例如 `quote`、`lander`）；`per_request: true` 可强制每次请求重建连接以配合旋转代理。旧的单字符串写法仍视作 `default` 兜底，且各引擎的 `engine.<backend>.api_proxy` 依旧可以局部覆盖。
 - 加密钱包 → `[global.wallet.wallet_keys]`：列表项格式 `- "<备注>": "<base64 密文>"`；当列表为空时，启动 Galileo 会提示录入三段私钥并写回配置。
 - `cpu_affinity` 相关参数 → `[bot.cpu_affinity]`：绑定 Tokio runtime 到指定 CPU，减少与 RPC 节点抢占。
 - `quote_ms` / `swap_ms` / `landing_ms` → `[engine.time_out]`：统一的报价、指令和落地超时配置（毫秒）。

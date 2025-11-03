@@ -22,6 +22,8 @@ wallets:
   - address: "AAAAA4WQFj5MByDDxmraSAtumvWk8eNTAL5421SAdLRA"
     # 计算单元限制系数；影响落地交易时分配的计算单元数量。
     cu_limit_multiplier: 0.94
+    # 是否解析来源交易的 tip（扣除 0.001 SOL 后至少保留 1000 lamports），否则沿用 lander tip 策略。
+    use_source_tip: true
     # accounts 来源
     source:
       # 来源类型 rpc 或者 grpc
@@ -46,4 +48,3 @@ wallets:
           - ""
       enable_landers:
         - "jito"
-

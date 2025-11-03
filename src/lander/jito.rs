@@ -127,10 +127,6 @@ impl JitoLander {
         }
     }
 
-    pub fn stream_tip_snapshot(&self) -> Option<u64> {
-        self.tip_selector.stream_snapshot()
-    }
-
     pub fn draw_tip_plan(&self) -> Option<JitoTipPlan> {
         let lamports = self.tip_selector.select_tip()?;
         if lamports == 0 {
@@ -563,10 +559,6 @@ impl TipSelector {
         self.strategy
     }
 
-    fn stream_snapshot(&self) -> Option<u64> {
-        self.stream.as_ref().and_then(|stream| stream.latest())
-    }
-
     fn select_tip(&self) -> Option<u64> {
         match self.strategy {
             TipStrategyKind::Fixed => Some(self.fixed_tip),
@@ -704,7 +696,7 @@ impl TipStreamShared {
         loop {
             match connect_async(TIP_STREAM_URL).await {
                 Ok((mut ws, _response)) => {
-                    debug!(target: "lander::jito", "tip stream 已连接");
+                    info!(target: "lander::jito", "jito tip stream 已连接");
                     while let Some(message) = ws.next().await {
                         match message {
                             Ok(Message::Text(text)) => {

@@ -55,6 +55,13 @@ impl ComputeUnitPriceStrategy {
             ComputeUnitPriceStrategy::Fixed(value) => Some(value),
         }
     }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ComputeUnitPriceStrategy::Disabled => "disabled",
+            ComputeUnitPriceStrategy::Fixed(_) => "fixed",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
