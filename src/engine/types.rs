@@ -88,22 +88,6 @@ pub struct UltraSwapLegs {
 }
 
 #[derive(Debug, Clone)]
-pub struct ExecutionPlan {
-    pub opportunity: SwapOpportunity,
-    pub deadline: Instant,
-}
-
-impl ExecutionPlan {
-    pub fn with_deadline(opportunity: SwapOpportunity, timeout: Duration) -> Self {
-        let deadline = Instant::now() + timeout;
-        Self {
-            opportunity,
-            deadline,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct JitoTipPlan {
     pub lamports: u64,
     pub recipient: Pubkey,

@@ -1,13 +1,6 @@
-use std::sync::Arc;
 use std::time::Instant;
 
-use crate::engine::assembly::decorators::{
-    ComputeBudgetDecorator, FlashloanDecorator, GuardBudgetDecorator, ProfitGuardDecorator,
-    TipDecorator,
-};
-use crate::engine::assembly::{
-    AssemblyContext, DecoratorChain, InstructionBundle, attach_lighthouse,
-};
+use crate::engine::landing::ExecutionPlan;
 use crate::engine::multi_leg::orchestrator::{LegPairDescriptor, LegPairPlan};
 use crate::engine::multi_leg::runtime::{PairPlanBatchResult, PairPlanEvaluation, PairPlanRequest};
 use crate::engine::multi_leg::types::{
@@ -20,12 +13,11 @@ use crate::engine::{
 use crate::instructions::compute_budget::{
     COMPUTE_BUDGET_PROGRAM_ID, compute_unit_limit_instruction, compute_unit_price_instruction,
 };
-use crate::lander::Deadline;
 use crate::monitoring::events;
 use crate::strategy::types::TradePair;
 use crate::strategy::{Strategy, StrategyEvent};
 use solana_sdk::instruction::Instruction;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use super::{BASE_TX_FEE_LAMPORTS, MultiLegEngineContext, StrategyEngine};
 use crate::engine::FALLBACK_CU_LIMIT;
@@ -71,7 +63,11 @@ where
             return Ok(());
         }
 
-        let compute_unit_price = self.settings.sample_compute_unit_price();
+        let compute_unit_price = if self.landers.has_jito() && !self.landers.has_non_jito() {
+            None
+        } else {
+            self.settings.sample_compute_unit_price()
+        };
         let buy_intent_template = MultiLegQuoteIntent::new(
             task.pair.input_pubkey,
             task.pair.output_pubkey,
@@ -365,154 +361,40 @@ where
         }
 
         let bundle = assemble_multi_leg_instructions(&mut plan);
-        let mut variant = SwapInstructionsVariant::MultiLeg(bundle);
+        let variant = SwapInstructionsVariant::MultiLeg(bundle);
         let prioritization_fee = variant.prioritization_fee_lamports().unwrap_or_default();
-        let mut instruction_bundle =
-            InstructionBundle::from_instructions(variant.flatten_instructions());
-        instruction_bundle.set_lookup_tables(
-            variant.address_lookup_table_addresses().to_vec(),
-            variant.resolved_lookup_tables().to_vec(),
-        );
+        let compute_unit_limit = multi_leg_compute_limit(&variant).unwrap_or(FALLBACK_CU_LIMIT);
 
-        let mut jito_tip_plan = self.landers.draw_jito_tip_plan();
-        let mut effective_tip = tip_lamports;
-        if let Some(plan) = jito_tip_plan.as_ref() {
-            if plan.lamports > 0 {
-                effective_tip = plan.lamports;
-            } else {
-                jito_tip_plan = None;
-            }
-        }
-
-        let flashloan_opportunity = SwapOpportunity {
+        let opportunity = SwapOpportunity {
             pair: pair.clone(),
             amount_in: trade_size,
             profit_lamports: gross_profit,
-            tip_lamports: effective_tip,
+            tip_lamports,
             merged_quote: None,
             ultra_legs: None,
         };
 
-        let mut assembly_ctx = AssemblyContext::new(&self.identity);
-        assembly_ctx.base_mint = Some(&pair.input_pubkey);
-        assembly_ctx.compute_unit_limit =
-            multi_leg_compute_limit(&variant).unwrap_or(FALLBACK_CU_LIMIT);
-        assembly_ctx.compute_unit_price = None;
-        assembly_ctx.guard_required = BASE_TX_FEE_LAMPORTS;
-        assembly_ctx.prioritization_fee = prioritization_fee;
-        assembly_ctx.tip_lamports = effective_tip;
-        assembly_ctx.jito_tip_budget = self.jito_tip_budget(effective_tip);
-        assembly_ctx.jito_tip_plan = jito_tip_plan.clone();
-        assembly_ctx.variant = Some(&mut variant);
-        assembly_ctx.opportunity = Some(&flashloan_opportunity);
-        assembly_ctx.flashloan_manager = self.flashloan.as_ref();
-        attach_lighthouse(&mut assembly_ctx, &mut self.lighthouse);
-
-        let mut decorators = DecoratorChain::new();
-        decorators.register(FlashloanDecorator);
-        decorators.register(ComputeBudgetDecorator);
-        decorators.register(TipDecorator);
-        decorators.register(GuardBudgetDecorator);
-        decorators.register(ProfitGuardDecorator);
-
-        decorators
-            .apply_all(&mut instruction_bundle, &mut assembly_ctx)
-            .await?;
-
-        let final_instructions = instruction_bundle.into_flattened();
-
-        if let Some(meta) = &assembly_ctx.flashloan_metadata {
-            events::flashloan_applied(
-                strategy_name,
-                meta.protocol.as_str(),
-                &meta.mint,
-                meta.borrow_amount,
-                meta.inner_instruction_count,
-            );
-            debug!(
-                target: "engine::multi_leg",
-                buy_kind = %descriptor.buy.kind,
-                sell_kind = %descriptor.sell.kind,
-                amount = trade_size,
-                borrow_amount = meta.borrow_amount,
-                tip_lamports = effective_tip,
-                protocol = meta.protocol.as_str(),
-                "多腿组合使用闪电贷"
-            );
-        }
-
-        let prepared = self
-            .tx_builder
-            .build_with_sequence(
-                &self.identity,
-                &variant,
-                final_instructions,
-                effective_tip,
-                jito_tip_plan.clone(),
-            )
-            .await?;
-
-        debug!(
-            target: "engine::multi_leg",
-            strategy = strategy_name,
-            slot = prepared.slot,
-            blockhash = %prepared.blockhash,
-            "多腿交易已构建"
+        events::swap_fetched(
+            strategy_name,
+            &opportunity,
+            compute_unit_limit,
+            prioritization_fee,
+            None,
         );
 
-        if self.settings.dry_run {
-            info!(
-                target: "engine::dry_run",
-                strategy = strategy_name,
-                slot = prepared.slot,
-                blockhash = %prepared.blockhash,
-                landers = self.landers.count(),
-                "dry-run 模式：多腿交易将提交至覆盖的 RPC 端点"
-            );
-        }
+        let deadline = Instant::now() + self.settings.landing_timeout;
+        let execution_plan = ExecutionPlan::new(
+            opportunity,
+            variant,
+            pair.input_pubkey,
+            tip_lamports,
+            BASE_TX_FEE_LAMPORTS,
+            compute_unit_limit,
+            prioritization_fee,
+            deadline,
+        );
 
-        let dispatch_strategy = self.settings.dispatch_strategy;
-        let variant_layout = self.landers.variant_layout(dispatch_strategy);
-        let plan = Arc::new(self.variant_planner.plan(
-            dispatch_strategy,
-            &prepared,
-            &variant_layout,
-        ));
-
-        let deadline = Deadline::from_instant(Instant::now() + self.settings.landing_timeout);
-        let tx_signature = plan
-            .primary_variant()
-            .and_then(|variant| variant.signature());
-        let lander_stack = Arc::clone(&self.landers);
-        let strategy_label = strategy_name.to_string();
-        let tx_signature_for_log = tx_signature.clone();
-
-        tokio::spawn(async move {
-            match lander_stack
-                .submit_plan(plan.as_ref(), deadline, &strategy_label)
-                .await
-            {
-                Ok(_receipt) => {}
-                Err(err) => {
-                    let sig = tx_signature_for_log.as_deref().unwrap_or("");
-                    warn!(
-                        target: "engine::lander",
-                        strategy = strategy_label.as_str(),
-                        tx_signature = sig,
-                        error = %err,
-                        "{}",
-                        format_args!(
-                            "落地失败: 策略={} 签名={} 错误={}",
-                            strategy_label,
-                            sig,
-                            err
-                        )
-                    );
-                }
-            }
-        });
-
-        Ok(())
+        self.dispatch_execution_plan(execution_plan, None).await
     }
 }
 

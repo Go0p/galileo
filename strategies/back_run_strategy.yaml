@@ -42,9 +42,6 @@ base_mints:
         max_trade_bp: 2000
       - # 固定交易规模，机器人会使用这个规模
         fixed_size: 1000000000
-        # 路由类型，目前只支持 2hop
-        route_types:
-          - "2hop"
 
   - # 触发交易金额
     trigger_amount: 100
@@ -68,7 +65,3 @@ base_mints:
         max_trade_bp: 2000
       - # 固定交易规模，机器人会使用这个规模
         fixed_size: 1000000000
-        # 路由类型，目前只支持 2hop
-        route_types:
-          - "2hop"
-

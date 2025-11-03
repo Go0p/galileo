@@ -19,6 +19,7 @@ pub struct LanderFactory {
     rpc_client: Arc<RpcClient>,
     http_client: Client,
     client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
+    dry_run_enabled: bool,
 }
 
 impl LanderFactory {
@@ -26,11 +27,13 @@ impl LanderFactory {
         rpc_client: Arc<RpcClient>,
         http_client: Client,
         client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
+        dry_run_enabled: bool,
     ) -> Self {
         Self {
             rpc_client,
             http_client,
             client_pool,
+            dry_run_enabled,
         }
     }
 
@@ -94,11 +97,17 @@ impl LanderFactory {
                 if !has_endpoint {
                     None
                 } else {
-                    Some(LanderVariant::Jito(JitoLander::with_ip_pool(
+                    let lander = JitoLander::with_ip_pool(
                         cfg,
                         self.http_client.clone(),
                         self.client_pool.clone(),
-                    )))
+                    );
+                    let lander = if self.dry_run_enabled {
+                        lander.with_dry_run(self.rpc_client.clone(), settings)
+                    } else {
+                        lander
+                    };
+                    Some(LanderVariant::Jito(lander))
                 }
             }),
             "staked" => settings.staked.as_ref().and_then(|cfg| {

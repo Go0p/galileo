@@ -7,4 +7,4 @@ mod staked;
 
 pub use error::LanderError;
 pub use factory::LanderFactory;
-pub use stack::{Deadline, LanderReceipt, LanderStack};
+pub use stack::{Deadline, LanderReceipt, LanderStack, LanderVariant};

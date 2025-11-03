@@ -16,6 +16,7 @@ use tracing::warn;
 use super::COMPUTE_BUDGET_PROGRAM_ID;
 use super::builder::PreparedTransaction;
 use super::types::JitoTipPlan;
+use crate::engine::assembly::decorators::GuardStrategy;
 
 pub type VariantId = u32;
 
@@ -93,6 +94,11 @@ pub struct TxVariant {
     instructions: Vec<Instruction>,
     lookup_accounts: Vec<AddressLookupTableAccount>,
     jito_tip_plan: Option<JitoTipPlan>,
+    guard_lamports: u64,
+    guard_strategy: GuardStrategy,
+    tip_strategy_label: &'static str,
+    prioritization_fee_lamports: u64,
+    compute_unit_price_micro_lamports: Option<u64>,
 }
 
 impl TxVariant {
@@ -107,6 +113,11 @@ impl TxVariant {
         instructions: Vec<Instruction>,
         lookup_accounts: Vec<AddressLookupTableAccount>,
         jito_tip_plan: Option<JitoTipPlan>,
+        guard_lamports: u64,
+        guard_strategy: GuardStrategy,
+        tip_strategy_label: &'static str,
+        prioritization_fee_lamports: u64,
+        compute_unit_price_micro_lamports: Option<u64>,
     ) -> Self {
         Self {
             id,
@@ -119,6 +130,11 @@ impl TxVariant {
             instructions,
             lookup_accounts,
             jito_tip_plan,
+            guard_lamports,
+            guard_strategy,
+            tip_strategy_label,
+            prioritization_fee_lamports,
+            compute_unit_price_micro_lamports,
         }
     }
 
@@ -167,6 +183,26 @@ impl TxVariant {
 
     pub fn jito_tip_plan(&self) -> Option<&JitoTipPlan> {
         self.jito_tip_plan.as_ref()
+    }
+
+    pub fn guard_lamports(&self) -> u64 {
+        self.guard_lamports
+    }
+
+    pub fn guard_strategy(&self) -> GuardStrategy {
+        self.guard_strategy
+    }
+
+    pub fn tip_strategy_label(&self) -> &'static str {
+        self.tip_strategy_label
+    }
+
+    pub fn prioritization_fee_lamports(&self) -> u64 {
+        self.prioritization_fee_lamports
+    }
+
+    pub fn compute_unit_price_micro_lamports(&self) -> Option<u64> {
+        self.compute_unit_price_micro_lamports
     }
 }
 
@@ -220,18 +256,24 @@ impl TxVariantPlanner {
     pub fn plan(
         &self,
         strategy: DispatchStrategy,
-        prepared: &PreparedTransaction,
+        prepared: &[PreparedTransaction],
         layout: &[usize],
     ) -> DispatchPlan {
         let mut lander_variants = Vec::with_capacity(layout.len());
         let mut next_id: VariantId = 0;
 
-        for &count in layout {
+        for (lander_idx, &count) in layout.iter().enumerate() {
             let needed = count.max(1);
             let mut variants = Vec::with_capacity(needed);
+
+            let prepared_entry = prepared
+                .get(lander_idx)
+                .or_else(|| prepared.last())
+                .expect("prepared transactions missing for variant planning");
+
             for variant_index in 0..needed {
-                let mut variant_tx = prepared.transaction.clone();
-                let mut variant_instructions = prepared.instructions.clone();
+                let mut variant_tx = prepared_entry.transaction.clone();
+                let mut variant_instructions = prepared_entry.instructions.clone();
 
                 if variant_index > 0
                     && (matches!(strategy, DispatchStrategy::OneByOne) || needed > 1)
@@ -240,23 +282,28 @@ impl TxVariantPlanner {
                     apply_variation(
                         &mut variant_tx,
                         &mut variant_instructions,
-                        &prepared.signer,
+                        &prepared_entry.signer,
                         bump,
-                        prepared.blockhash,
+                        prepared_entry.blockhash,
                     );
                 }
 
                 let variant = TxVariant::new(
                     next_id,
                     variant_tx,
-                    prepared.blockhash,
-                    prepared.slot,
-                    prepared.last_valid_block_height,
-                    prepared.signer.clone(),
-                    prepared.tip_lamports,
+                    prepared_entry.blockhash,
+                    prepared_entry.slot,
+                    prepared_entry.last_valid_block_height,
+                    prepared_entry.signer.clone(),
+                    prepared_entry.tip_lamports,
                     variant_instructions,
-                    prepared.lookup_accounts.clone(),
-                    prepared.jito_tip_plan.clone(),
+                    prepared_entry.lookup_accounts.clone(),
+                    prepared_entry.jito_tip_plan.clone(),
+                    prepared_entry.guard_lamports,
+                    prepared_entry.guard_strategy,
+                    prepared_entry.tip_strategy_label,
+                    prepared_entry.prioritization_fee_lamports,
+                    prepared_entry.compute_unit_price_micro_lamports,
                 );
                 variants.push(variant);
                 next_id = next_id.saturating_add(1);
@@ -372,7 +419,12 @@ mod tests {
             slot: 0,
             last_valid_block_height: None,
             signer,
-            tip_lamports: 0,
+            tip_lamports: 5,
+            prioritization_fee_lamports: 77,
+            guard_lamports: 42,
+            guard_strategy: GuardStrategy::BasePlusTip,
+            compute_unit_price_micro_lamports: Some(123),
+            tip_strategy_label: "opportunity",
             instructions: Vec::new(),
             lookup_accounts: Vec::new(),
             jito_tip_plan: None,
@@ -383,20 +435,31 @@ mod tests {
     fn planner_all_at_once_creates_single_variant() {
         let planner = TxVariantPlanner::new();
         let prepared = build_prepared();
-        let plan = planner.plan(DispatchStrategy::AllAtOnce, &prepared, &[1]);
+        let plan = planner.plan(DispatchStrategy::AllAtOnce, &[prepared.clone()], &[1]);
         assert_eq!(plan.strategy(), DispatchStrategy::AllAtOnce);
         assert_eq!(plan.variants_for_lander(0).len(), 1);
         assert_eq!(plan.primary_variant().unwrap().id(), 0);
+        let variant = plan.primary_variant().unwrap();
+        assert_eq!(variant.guard_lamports(), 42);
+        assert_eq!(variant.tip_lamports(), 5);
+        assert_eq!(variant.tip_strategy_label(), "opportunity");
+        assert_eq!(variant.prioritization_fee_lamports(), 77);
+        assert_eq!(variant.compute_unit_price_micro_lamports(), Some(123));
     }
 
     #[test]
     fn planner_one_by_one_respects_budget() {
         let planner = TxVariantPlanner::new();
         let prepared = build_prepared();
-        let plan = planner.plan(DispatchStrategy::OneByOne, &prepared, &[2, 1]);
+        let plan = planner.plan(
+            DispatchStrategy::OneByOne,
+            &[prepared.clone(), prepared],
+            &[2, 1],
+        );
         assert_eq!(plan.strategy(), DispatchStrategy::OneByOne);
         let first_group = plan.variants_for_lander(0);
         assert_eq!(first_group.len(), 2);
+        assert_eq!(first_group[0].guard_lamports(), 42);
         let second_group = plan.variants_for_lander(1);
         assert_eq!(second_group.len(), 1);
 

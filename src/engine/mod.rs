@@ -4,6 +4,7 @@ mod builder;
 mod context;
 mod error;
 mod identity;
+pub mod landing;
 pub mod multi_leg;
 mod planner;
 pub mod plugins;
@@ -40,8 +41,6 @@ pub use runtime::strategy::{
 pub use scheduler::Scheduler;
 pub use swap_preparer::{ComputeUnitPriceMode, SwapPreparer};
 #[allow(unused_imports)]
-pub use types::{
-    ExecutionPlan, JitoTipPlan, QuoteTask, StrategyTick, SwapOpportunity, TradeProfile,
-};
+pub use types::{JitoTipPlan, QuoteTask, StrategyTick, SwapOpportunity, TradeProfile};
 
 pub const FALLBACK_CU_LIMIT: u32 = 230_000;

@@ -15,10 +15,19 @@ impl InstructionDecorator for GuardBudgetDecorator {
         _bundle: &mut InstructionBundle,
         context: &mut AssemblyContext<'_>,
     ) -> EngineResult<()> {
-        context.guard_required = context
-            .guard_required
-            .saturating_add(context.prioritization_fee)
-            .saturating_add(context.jito_tip_budget);
+        let updated = match context.guard_strategy {
+            super::GuardStrategy::BasePlusTip => context
+                .guard_required
+                .saturating_add(context.jito_tip_budget),
+            super::GuardStrategy::BasePlusPrioritizationFee => context
+                .guard_required
+                .saturating_add(context.prioritization_fee),
+            super::GuardStrategy::BasePlusTipAndPrioritizationFee => context
+                .guard_required
+                .saturating_add(context.prioritization_fee)
+                .saturating_add(context.jito_tip_budget),
+        };
+        context.guard_required = updated;
         Ok(())
     }
 }

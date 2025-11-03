@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
 
 use solana_sdk::instruction::AccountMeta;
@@ -18,13 +17,7 @@ use crate::dexes::tessera_v::TesseraVAdapter;
 use crate::dexes::whirlpool::WhirlpoolAdapter;
 use crate::dexes::zerofi::ZeroFiAdapter;
 use crate::engine::aggregator::MultiLegInstructions;
-use crate::engine::assembly::decorators::{
-    ComputeBudgetDecorator, FlashloanDecorator, GuardBudgetDecorator, ProfitGuardDecorator,
-    TipDecorator,
-};
-use crate::engine::assembly::{
-    AssemblyContext, DecoratorChain, InstructionBundle, attach_lighthouse,
-};
+use crate::engine::landing::ExecutionPlan;
 use crate::engine::types::SwapOpportunity;
 use crate::engine::{EngineError, EngineResult, SwapInstructionsVariant};
 use crate::instructions::compute_budget::compute_budget_sequence;
@@ -35,7 +28,6 @@ use crate::instructions::jupiter::swaps::{
     WhirlpoolSwapV2, ZeroFiSwap,
 };
 use crate::instructions::jupiter::types::{JUPITER_V6_PROGRAM_ID, RoutePlanStepV2};
-use crate::lander::Deadline;
 use crate::monitoring::events;
 use crate::strategy::types::{BlindDex, BlindMarketMeta, BlindOrder, BlindStep, TradePair};
 use crate::strategy::{Strategy, StrategyEvent};
@@ -127,13 +119,13 @@ where
         .map_err(|err| EngineError::Transaction(err.into()))?;
 
         let compute_unit_limit = self.estimate_cu_limit(order);
-        let sampled_price = self
-            .settings
-            .sample_compute_unit_price()
-            .or_else(|| self.swap_preparer.sample_compute_unit_price());
+        let compute_unit_price = if self.landers.has_jito() && !self.landers.has_non_jito() {
+            0
+        } else {
+            self.settings.sample_compute_unit_price().unwrap_or(0)
+        };
         let compute_budget_instructions =
-            compute_budget_sequence(sampled_price.unwrap_or(0), compute_unit_limit, None)
-                .into_vec();
+            compute_budget_sequence(compute_unit_price, compute_unit_limit, None).into_vec();
 
         let lookup_table_accounts = order.lookup_tables.clone();
         let lookup_table_addresses: Vec<Pubkey> = lookup_table_accounts
@@ -149,110 +141,44 @@ where
             None,
             compute_unit_limit,
         );
-        let mut response_variant = SwapInstructionsVariant::MultiLeg(bundle);
+        let response_variant = SwapInstructionsVariant::MultiLeg(bundle);
 
         let pair = TradePair::from_pubkeys(source_mint, destination_mint);
-        let mut jito_tip_plan = self.landers.draw_jito_tip_plan();
-        let mut effective_tip = 0u64;
-        if let Some(plan) = jito_tip_plan.as_ref() {
-            if plan.lamports > 0 {
-                effective_tip = plan.lamports;
-            } else {
-                jito_tip_plan = None;
-            }
-        }
-        let flashloan_opportunity = SwapOpportunity {
+        let opportunity = SwapOpportunity {
             pair,
             amount_in: order.amount_in,
             profit_lamports: 0,
-            tip_lamports: effective_tip,
+            tip_lamports: 0,
             merged_quote: None,
             ultra_legs: None,
         };
 
         let strategy_name = self.strategy.name();
+        let prioritization_fee = response_variant
+            .prioritization_fee_lamports()
+            .unwrap_or_default();
 
-        let mut bundle =
-            InstructionBundle::from_instructions(response_variant.flatten_instructions());
-        bundle.set_lookup_tables(
-            response_variant.address_lookup_table_addresses().to_vec(),
-            response_variant.resolved_lookup_tables().to_vec(),
+        events::swap_fetched(
+            strategy_name,
+            &opportunity,
+            compute_unit_limit,
+            prioritization_fee,
+            None,
         );
-        let mut assembly_ctx = AssemblyContext::new(&self.identity);
-        assembly_ctx.base_mint = Some(&source_mint);
-        assembly_ctx.compute_unit_limit = compute_unit_limit;
-        assembly_ctx.compute_unit_price = sampled_price;
-        assembly_ctx.guard_required = BASE_TX_FEE_LAMPORTS;
-        assembly_ctx.prioritization_fee = 0;
-        assembly_ctx.tip_lamports = effective_tip;
-        assembly_ctx.jito_tip_budget = self.jito_tip_budget(effective_tip);
-        assembly_ctx.jito_tip_plan = jito_tip_plan.clone();
-        assembly_ctx.variant = Some(&mut response_variant);
-        assembly_ctx.opportunity = Some(&flashloan_opportunity);
-        assembly_ctx.flashloan_manager = self.flashloan.as_ref();
-        attach_lighthouse(&mut assembly_ctx, &mut self.lighthouse);
 
-        let mut decorators = DecoratorChain::new();
-        decorators.register(FlashloanDecorator);
-        decorators.register(ComputeBudgetDecorator);
-        decorators.register(TipDecorator);
-        decorators.register(GuardBudgetDecorator);
-        decorators.register(ProfitGuardDecorator);
+        let deadline = Instant::now() + self.settings.landing_timeout;
+        let execution_plan = ExecutionPlan::new(
+            opportunity,
+            response_variant,
+            source_mint,
+            0,
+            BASE_TX_FEE_LAMPORTS,
+            compute_unit_limit,
+            prioritization_fee,
+            deadline,
+        );
 
-        decorators.apply_all(&mut bundle, &mut assembly_ctx).await?;
-
-        if let Some(meta) = &assembly_ctx.flashloan_metadata {
-            events::flashloan_applied(
-                strategy_name,
-                meta.protocol.as_str(),
-                &meta.mint,
-                meta.borrow_amount,
-                meta.inner_instruction_count,
-            );
-        }
-
-        let final_instructions = bundle.into_flattened();
-
-        let prepared = self
-            .tx_builder
-            .build_with_sequence(
-                &self.identity,
-                &response_variant,
-                final_instructions,
-                effective_tip,
-                jito_tip_plan.clone(),
-            )
-            .await?;
-
-        let dispatch_strategy = self.settings.dispatch_strategy;
-        let variant_layout = self.landers.variant_layout(dispatch_strategy);
-        let plan = Arc::new(self.variant_planner.plan(
-            dispatch_strategy,
-            &prepared,
-            &variant_layout,
-        ));
-
-        let deadline = Deadline::from_instant(Instant::now() + self.settings.landing_timeout);
-
-        match self
-            .landers
-            .submit_plan(&plan, deadline, strategy_name)
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(err) => {
-                let tx_signature = plan
-                    .primary_variant()
-                    .and_then(|variant| variant.signature());
-                warn!(
-                    target: "engine::blind",
-                    signature = tx_signature.as_deref().unwrap_or(""),
-                    error = %err,
-                    "盲发落地失败"
-                );
-                Err(EngineError::Landing(err.to_string()))
-            }
-        }
+        self.dispatch_execution_plan(execution_plan, None).await
     }
 
     fn estimate_cu_limit(&self, order: &BlindOrder) -> u32 {

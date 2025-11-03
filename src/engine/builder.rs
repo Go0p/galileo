@@ -11,7 +11,6 @@ use solana_sdk::message::{AddressLookupTableAccount, VersionedMessage};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::transaction::VersionedTransaction;
-use solana_system_interface::instruction as system_instruction;
 use tracing::{debug, info, warn};
 use yellowstone_grpc_proto::geyser::CommitmentLevel;
 
@@ -27,6 +26,7 @@ use super::aggregator::SwapInstructionsVariant;
 use super::error::{EngineError, EngineResult};
 use super::identity::EngineIdentity;
 use super::types::JitoTipPlan;
+use crate::engine::assembly::decorators::GuardStrategy;
 
 #[derive(Clone)]
 pub struct BuilderConfig {
@@ -82,7 +82,7 @@ pub struct YellowstoneGrpcSettings {
     pub x_token: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PreparedTransaction {
     pub transaction: VersionedTransaction,
     pub blockhash: Hash,
@@ -90,6 +90,11 @@ pub struct PreparedTransaction {
     pub last_valid_block_height: Option<u64>,
     pub signer: Arc<Keypair>,
     pub tip_lamports: u64,
+    pub prioritization_fee_lamports: u64,
+    pub guard_lamports: u64,
+    pub guard_strategy: GuardStrategy,
+    pub compute_unit_price_micro_lamports: Option<u64>,
+    pub tip_strategy_label: &'static str,
     pub instructions: Vec<Instruction>,
     pub lookup_accounts: Vec<AddressLookupTableAccount>,
     pub jito_tip_plan: Option<JitoTipPlan>,
@@ -265,15 +270,6 @@ impl TransactionBuilder {
 
         if self.force_rpc_blockhash {
             Self::strip_compute_unit_price(&mut instructions);
-            if let Some(plan) = jito_tip_plan.as_ref() {
-                if plan.lamports > 0 {
-                    instructions.push(system_instruction::transfer(
-                        &identity.pubkey,
-                        &plan.recipient,
-                        plan.lamports,
-                    ));
-                }
-            }
         }
 
         if let Some(memo) = &self.config.memo {
@@ -315,6 +311,11 @@ impl TransactionBuilder {
             last_valid_block_height,
             signer,
             tip_lamports,
+            prioritization_fee_lamports: 0,
+            guard_lamports: 0,
+            guard_strategy: GuardStrategy::BasePlusTipAndPrioritizationFee,
+            compute_unit_price_micro_lamports: None,
+            tip_strategy_label: "none",
             instructions,
             lookup_accounts,
             jito_tip_plan,

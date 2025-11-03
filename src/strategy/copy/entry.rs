@@ -83,6 +83,7 @@ pub async fn run_copy_strategy(
         rpc_client.clone(),
         submission_client.clone(),
         Some(Arc::clone(&submission_client_pool)),
+        dry_run_enabled,
     );
 
     let landing_timeout = resolve_landing_timeout(&config.galileo.engine.time_out);

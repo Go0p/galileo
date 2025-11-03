@@ -62,9 +62,6 @@ base_mints:
         count: 1
         strategy: linear
     min_quote_profit: 1000
-    sending_cooldown: 1000
-    route_types:
-      - "2hop"
 ```
 
 ### 方式二：传统方式（向后兼容）
@@ -203,4 +200,3 @@ A: 可以，`config_dir` 支持绝对路径和相对路径
 ## 📚 示例
 
 参考 `strategies/blind_strategy.yaml` 查看完整的配置示例。
-

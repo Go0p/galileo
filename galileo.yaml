@@ -37,7 +37,7 @@ engine:
   enable_console_summary: true
   time_out:
     # 超时时间：报价 / 指令 / 落地（单位：毫秒）
-    quote_ms: 2000
+    quote_ms: 5000
     swap_ms: 10000
     landing_ms: 5000
 
@@ -81,7 +81,7 @@ engine:
     api_swap_base: "https://quote-api.dflow.net"
     # api_quote_base: "http://109.94.98.33:9800"
     # api_swap_base: "http://109.94.98.33:9800"
-    api_proxy: "http://192.168.124.4:9999"
+    api_proxy: "http://192.168.3.3:9999"
     quote_config:
       use_auto_slippage: false
       only_direct_routes: false
@@ -224,6 +224,7 @@ bot:
       refresh_ms: 1000    # 订阅 sol 的价格，用于守护 USDC 的情况
     profit_guard_mints:
       - So11111111111111111111111111111111111111112
+      - EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
   cpu_affinity:
     enable: false
     worker_cores: []

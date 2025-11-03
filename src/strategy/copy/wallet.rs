@@ -20,7 +20,7 @@ use crate::config::{
     CopyDispatchConfig, CopyDispatchMode, CopySourceKind, CopyWalletConfig, LanderSettings,
 };
 use crate::engine::assembly::decorators::{
-    ComputeBudgetDecorator, GuardBudgetDecorator, TipDecorator,
+    ComputeBudgetDecorator, GuardBudgetDecorator, GuardStrategy, TipDecorator,
 };
 use crate::engine::assembly::{AssemblyContext, DecoratorChain, InstructionBundle};
 use crate::engine::{
@@ -240,7 +240,7 @@ impl CopyWalletRunner {
                 .collect()
         };
 
-        let mut lander_stack = lander_factory
+        let lander_stack = lander_factory
             .build_stack(
                 &lander_settings,
                 &enable_landers,
@@ -249,9 +249,6 @@ impl CopyWalletRunner {
                 ip_allocator,
             )
             .map_err(|err| anyhow!(err))?;
-        if dry_run {
-            lander_stack = lander_stack.into_rpc_only();
-        }
         let lander_stack = Arc::new(lander_stack);
 
         let cu_limit_multiplier = if wallet.cu_limit_multiplier <= 0.0 {
@@ -903,6 +900,7 @@ impl CopyWalletRunner {
         assembly_ctx.compute_unit_limit = compute_unit_limit;
         assembly_ctx.compute_unit_price = sampled_price;
         assembly_ctx.guard_required = BASE_GUARD_LAMPORTS;
+        assembly_ctx.guard_strategy = GuardStrategy::BasePlusTipAndPrioritizationFee;
         assembly_ctx.tip_lamports = tip_lamports;
         assembly_ctx.jito_tip_budget = tip_lamports;
         assembly_ctx.jito_tip_plan = jito_tip_plan.clone();
@@ -945,9 +943,11 @@ impl CopyWalletRunner {
             }
         }
 
-        let dispatch_plan = self
-            .planner
-            .plan(self.dispatch_strategy, &prepared, &layout);
+        let dispatch_plan = self.planner.plan(
+            self.dispatch_strategy,
+            std::slice::from_ref(&prepared),
+            &layout,
+        );
 
         if self.dry_run {
             let variants: usize = (0..layout.len())

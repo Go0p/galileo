@@ -6,9 +6,13 @@ use std::time::Instant;
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
+use solana_sdk::instruction::Instruction;
 use tracing::{info, warn};
 
-use crate::engine::{DispatchPlan, DispatchStrategy, JitoTipPlan, TxVariant, VariantId};
+use crate::engine::assembly::decorators::GuardStrategy;
+use crate::engine::{
+    COMPUTE_BUDGET_PROGRAM_ID, DispatchPlan, DispatchStrategy, JitoTipPlan, TxVariant, VariantId,
+};
 use crate::monitoring::events;
 use crate::network::{IpAllocator, IpLeaseMode, IpLeaseOutcome, IpTaskKind};
 
@@ -73,6 +77,20 @@ impl LanderVariant {
         }
     }
 
+    pub fn draw_tip_plan(&self) -> Option<JitoTipPlan> {
+        match self {
+            LanderVariant::Jito(lander) => lander.draw_tip_plan(),
+            _ => None,
+        }
+    }
+
+    pub fn tip_strategy_label(&self) -> Option<&'static str> {
+        match self {
+            LanderVariant::Jito(lander) => Some(lander.tip_strategy_label()),
+            _ => None,
+        }
+    }
+
     pub async fn submit_variant(
         &self,
         variant: TxVariant,
@@ -101,8 +119,6 @@ pub struct LanderStack {
     landers: Vec<LanderVariant>,
     max_retries: usize,
     ip_allocator: Arc<IpAllocator>,
-    // todo 重构
-    preview_jito: Option<JitoLander>,
 }
 
 impl LanderStack {
@@ -111,15 +127,10 @@ impl LanderStack {
         max_retries: usize,
         ip_allocator: Arc<IpAllocator>,
     ) -> Self {
-        let preview_jito = landers.iter().find_map(|lander| match lander {
-            LanderVariant::Jito(lander) => Some(lander.clone()),
-            _ => None,
-        });
         Self {
             landers,
             max_retries,
             ip_allocator,
-            preview_jito,
         }
     }
 
@@ -137,37 +148,21 @@ impl LanderStack {
             .any(|lander| matches!(lander, LanderVariant::Jito(_)))
     }
 
-    pub fn draw_jito_tip_plan(&self) -> Option<JitoTipPlan> {
+    pub fn has_non_jito(&self) -> bool {
         self.landers
             .iter()
-            .find_map(|lander| match lander {
-                LanderVariant::Jito(lander) => lander.draw_tip_plan(),
-                _ => None,
-            })
-            .or_else(|| {
-                self.preview_jito
-                    .as_ref()
-                    .and_then(|lander| lander.draw_tip_plan())
-            })
+            .any(|lander| !matches!(lander, LanderVariant::Jito(_)))
     }
 
-    pub fn into_rpc_only(self) -> Self {
-        let LanderStack {
-            landers,
-            max_retries,
-            ip_allocator,
-            preview_jito,
-        } = self;
-        let filtered: Vec<LanderVariant> = landers
-            .into_iter()
-            .filter(|lander| matches!(lander, LanderVariant::Rpc(_)))
-            .collect();
-        Self {
-            landers: filtered,
-            max_retries,
-            ip_allocator,
-            preview_jito,
-        }
+    pub fn variants(&self) -> &[LanderVariant] {
+        &self.landers
+    }
+
+    pub fn draw_jito_tip_plan(&self) -> Option<JitoTipPlan> {
+        self.landers.iter().find_map(|lander| match lander {
+            LanderVariant::Jito(lander) => lander.draw_tip_plan(),
+            _ => None,
+        })
     }
 
     pub fn variant_layout(&self, strategy: DispatchStrategy) -> Vec<usize> {
@@ -519,6 +514,38 @@ async fn submit_with_lease(
         local_ip,
     );
 
+    let compute_meta = compute_budget_metadata(variant.instructions());
+    let cu_limit = compute_meta.limit.unwrap_or(0);
+    let cu_price_micro = variant
+        .compute_unit_price_micro_lamports()
+        .or(compute_meta.price_micro)
+        .unwrap_or(0);
+    let prioritization_fee = variant.prioritization_fee_lamports();
+
+    let variant_tip_lamports = variant.tip_lamports();
+    let plan_tip_lamports = variant
+        .jito_tip_plan()
+        .map(|plan| plan.lamports)
+        .unwrap_or(0);
+    let (tip_source, tip_plan_lamports, tip_lamports) = if plan_tip_lamports > 0 {
+        ("plan", plan_tip_lamports, plan_tip_lamports)
+    } else {
+        ("selector", 0, variant_tip_lamports)
+    };
+
+    let tip_strategy_label = variant.tip_strategy_label();
+    let tip_stream_snapshot = match &lander {
+        LanderVariant::Jito(jito) => jito.stream_tip_snapshot(),
+        _ => None,
+    };
+
+    let guard_label = match variant.guard_strategy() {
+        GuardStrategy::BasePlusTip => "base_plus_tip",
+        GuardStrategy::BasePlusPrioritizationFee => "base_plus_fee",
+        GuardStrategy::BasePlusTipAndPrioritizationFee => "base_plus_tip_fee",
+    };
+    let guard_lamports = variant.guard_lamports();
+
     let submission_started = Instant::now();
     let mut result = lander
         .submit_variant(variant, deadline, endpoint.as_deref(), local_ip)
@@ -554,6 +581,16 @@ async fn submit_with_lease(
             strategy,
             dispatch,
             lander = receipt.lander,
+            cu_limit,
+            cu_price_micro,
+            prioritization_fee,
+            tip_strategy = tip_strategy_label,
+            tip_source,
+            tip_lamports,
+            tip_plan_lamports,
+            guard_strategy = guard_label,
+            guard_lamports,
+            stream_tip_snapshot = ?tip_stream_snapshot,
             "发送交易 endpoint_num={} endpoint={} id={} elapsed_ms={:.3} ip={}",
             endpoint_num,
             receipt.endpoint.as_str(),
@@ -564,6 +601,35 @@ async fn submit_with_lease(
     }
 
     (local_ip, result)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ComputeBudgetMeta {
+    limit: Option<u32>,
+    price_micro: Option<u64>,
+}
+
+fn compute_budget_metadata(instructions: &[Instruction]) -> ComputeBudgetMeta {
+    let mut meta = ComputeBudgetMeta::default();
+    for ix in instructions {
+        if ix.program_id != COMPUTE_BUDGET_PROGRAM_ID {
+            continue;
+        }
+        match ix.data.first().copied() {
+            Some(2) if ix.data.len() >= 5 => {
+                let mut buf = [0u8; 4];
+                buf.copy_from_slice(&ix.data[1..5]);
+                meta.limit = Some(u32::from_le_bytes(buf));
+            }
+            Some(3) if ix.data.len() >= 9 => {
+                let mut buf = [0u8; 8];
+                buf.copy_from_slice(&ix.data[1..9]);
+                meta.price_micro = Some(u64::from_le_bytes(buf));
+            }
+            _ => {}
+        }
+    }
+    meta
 }
 
 fn compute_endpoint_hash(endpoint: Option<&str>, variant_id: VariantId) -> u64 {

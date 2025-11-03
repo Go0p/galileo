@@ -74,6 +74,7 @@ async fn send_transaction(
         rpc_client.clone(),
         submission_client,
         Some(Arc::clone(&submission_client_pool)),
+        false,
     );
 
     let preferred: Vec<String> = if !args.landers.is_empty() {
@@ -106,7 +107,11 @@ async fn send_transaction(
     let dispatch_strategy = lander_settings.sending_strategy;
     let planner = TxVariantPlanner::new();
     let variant_layout = lander_stack.variant_layout(dispatch_strategy);
-    let plan = planner.plan(dispatch_strategy, &prepared, &variant_layout);
+    let plan = planner.plan(
+        dispatch_strategy,
+        std::slice::from_ref(&prepared),
+        &variant_layout,
+    );
 
     let deadline =
         Deadline::from_instant(Instant::now() + Duration::from_millis(args.deadline_ms.max(1)));

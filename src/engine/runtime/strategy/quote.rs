@@ -564,12 +564,9 @@ where
 
         let net_profit = opportunity.net_profit();
         let base_mint = pair.input_mint.clone();
-        let plan = crate::engine::types::ExecutionPlan::with_deadline(
-            opportunity,
-            self.settings.landing_timeout,
-        );
+        let deadline = Instant::now() + self.settings.landing_timeout;
 
-        match self.execute_plan(plan).await {
+        match self.execute_plan(opportunity, deadline).await {
             Ok(()) => Ok(Some(OpportunityExecution {
                 base_mint,
                 net_profit,

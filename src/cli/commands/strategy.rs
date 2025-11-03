@@ -343,6 +343,7 @@ async fn run_blind_engine(
         rpc_client.clone(),
         submission_client.clone(),
         Some(Arc::clone(&submission_client_pool)),
+        dry_run_enabled,
     );
     let default_landers = ["rpc"];
 
@@ -356,7 +357,7 @@ async fn run_blind_engine(
         blind_config.enable_landers.clone()
     };
 
-    let mut lander_stack = lander_factory
+    let lander_stack = lander_factory
         .build_stack(
             &config.lander.lander,
             &requested_landers,
@@ -365,9 +366,6 @@ async fn run_blind_engine(
             Arc::clone(&ip_allocator),
         )
         .map_err(|err| anyhow!(err))?;
-    if dry_run_enabled {
-        lander_stack = lander_stack.into_rpc_only();
-    }
     let lander_stack = Arc::new(lander_stack);
 
     let quote_cadence = resolve_quote_cadence(&config.galileo.engine, backend);
@@ -1084,6 +1082,7 @@ async fn run_pure_blind_engine(
         rpc_client.clone(),
         submission_client.clone(),
         Some(Arc::clone(&submission_client_pool)),
+        dry_run_enabled,
     );
     let default_landers = ["rpc"];
 
@@ -1097,7 +1096,7 @@ async fn run_pure_blind_engine(
         pure_config.enable_landers.clone()
     };
 
-    let mut lander_stack = lander_factory
+    let lander_stack = lander_factory
         .build_stack(
             &config.lander.lander,
             &requested_landers,
@@ -1106,9 +1105,6 @@ async fn run_pure_blind_engine(
             Arc::clone(&ip_allocator),
         )
         .map_err(|err| anyhow!(err))?;
-    if dry_run_enabled {
-        lander_stack = lander_stack.into_rpc_only();
-    }
     let lander_stack = Arc::new(lander_stack);
 
     let quote_cadence = resolve_quote_cadence(&config.galileo.engine, backend);
@@ -1753,20 +1749,9 @@ fn build_blind_quote_config(
     config: &config::BlindStrategyConfig,
     only_direct_routes_default: bool,
 ) -> QuoteConfig {
-    let has_three_hop = config.base_mints.iter().any(|mint| {
-        mint.route_types
-            .iter()
-            .any(|t| t.eq_ignore_ascii_case("3hop"))
-    });
-
-    let mut only_direct_routes = only_direct_routes_default;
-    if has_three_hop {
-        only_direct_routes = false;
-    }
-
     QuoteConfig {
         slippage_bps: 0,
-        only_direct_routes,
+        only_direct_routes: only_direct_routes_default,
         dex_whitelist: config.enable_dexs.clone(),
         dex_blacklist: config.exclude_dexes.clone(),
     }

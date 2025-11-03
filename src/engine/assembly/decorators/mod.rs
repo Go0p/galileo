@@ -24,6 +24,13 @@ pub use guard_budget::GuardBudgetDecorator;
 pub use profit_guard::ProfitGuardDecorator;
 pub use tip::TipDecorator;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuardStrategy {
+    BasePlusTip,
+    BasePlusPrioritizationFee,
+    BasePlusTipAndPrioritizationFee,
+}
+
 /// 装配上下文，在装饰器执行过程中传递交易相关信息。
 pub struct AssemblyContext<'a> {
     pub identity: &'a EngineIdentity,
@@ -31,6 +38,7 @@ pub struct AssemblyContext<'a> {
     pub compute_unit_limit: u32,
     pub compute_unit_price: Option<u64>,
     pub guard_required: u64,
+    pub guard_strategy: GuardStrategy,
     pub prioritization_fee: u64,
     pub tip_lamports: u64,
     pub jito_tip_budget: u64,
@@ -50,6 +58,7 @@ impl<'a> AssemblyContext<'a> {
             compute_unit_limit: 0,
             compute_unit_price: None,
             guard_required: 0,
+            guard_strategy: GuardStrategy::BasePlusTipAndPrioritizationFee,
             prioritization_fee: 0,
             tip_lamports: 0,
             jito_tip_budget: 0,
@@ -66,8 +75,7 @@ impl<'a> AssemblyContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config;
-    use crate::config::types::{AutoUnwrapConfig, FlashloanMarginfiConfig};
+    use crate::config::types::FlashloanMarginfiConfig;
     use crate::engine::aggregator::MultiLegInstructions;
     use crate::engine::assembly::bundle::InstructionBundle;
     use crate::engine::plugins::flashloan::{

@@ -71,7 +71,7 @@
 - **trade size 生成**：每个 base mint 由一组 `lane` 定义（`min` / `max` / `count` / `strategy` / `weight`），系统会根据策略在区间内插值或采样，随后施加 930–999 bp 的轻量扰动。若开启 `auto_scale_to_ip`，会按 lane 的权重自动补充额外档位以压满可用 IP。  
 - **批量盲发**：每个 base mint 在一次调度 tick 内都会生成配置好的全部 trade size，并被打包成 quote 组交给调度器。  
 - **顺序随机化**：若需要进一步打散顺序，可在调度层（`StrategyEngine::handle_action` 或专用执行器）对返回的任务 `shuffle`。  
-- **节奏控制**：通过 `engine.<backend>.quote_config.cadence` 配置 quote 组的并发与节奏：`group_parallelism` 限制同批次的最大同时执行组数，`intra_group_spacing_ms` 控制组内启动间隔，`wave_cooldown_ms` 决定下一轮批次的最小冷却时间。`sending_cooldown` 暂未在调度层生效，如需开启需补充实现。
+- **节奏控制**：通过 `engine.<backend>.quote_config.cadence` 配置 quote 组的并发与节奏：`group_parallelism` 限制同批次的最大同时执行组数，`intra_group_spacing_ms` 控制组内启动间隔，`wave_cooldown_ms` 决定下一轮批次的最小冷却时间。
 - **局部覆写**：`cadence.per_base_mint` 允许为特定 base mint 单独设定节奏；未配置时沿用 `default`。
 
 ## 5. 监控与性能
@@ -98,7 +98,7 @@
 - **Dex 账户顺序验证**：需通过现有交易样本或 reverse 工具验证账户排序，避免链上执行失败。  
 - **`quoted_out_amount` 策略**：盲发要求“>`in_amount`”，但过大仍可能被下游协议判定滑点异常；建议在实现前验证可接受范围。  
 - **Flashloan 兼容性**：盲发交易是否仍需 Marginfi 贷款？若需要，需确认指令顺序（flashloan setup → route_v2 → repay）。  
-- **随机化与风控**：需要确保随机顺序不会 violate `sending_cooldown`。可在调度层使用时间窗控制。
+- **随机化与风控**：随机顺序需结合 `cadence` 节奏控制，避免在同一波次内挤占 IP 资源。
 
 ## 8. 后续行动
 1. 设计 `BlindRouteBuilder` API + 数据结构，提交简要 RFC。  

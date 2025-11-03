@@ -5,15 +5,13 @@ use tokio::task;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::api::dflow::DflowError;
-use crate::engine::assembly::decorators::{
-    ComputeBudgetDecorator, FlashloanDecorator, GuardBudgetDecorator, ProfitGuardDecorator,
-    TipDecorator,
+use crate::engine::assembly::decorators::GuardStrategy;
+use crate::engine::landing::assembler::{
+    DefaultLandingAssembler, LandingAssembler, LandingAssemblyContext, TipComputationKind,
 };
-use crate::engine::assembly::{
-    AssemblyContext, DecoratorChain, InstructionBundle, attach_lighthouse,
-};
+use crate::engine::landing::{ExecutionPlan, LandingProfileBuilder};
 use crate::engine::quote_dispatcher;
-use crate::engine::types::ExecutionPlan;
+use crate::engine::types::SwapOpportunity;
 use crate::engine::{EngineError, EngineResult};
 use crate::lander::Deadline;
 use crate::monitoring::events;
@@ -26,11 +24,11 @@ impl<S> StrategyEngine<S>
 where
     S: Strategy<Event = StrategyEvent>,
 {
-    pub(super) async fn execute_plan(&mut self, plan: ExecutionPlan) -> EngineResult<()> {
-        let ExecutionPlan {
-            opportunity,
-            deadline,
-        } = plan;
+    pub(super) async fn execute_plan(
+        &mut self,
+        opportunity: SwapOpportunity,
+        deadline: Instant,
+    ) -> EngineResult<()> {
         let strategy_name = self.strategy.name();
 
         trace!(
@@ -71,7 +69,7 @@ where
         let swap_ip = Some(swap_handle.ip());
         drop(swap_lease);
 
-        let mut swap_variant = match self
+        let swap_variant = match self
             .swap_preparer
             .prepare(&opportunity, &self.identity, &swap_handle)
             .await
@@ -143,53 +141,10 @@ where
             }
         };
 
-        let mut instruction_bundle =
-            InstructionBundle::from_instructions(swap_variant.flatten_instructions());
-        instruction_bundle.set_lookup_tables(
-            swap_variant.address_lookup_table_addresses().to_vec(),
-            swap_variant.resolved_lookup_tables().to_vec(),
-        );
-
-        let mut jito_tip_plan = self.landers.draw_jito_tip_plan();
-        let mut effective_tip = opportunity.tip_lamports;
-        if let Some(plan) = jito_tip_plan.as_ref() {
-            if plan.lamports > 0 {
-                effective_tip = plan.lamports;
-            } else {
-                jito_tip_plan = None;
-            }
-        }
-
-        let mut assembly_ctx = AssemblyContext::new(&self.identity);
-        assembly_ctx.base_mint = Some(&opportunity.pair.input_pubkey);
-        assembly_ctx.compute_unit_limit = swap_variant.compute_unit_limit();
-        assembly_ctx.compute_unit_price = None;
-        assembly_ctx.guard_required = BASE_TX_FEE_LAMPORTS;
-        assembly_ctx.prioritization_fee = swap_variant
+        let compute_unit_limit = swap_variant.compute_unit_limit();
+        let prioritization_fee = swap_variant
             .prioritization_fee_lamports()
             .unwrap_or_default();
-        assembly_ctx.tip_lamports = effective_tip;
-        assembly_ctx.jito_tip_budget = self.jito_tip_budget(effective_tip);
-        assembly_ctx.jito_tip_plan = jito_tip_plan.clone();
-        assembly_ctx.variant = Some(&mut swap_variant);
-        assembly_ctx.opportunity = Some(&opportunity);
-        assembly_ctx.flashloan_manager = self.flashloan.as_ref();
-        attach_lighthouse(&mut assembly_ctx, &mut self.lighthouse);
-
-        let mut decorators = DecoratorChain::new();
-        decorators.register(FlashloanDecorator);
-        decorators.register(ComputeBudgetDecorator);
-        decorators.register(TipDecorator);
-        decorators.register(GuardBudgetDecorator);
-        decorators.register(ProfitGuardDecorator);
-
-        decorators
-            .apply_all(&mut instruction_bundle, &mut assembly_ctx)
-            .await?;
-
-        let compute_unit_limit = assembly_ctx.compute_unit_limit;
-        let prioritization_fee = assembly_ctx.prioritization_fee;
-        let final_instructions = instruction_bundle.into_flattened();
 
         events::swap_fetched(
             strategy_name,
@@ -199,45 +154,130 @@ where
             swap_ip,
         );
 
-        if let Some(meta) = &assembly_ctx.flashloan_metadata {
-            events::flashloan_applied(
-                strategy_name,
-                meta.protocol.as_str(),
-                &meta.mint,
-                meta.borrow_amount,
-                meta.inner_instruction_count,
-            );
+        let base_mint = opportunity.pair.input_pubkey;
+        let base_tip_lamports = opportunity.tip_lamports;
+
+        let execution_plan = ExecutionPlan::new(
+            opportunity,
+            swap_variant,
+            base_mint,
+            base_tip_lamports,
+            BASE_TX_FEE_LAMPORTS,
+            compute_unit_limit,
+            prioritization_fee,
+            deadline,
+        );
+
+        self.dispatch_execution_plan(execution_plan, swap_ip).await
+    }
+}
+
+impl<S> StrategyEngine<S>
+where
+    S: Strategy<Event = StrategyEvent>,
+{
+    pub(super) async fn dispatch_execution_plan(
+        &mut self,
+        execution_plan: ExecutionPlan,
+        swap_ip: Option<std::net::IpAddr>,
+    ) -> EngineResult<()> {
+        let strategy_name = self.strategy.name();
+
+        let variants = self.landers.variants();
+        if variants.is_empty() {
+            return Err(EngineError::Landing("no lander configured".into()));
         }
 
-        let prepared = self
-            .tx_builder
-            .build_with_sequence(
+        let builder = LandingProfileBuilder::new();
+        let sampled_compute_unit_price = self.settings.sample_compute_unit_price();
+        let mut profiles = Vec::with_capacity(variants.len());
+        for variant in variants {
+            profiles.push(builder.build_for_variant(variant, sampled_compute_unit_price));
+        }
+
+        let assembler = DefaultLandingAssembler::new();
+        let mut entries = Vec::with_capacity(profiles.len());
+        for profile in profiles {
+            let mut context = LandingAssemblyContext::new(
                 &self.identity,
-                &swap_variant,
-                final_instructions,
-                effective_tip,
-                jito_tip_plan.clone(),
-            )
-            .await?;
-        events::transaction_built(
-            strategy_name,
-            &opportunity,
-            prepared.slot,
-            &prepared.blockhash.to_string(),
-            prepared.last_valid_block_height,
-            swap_ip,
-        );
+                &self.tx_builder,
+                self.flashloan.as_ref(),
+                &mut self.lighthouse,
+            );
+            let entry = assembler
+                .assemble_landing(&mut context, &profile, &execution_plan)
+                .await
+                .map_err(|err| EngineError::Landing(err.to_string()))?;
+            entries.push(entry);
+        }
+
+        if entries.is_empty() {
+            return Err(EngineError::Landing("no landing entries".into()));
+        }
+
+        for entry in &entries {
+            let guard_label = match entry.guard.kind {
+                GuardStrategy::BasePlusTip => "base_plus_tip",
+                GuardStrategy::BasePlusPrioritizationFee => "base_plus_fee",
+                GuardStrategy::BasePlusTipAndPrioritizationFee => "base_plus_tip_fee",
+            };
+            let tip_kind_label = match entry.tip.kind {
+                TipComputationKind::Opportunity => "opportunity",
+                TipComputationKind::JitoPlan => "jito_plan",
+            };
+
+            debug!(
+                target: "engine::landing_plan",
+                strategy = strategy_name,
+                lander = entry.profile.lander_kind.label(),
+                tip_strategy = entry.profile.tip_strategy.label(),
+                tip_kind = tip_kind_label,
+                tip_lamports = entry.tip.lamports,
+                guard_strategy = guard_label,
+                guard_lamports = entry.guard.lamports,
+                prioritization_fee = entry.prioritization_fee_lamports,
+                base_prioritization_fee = execution_plan.prioritization_fee_lamports,
+                cu_price_micro = entry
+                    .prepared
+                    .compute_unit_price_micro_lamports
+                    .unwrap_or(0),
+                "落地器计划已构建"
+            );
+
+            events::transaction_built(
+                strategy_name,
+                &execution_plan.opportunity,
+                entry.prepared.slot,
+                &entry.prepared.blockhash.to_string(),
+                entry.prepared.last_valid_block_height,
+                swap_ip,
+            );
+            if let Some(meta) = &entry.flashloan_metadata {
+                events::flashloan_applied(
+                    strategy_name,
+                    meta.protocol.as_str(),
+                    &meta.mint,
+                    meta.borrow_amount,
+                    meta.inner_instruction_count,
+                );
+            }
+        }
 
         if self.settings.dry_run {
             info!(
                 target: "engine::dry_run",
                 strategy = strategy_name,
-                slot = prepared.slot,
-                blockhash = %prepared.blockhash,
+                slot = entries.first().map(|e| e.prepared.slot).unwrap_or_default(),
+                blockhash = entries
+                    .first()
+                    .map(|e| e.prepared.blockhash.to_string())
+                    .unwrap_or_else(|| "-".into()),
                 landers = self.landers.count(),
                 "dry-run 模式：交易将提交至覆盖的 RPC 端点"
             );
         }
+
+        let prepared: Vec<_> = entries.iter().map(|entry| entry.prepared.clone()).collect();
 
         let dispatch_strategy = self.settings.dispatch_strategy;
         let variant_layout = self.landers.variant_layout(dispatch_strategy);
@@ -247,7 +287,7 @@ where
             &variant_layout,
         ));
 
-        let deadline = Deadline::from_instant(deadline);
+        let deadline = Deadline::from_instant(execution_plan.deadline);
         let tx_signature = plan
             .primary_variant()
             .and_then(|variant| variant.signature());

@@ -1024,12 +1024,6 @@ pub struct BlindBaseMintConfig {
     #[serde(default)]
     #[serde(alias = "min_quote_profit_lamports")]
     pub min_quote_profit: Option<u64>,
-    #[serde(default)]
-    pub sending_cooldown: Option<u64>,
-    #[serde(default)]
-    pub route_types: Vec<String>,
-    #[serde(default)]
-    pub three_hop_mints: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1223,8 +1217,6 @@ pub struct BackRunTradeConfig {
     pub max_trade_bp: Option<u64>,
     #[serde(default)]
     pub fixed_size: Option<u64>,
-    #[serde(default)]
-    pub route_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

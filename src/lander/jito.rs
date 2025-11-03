@@ -17,6 +17,8 @@ use rand::seq::IndexedRandom;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::message::VersionedMessage;
 use solana_sdk::message::v0::Message as V0Message;
@@ -29,11 +31,13 @@ use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use url::Url;
 
-use crate::config::{LanderJitoConfig, LanderJitoUuidConfig, TipStrategyKind, TipStreamLevel};
-use crate::engine::{JitoTipPlan, TxVariant};
+use crate::config::{
+    LanderJitoConfig, LanderJitoUuidConfig, LanderSettings, TipStrategyKind, TipStreamLevel,
+};
+use crate::engine::{JitoTipPlan, TxVariant, VariantId};
 use crate::network::{IpBoundClientPool, ReqwestClientFactoryFn};
 
 use super::error::LanderError;
@@ -68,6 +72,7 @@ pub struct JitoLander {
     tip_selector: TipSelector,
     uuid_pool: Option<Arc<Mutex<UuidPool>>>,
     client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
+    dry_run: Option<DryRunFallback>,
 }
 
 impl JitoLander {
@@ -97,7 +102,13 @@ impl JitoLander {
             tip_selector,
             uuid_pool,
             client_pool,
+            dry_run: None,
         }
+    }
+
+    pub fn with_dry_run(mut self, rpc_client: Arc<RpcClient>, settings: &LanderSettings) -> Self {
+        self.dry_run = Some(DryRunFallback::new(rpc_client, settings));
+        self
     }
 
     pub fn endpoints(&self) -> usize {
@@ -106,6 +117,18 @@ impl JitoLander {
 
     pub fn endpoint_list(&self) -> Vec<String> {
         self.endpoints.clone()
+    }
+
+    pub fn tip_strategy_label(&self) -> &'static str {
+        match self.tip_selector.strategy_kind() {
+            TipStrategyKind::Fixed => "fixed",
+            TipStrategyKind::Range => "range",
+            TipStrategyKind::Stream => "stream",
+        }
+    }
+
+    pub fn stream_tip_snapshot(&self) -> Option<u64> {
+        self.tip_selector.stream_snapshot()
     }
 
     pub fn draw_tip_plan(&self) -> Option<JitoTipPlan> {
@@ -252,6 +275,15 @@ impl JitoLander {
                 tip_lamports,
                 "最终提交包含 tip"
             );
+        }
+
+        if let Some(dry_run) = &self.dry_run {
+            let slot = variant.slot();
+            let blockhash = variant.blockhash().to_string();
+            let variant_id = variant.id();
+            return dry_run
+                .submit(variant_id, slot, &blockhash, &final_tx, deadline, local_ip)
+                .await;
         }
 
         let main_encoded = encode_transaction(&final_tx)?;
@@ -525,6 +557,14 @@ impl TipSelector {
             range_tips,
             stream,
         }
+    }
+
+    fn strategy_kind(&self) -> TipStrategyKind {
+        self.strategy
+    }
+
+    fn stream_snapshot(&self) -> Option<u64> {
+        self.stream.as_ref().and_then(|stream| stream.latest())
     }
 
     fn select_tip(&self) -> Option<u64> {
@@ -988,6 +1028,71 @@ impl UuidTicket {
         json!({
             "bundleId": self.bundle_id,
             "uuid": self.uuid,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct DryRunFallback {
+    client: Arc<RpcClient>,
+    config: RpcSendTransactionConfig,
+}
+
+impl DryRunFallback {
+    fn new(client: Arc<RpcClient>, settings: &LanderSettings) -> Self {
+        let mut config = RpcSendTransactionConfig::default();
+        if let Some(skip) = settings.skip_preflight {
+            config.skip_preflight = skip;
+        }
+        if let Some(retries) = settings.max_retries {
+            config.max_retries = Some(retries);
+        }
+        if let Some(slot) = settings.min_context_slot {
+            config.min_context_slot = Some(slot);
+        }
+        Self { client, config }
+    }
+
+    async fn submit(
+        &self,
+        variant_id: VariantId,
+        slot: u64,
+        blockhash: &str,
+        tx: &VersionedTransaction,
+        deadline: Deadline,
+        local_ip: Option<IpAddr>,
+    ) -> Result<LanderReceipt, LanderError> {
+        if deadline.expired() {
+            return Err(LanderError::fatal(
+                "deadline expired before dry-run jito submission",
+            ));
+        }
+
+        let signature = self
+            .client
+            .send_transaction_with_config(tx, self.config.clone())
+            .await?;
+        let endpoint = self.client.url().to_string();
+        info!(
+            target: "lander::jito",
+            endpoint = %endpoint,
+            signature = %signature,
+            slot,
+            blockhash,
+            skip_preflight = self.config.skip_preflight,
+            max_retries = ?self.config.max_retries,
+            min_context_slot = ?self.config.min_context_slot,
+            "dry-run 模式：bundle 改为 RPC 提交"
+        );
+
+        Ok(LanderReceipt {
+            lander: "jito",
+            endpoint,
+            slot,
+            blockhash: blockhash.to_string(),
+            signature: Some(signature.to_string()),
+            variant_id,
+            local_ip,
         })
     }
 }

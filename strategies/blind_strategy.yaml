@@ -31,45 +31,23 @@ auto_scale_to_ip:
   max_multiplier: 3.0
 
 base_mints:
-  # - mint: "So11111111111111111111111111111111111111112"
-  #   # 每个 lane 描述一个交易规模区间与生成策略：
-  #   # - min/max：规模范围（单位 lamports）
-  #   # - count：初始生成多少个规模；结合 auto_scale 时也作为扩容基数
-  #   # - strategy：linear / exponential / random
-  #   # - weight：auto_scale 启用时的扩容权重（可选，默认 1.0）
-  #   lanes:
-  #     - min: 1_000_000_000
-  #       max: 6_000_000_000
-  #       count: 1
-  #       strategy: linear
-  #   # 最小利润
-  #   min_quote_profit: 10000
-  #   # 交易延时
-  #   # 单位为毫秒。默认值表示机器人将等待 1000 毫秒，然后针对相同代币交易规模的对再次尝试。减少此值将增加立即捕捉价格变化的机会，但会增加读取 RPC 负载。
-  #   # 冷却时间
-  #   # 如果找到一个机会并且发送了 tx，则至少等待这个时间（ms）才能发送另一个。
-  #   sending_cooldown: 1000
-  #   # 路由类型
-  #   # 2hop ：这意味着只有像 A -> B -> A 这样的路由才会被考虑。如果您还将 use_direct_route_only 设置为 false，则 A->B 和 B->A 之间可能存在其他铸币厂。
-  #   # 3hop ：这意味着只会考虑像 A -> B -> C -> A 这样的路线。您需要设置除了所有中间铸币厂之外，还希望在中间包含哪些额外的铸币厂。
-  #   # 最常见的用例是使用 SOL 和 USDC 为路线报价，例如 SOL -> USDC -> X -> SOL。3hop 会产生与将 use_direct_route_only 设置为 false 类似的结果，但报价时间要快得多
-  #   # 使用 3hop 时还需要定义 three_hop_mints
-  #   route_types:
-  #     - "2hop"
-  #     - "3hop"
-  #   # 三跳交易中，中间的铸币厂
-  #   three_hop_mints:
-  #     - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-  - mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+  - mint: "So11111111111111111111111111111111111111112"
+    # 每个 lane 描述一个交易规模区间与生成策略：
+    # - min/max：规模范围（单位 lamports）
+    # - count：初始生成多少个规模；结合 auto_scale 时也作为扩容基数
+    # - strategy：linear / exponential / random
+    # - weight：auto_scale 启用时的扩容权重（可选，默认 1.0）
     lanes:
-      - min: 600_000_000
-        max: 1_200_000_000
+      - min: 1_000_000_000
+        max: 6_000_000_000
         count: 1
         strategy: linear
-    min_quote_profit: 1000
-    sending_cooldown: 1000
-    route_types:
-      - "2hop"
-      - "3hop"
-    three_hop_mints:
-      - "So11111111111111111111111111111111111111112"
+    # 最小利润
+    min_quote_profit: 10000
+  # - mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+  #   lanes:
+  #     - min: 600_000_000
+  #       max: 1_200_000_000
+  #       count: 1
+  #       strategy: linear
+  #   min_quote_profit: 1000

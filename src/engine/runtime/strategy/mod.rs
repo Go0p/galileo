@@ -148,7 +148,6 @@ impl EngineSettings {
         self.compute_unit_price_mode
             .as_ref()
             .map(|mode| mode.sample())
-            .filter(|price| *price > 0)
     }
 }
 
@@ -302,12 +301,5 @@ where
         };
 
         Ok(strategy_wait.max(cadence_wait))
-    }
-
-    fn jito_tip_budget(&self, tip_lamports: u64) -> u64 {
-        if !self.landers.has_jito() {
-            return 0;
-        }
-        tip_lamports
     }
 }
