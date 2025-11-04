@@ -2,7 +2,8 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_config::RpcSendTransactionConfig;
+use solana_client::rpc_config::{RpcSendTransactionConfig, RpcSimulateTransactionConfig};
+use solana_commitment_config::CommitmentConfig;
 use solana_sdk::transaction::VersionedTransaction;
 use tracing::info;
 
@@ -15,6 +16,7 @@ use super::stack::{Deadline, LanderReceipt};
 pub struct RpcLander {
     client: Arc<RpcClient>,
     config: RpcSendTransactionConfig,
+    enable_simulation: bool,
 }
 
 impl RpcLander {
@@ -23,6 +25,7 @@ impl RpcLander {
         skip_preflight: Option<bool>,
         max_retries: Option<usize>,
         min_context_slot: Option<u64>,
+        enable_simulation: bool,
     ) -> Self {
         let mut config = RpcSendTransactionConfig::default();
         if let Some(skip) = skip_preflight {
@@ -35,7 +38,11 @@ impl RpcLander {
             config.min_context_slot = Some(slot);
         }
 
-        Self { client, config }
+        Self {
+            client,
+            config,
+            enable_simulation,
+        }
     }
 
     pub async fn submit_variant(
@@ -46,6 +53,17 @@ impl RpcLander {
     ) -> Result<LanderReceipt, LanderError> {
         if deadline.expired() {
             return Err(LanderError::fatal("deadline expired before rpc submission"));
+        }
+
+        if self.enable_simulation {
+            return self
+                .simulate_via_rpc(
+                    variant.id(),
+                    variant.transaction(),
+                    variant.slot(),
+                    &variant.blockhash().to_string(),
+                )
+                .await;
         }
 
         self.send_via_rpc(
@@ -89,6 +107,52 @@ impl RpcLander {
             signature: Some(signature.to_string()),
             variant_id,
             local_ip,
+        })
+    }
+
+    async fn simulate_via_rpc(
+        &self,
+        variant_id: VariantId,
+        tx: &VersionedTransaction,
+        slot: u64,
+        blockhash: &str,
+    ) -> Result<LanderReceipt, LanderError> {
+        let commitment = self
+            .config
+            .preflight_commitment
+            .map(|level| CommitmentConfig { commitment: level });
+        let config = RpcSimulateTransactionConfig {
+            sig_verify: true,
+            replace_recent_blockhash: false,
+            commitment,
+            min_context_slot: self.config.min_context_slot,
+            ..Default::default()
+        };
+
+        let result = self
+            .client
+            .simulate_transaction_with_config(tx, config)
+            .await
+            .map_err(LanderError::Rpc)?;
+
+        info!(
+            target: "lander::rpc",
+            slot,
+            blockhash,
+            err = result.value.err.as_ref().map(|err| err.to_string()),
+            logs = ?result.value.logs,
+            units_consumed = result.value.units_consumed,
+            "transaction simulated via rpc client"
+        );
+
+        Ok(LanderReceipt {
+            lander: "rpc",
+            endpoint: self.client.url().to_string(),
+            slot,
+            blockhash: blockhash.to_string(),
+            signature: None,
+            variant_id,
+            local_ip: None,
         })
     }
 }

@@ -73,3 +73,16 @@ monitoring:
   enable_metrics: true
   route_labels: true         # 指标上打 route 名称标签
 
+# Yellowstone 监听与盲发池子画像（默认关闭，启用需配置 endpoint/token/wallets）
+observer:
+  enable: false
+  grpc_endpoint: ""           # 监听地址，例如 https://grpc.mainnet.xyz
+  grpc_token: ""              # 可选：Yellowstone x-token
+  wallets: []                 # 需要观测的外部钱包（成功交易复制来源）
+  queue_capacity: 1024        # 监听事件缓冲队列容量
+
+# 动态池子激活策略（配合 observer 使用）
+activation:
+  min_hits: 3                 # 至少命中次数后才加入盲发候选
+  min_estimated_profit: null  # 可选：累计利润阈值 (lamports)，null 表示不限制
+  decay_seconds: 60           # 超过该秒数未再命中则自动衰减下线

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{Cursor, Read};
 
 use anyhow::{Result, anyhow, bail};
-use borsh::{BorshSerialize, io::Write};
+use borsh::{BorshDeserialize, BorshSerialize, io::Write};
 use once_cell::sync::Lazy;
 use serde::de::Error as DeError;
 use serde::ser::Error as SerError;
@@ -225,7 +225,38 @@ impl BorshSerialize for EncodedSwap {
     }
 }
 
-#[derive(Serialize, Deserialize, BorshSerialize, Clone, Debug, PartialEq, Eq)]
+impl borsh::BorshDeserialize for EncodedSwap {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        use std::io::{Error, ErrorKind};
+
+        let mut disc = [0u8; 1];
+        reader.read_exact(&mut disc)?;
+        let discriminant = disc[0];
+
+        let variant_name = SWAP_DISCRIMINANTS.get(&discriminant).ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!("unknown swap discriminant {discriminant}"),
+            )
+        })?;
+
+        let spec = SWAP_VARIANTS.get(variant_name).ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!("missing swap variant spec for {variant_name}"),
+            )
+        })?;
+
+        let mut data = Vec::new();
+        for field in &spec.fields {
+            read_field_bytes(field, reader, &mut data)?;
+        }
+
+        Ok(Self { discriminant, data })
+    }
+}
+
+#[derive(Serialize, Deserialize, BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct RoutePlanStep {
     pub swap: EncodedSwap,
     pub percent: u8,
@@ -233,7 +264,7 @@ pub struct RoutePlanStep {
     pub output_index: u8,
 }
 
-#[derive(Serialize, Deserialize, BorshSerialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct RoutePlanStepV2 {
     pub swap: EncodedSwap,
     pub bps: u16,
@@ -380,6 +411,54 @@ fn encode_field(field: &FieldSpec, value: Option<Value>, buf: &mut Vec<u8>) -> R
             }
         }
     }
+    Ok(())
+}
+
+fn read_field_bytes<R: std::io::Read>(
+    field: &FieldSpec,
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<()> {
+    fn read_into<R: std::io::Read>(
+        reader: &mut R,
+        buf: &mut Vec<u8>,
+        len: usize,
+    ) -> std::io::Result<()> {
+        let mut tmp = vec![0u8; len];
+        reader.read_exact(&mut tmp)?;
+        buf.extend_from_slice(&tmp);
+        Ok(())
+    }
+
+    match field.ty {
+        FieldType::Bool | FieldType::U8 | FieldType::Side => read_into(reader, buf, 1)?,
+        FieldType::U32 => read_into(reader, buf, 4)?,
+        FieldType::U64 => read_into(reader, buf, 8)?,
+        FieldType::RemainingAccountsInfo => {
+            let mut len_bytes = [0u8; 4];
+            reader.read_exact(&mut len_bytes)?;
+            buf.extend_from_slice(&len_bytes);
+            let len = u32::from_le_bytes(len_bytes);
+            for _ in 0..len {
+                read_into(reader, buf, 2)?;
+            }
+        }
+        FieldType::OptionalRemainingAccountsInfo => {
+            let mut flag = [0u8; 1];
+            reader.read_exact(&mut flag)?;
+            buf.extend_from_slice(&flag);
+            if flag[0] != 0 {
+                let mut len_bytes = [0u8; 4];
+                reader.read_exact(&mut len_bytes)?;
+                buf.extend_from_slice(&len_bytes);
+                let len = u32::from_le_bytes(len_bytes);
+                for _ in 0..len {
+                    read_into(reader, buf, 2)?;
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 

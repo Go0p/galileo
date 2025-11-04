@@ -13,7 +13,7 @@ use yellowstone_grpc_proto::tonic::service::{Interceptor, interceptor::Intercept
 use yellowstone_grpc_proto::tonic::transport::{Channel, Endpoint};
 use yellowstone_grpc_proto::tonic::{Request, Status};
 
-pub(crate) struct YellowstoneTransactionClient {
+pub struct YellowstoneTransactionClient {
     client: GeyserClient<InterceptedService<Channel, TokenInterceptor>>,
 }
 
@@ -73,7 +73,7 @@ impl Interceptor for TokenInterceptor {
     }
 }
 
-pub(crate) fn parse_transaction_update(
+pub fn parse_transaction_update(
     update: &SubscribeUpdate,
 ) -> Option<SubscribeUpdateTransactionInfo> {
     match &update.update_oneof {

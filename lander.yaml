@@ -35,7 +35,7 @@ lander:
 
     # 小费策略，
     # 支持的值 fixed, range, stream
-    tip_strategy: "stream"
+    tip_strategy: "fixed"
 
     # 使用固定的 lamports 作为小费
     fixed_tip: 2444
@@ -52,7 +52,7 @@ lander:
   # 本质上是一个质押的 rpc 节点
   staked:
     endpoints:
-      - "https://acc.solayer.org"
+      # - "https://acc.solayer.org"
       - "https://staked.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
       # - "https://solana-rpc.publicnode.com"
       # go0p

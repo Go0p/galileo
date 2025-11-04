@@ -65,6 +65,7 @@ impl InstructionBundle {
     }
 
     /// 扁平化所有指令，按照 compute → pre → main → post 的顺序输出。
+    #[cfg(test)]
     pub fn flatten(&mut self) -> Vec<Instruction> {
         self.ensure_compute_budget();
         let total_len = self

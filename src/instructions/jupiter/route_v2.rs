@@ -1,11 +1,11 @@
 use anyhow::Result;
-use borsh::BorshSerialize;
+use borsh::{BorshDeserialize, BorshSerialize};
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::pubkey::Pubkey;
 
 use super::types::{JUPITER_V6_EVENT_AUTHORITY, JUPITER_V6_PROGRAM_ID, RoutePlanStepV2};
 
-const ROUTE_V2_DISCRIMINATOR: [u8; 8] = [187, 100, 250, 204, 49, 196, 175, 20];
+pub const ROUTE_V2_DISCRIMINATOR: [u8; 8] = [187, 100, 250, 204, 49, 196, 175, 20];
 
 #[derive(Clone, Debug)]
 pub struct RouteV2Accounts {
@@ -72,14 +72,14 @@ impl RouteV2Accounts {
     }
 }
 
-#[derive(BorshSerialize)]
-struct RouteV2InstructionArgs {
-    in_amount: u64,
-    quoted_out_amount: u64,
-    slippage_bps: u16,
-    platform_fee_bps: u16,
-    positive_slippage_bps: u16,
-    route_plan: Vec<RoutePlanStepV2>,
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
+pub struct RouteV2Payload {
+    pub in_amount: u64,
+    pub quoted_out_amount: u64,
+    pub slippage_bps: u16,
+    pub platform_fee_bps: u16,
+    pub positive_slippage_bps: u16,
+    pub route_plan: Vec<RoutePlanStepV2>,
 }
 
 #[derive(Clone, Debug)]
@@ -97,7 +97,7 @@ impl RouteV2InstructionBuilder {
     pub fn build(self) -> Result<Instruction> {
         let mut data = Vec::new();
         data.extend_from_slice(&ROUTE_V2_DISCRIMINATOR);
-        let args = RouteV2InstructionArgs {
+        let args = RouteV2Payload {
             in_amount: self.in_amount,
             quoted_out_amount: self.quoted_out_amount,
             slippage_bps: self.slippage_bps,
@@ -162,7 +162,7 @@ mod tests {
         assert_eq!(&instruction.data[0..8], &ROUTE_V2_DISCRIMINATOR);
 
         let mut expected = Vec::new();
-        RouteV2InstructionArgs {
+        RouteV2Payload {
             in_amount: 500,
             quoted_out_amount: 500,
             slippage_bps: 10,
@@ -175,4 +175,19 @@ mod tests {
 
         assert_eq!(&instruction.data[8..], expected.as_slice());
     }
+}
+
+pub fn decode_route_v2_payload(data: &[u8]) -> anyhow::Result<RouteV2Payload> {
+    use anyhow::{Context, anyhow};
+
+    if data.len() < ROUTE_V2_DISCRIMINATOR.len() {
+        return Err(anyhow!("route_v2 data too short"));
+    }
+    if &data[..8] != ROUTE_V2_DISCRIMINATOR {
+        return Err(anyhow!("route_v2 discriminator mismatch"));
+    }
+
+    let mut cursor = std::io::Cursor::new(&data[8..]);
+    RouteV2Payload::deserialize_reader(&mut cursor)
+        .with_context(|| "failed to decode route_v2 payload")
 }

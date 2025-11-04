@@ -20,6 +20,7 @@ pub struct LanderFactory {
     http_client: Client,
     client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
     dry_run_enabled: bool,
+    enable_simulation: bool,
 }
 
 impl LanderFactory {
@@ -28,12 +29,14 @@ impl LanderFactory {
         http_client: Client,
         client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
         dry_run_enabled: bool,
+        enable_simulation: bool,
     ) -> Self {
         Self {
             rpc_client,
             http_client,
             client_pool,
             dry_run_enabled,
+            enable_simulation,
         }
     }
 
@@ -88,6 +91,7 @@ impl LanderFactory {
                 settings.skip_preflight,
                 settings.max_retries,
                 settings.min_context_slot,
+                self.enable_simulation,
             ))),
             "jito" => settings.jito.as_ref().and_then(|cfg| {
                 let has_endpoint = cfg
@@ -127,6 +131,7 @@ impl LanderFactory {
                         settings.max_retries,
                         settings.min_context_slot,
                         self.client_pool.clone(),
+                        self.enable_simulation,
                     )))
                 }
             }),

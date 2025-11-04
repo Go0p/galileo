@@ -45,7 +45,11 @@ use crate::engine::{
 use crate::lander::LanderFactory;
 use crate::monitoring::events;
 use crate::network::IpAllocator;
+use crate::strategy::pure_blind::dynamic::spawn_dynamic_worker;
 use crate::strategy::pure_blind::market_cache::init_market_cache;
+use crate::strategy::pure_blind::observer::{
+    PoolActivationPolicy, PoolCatalog, PoolObserverSettings, spawn_pool_observer,
+};
 use crate::strategy::run_copy_strategy;
 use crate::strategy::{
     BlindStrategy, PureBlindRouteBuilder, PureBlindStrategy, Strategy, StrategyEvent,
@@ -53,6 +57,7 @@ use crate::strategy::{
 use rand::Rng as _;
 use solana_sdk::pubkey::Pubkey;
 use url::Url;
+use yellowstone_grpc_proto::tonic::metadata::AsciiMetadataValue;
 
 /// 控制策略以正式模式还是 dry-run 模式运行。
 pub enum StrategyMode {
@@ -347,6 +352,7 @@ async fn run_blind_engine(
         submission_client.clone(),
         Some(Arc::clone(&submission_client_pool)),
         dry_run_enabled,
+        config.galileo.bot.enable_simulation,
     );
     let default_landers = ["rpc"];
 
@@ -1139,6 +1145,7 @@ async fn run_pure_blind_engine(
         submission_client.clone(),
         Some(Arc::clone(&submission_client_pool)),
         dry_run_enabled,
+        config.galileo.bot.enable_simulation,
     );
     let default_landers = ["rpc"];
 
@@ -1177,13 +1184,77 @@ async fn run_pure_blind_engine(
         .with_compute_unit_price_mode(compute_unit_price_mode.clone())
         .with_console_summary(console_summary_settings);
 
+    let decay_duration = Duration::from_secs(pure_config.activation.decay_seconds);
+    let activation_policy = PoolActivationPolicy::new(
+        pure_config.activation.min_hits,
+        pure_config.activation.min_estimated_profit,
+        decay_duration,
+    );
+    let observer_queue_capacity = pure_config
+        .observer
+        .as_ref()
+        .map(|cfg| cfg.queue_capacity)
+        .unwrap_or(1024);
+    let catalog = Arc::new(PoolCatalog::new(activation_policy, observer_queue_capacity));
+
+    if let Some(observer_cfg) = pure_config.observer.as_ref().filter(|cfg| cfg.enable) {
+        let endpoint = observer_cfg
+            .grpc_endpoint
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow!("pure_blind_strategy.observer.grpc_endpoint 不能为空"))?;
+
+        let token = observer_cfg
+            .grpc_token
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.parse::<AsciiMetadataValue>())
+            .transpose()
+            .map_err(|err| anyhow!("pure_blind_strategy.observer.grpc_token 解析失败: {err}"))?;
+
+        let mut wallets = Vec::with_capacity(observer_cfg.wallets.len());
+        for (idx, wallet) in observer_cfg.wallets.iter().enumerate() {
+            let trimmed = wallet.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let pubkey = Pubkey::from_str(trimmed).map_err(|err| {
+                anyhow!("pure_blind_strategy.observer.wallets[{idx}] `{trimmed}` 解析失败: {err}")
+            })?;
+            wallets.push(pubkey);
+        }
+
+        let settings = PoolObserverSettings {
+            endpoint: endpoint.to_string(),
+            token,
+            wallets,
+        };
+
+        if let Err(err) = spawn_pool_observer(settings, Arc::clone(&catalog)).await {
+            warn!(
+                target: "pure_blind::observer",
+                error = %err,
+                "启动池子观察器失败"
+            );
+        }
+    }
+
+    let dynamic_rx = spawn_dynamic_worker(
+        Arc::clone(&catalog),
+        Arc::clone(&rpc_client),
+        decay_duration,
+    );
+
     let routes = PureBlindRouteBuilder::new(pure_config, rpc_client.as_ref(), &market_cache_handle)
         .build()
         .await
         .map_err(|err| anyhow!(err))?;
 
     let strategy_engine = StrategyEngine::new(
-        PureBlindStrategy::new(routes).map_err(|err| anyhow!(err))?,
+        PureBlindStrategy::new(routes, pure_config, catalog, dynamic_rx)
+            .map_err(|err| anyhow!(err))?,
         lander_stack.clone(),
         identity,
         ip_allocator,

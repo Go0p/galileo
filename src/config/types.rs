@@ -1380,18 +1380,30 @@ impl Default for TradeRangeStrategy {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct PureBlindStrategyConfig {
+    /// 指定纯盲发允许使用的落地器顺序；为空时继承全局设置。
     #[serde(default)]
     pub enable_landers: Vec<String>,
+    /// 纯盲发执行时的全局 CU 预算放大倍数。
     #[serde(default = "super::default_one")]
     pub cu_multiplier: f64,
+    /// 市场缓存下载与过滤配置，用于自动路由生成。
     #[serde(default)]
     pub market_cache: PureBlindMarketCacheConfig,
+    /// 纯盲发资产集合（入口 mint、候选中间资产、黑名单等）。
     #[serde(default)]
     pub assets: PureBlindAssetsConfig,
+    /// 手工指定的闭环路由列表（自动生成失败时兜底）。
     #[serde(default)]
     pub overrides: Vec<PureBlindOverrideConfig>,
+    /// 纯盲发策略自身的监控开关。
     #[serde(default)]
     pub monitoring: PureBlindMonitoringConfig,
+    /// Yellowstone gRPC 观察器设置；启用后可监听外部成功交易。
+    #[serde(default)]
+    pub observer: Option<PureBlindObserverConfig>,
+    /// 池子画像激活阈值与衰减策略，控制动态盲发路由的上线/下线。
+    #[serde(default)]
+    pub activation: PureBlindActivationConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1457,6 +1469,60 @@ pub struct PureBlindMonitoringConfig {
     pub enable_metrics: bool,
     #[serde(default)]
     pub route_labels: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PureBlindObserverConfig {
+    /// 打开后启动 Yellowstone 监听流程；关闭则只使用静态/缓存路由。
+    #[serde(default)]
+    pub enable: bool,
+    /// Yellowstone gRPC 订阅端点，例如 `https://grpc.mainnet.xyz`.
+    #[serde(default)]
+    pub grpc_endpoint: Option<String>,
+    /// 调用 Yellowstone gRPC 所需的 `x-token`，可选。
+    #[serde(default)]
+    pub grpc_token: Option<String>,
+    /// 需要监听的外部钱包地址集合。
+    #[serde(default)]
+    pub wallets: Vec<String>,
+    /// 监听事件内部队列容量，避免消费端落后；默认 1024。
+    #[serde(default = "default_observer_queue_capacity")]
+    pub queue_capacity: usize,
+}
+
+fn default_observer_queue_capacity() -> usize {
+    1024
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PureBlindActivationConfig {
+    /// 某个池子被判定为可用前至少需要的成功命中次数。
+    #[serde(default = "default_min_hits")]
+    pub min_hits: u64,
+    /// 激活池子时所需的累计估算利润阈值（单位：lamports，可选）。
+    #[serde(default)]
+    pub min_estimated_profit: Option<i128>,
+    /// 若在该秒数内未观察到新命中，则自动衰减/下线该池子。
+    #[serde(default = "default_decay_seconds")]
+    pub decay_seconds: u64,
+}
+
+impl Default for PureBlindActivationConfig {
+    fn default() -> Self {
+        Self {
+            min_hits: default_min_hits(),
+            min_estimated_profit: None,
+            decay_seconds: default_decay_seconds(),
+        }
+    }
+}
+
+const fn default_min_hits() -> u64 {
+    1
+}
+
+const fn default_decay_seconds() -> u64 {
+    60
 }
 
 fn deserialize_u64_value<'de, D>(deserializer: D) -> Result<u64, D::Error>

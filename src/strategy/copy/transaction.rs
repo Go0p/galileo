@@ -229,6 +229,10 @@ impl TransactionTokenBalances {
     pub fn entries(&self) -> impl Iterator<Item = &TokenBalanceEntry> {
         self.by_index.values()
     }
+
+    pub fn iter_indexed(&self) -> impl Iterator<Item = (&usize, &TokenBalanceEntry)> {
+        self.by_index.iter()
+    }
 }
 
 impl TryFrom<&confirmed_block::TransactionStatusMeta> for TransactionTokenBalances {

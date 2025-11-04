@@ -7,7 +7,7 @@ use reqwest::Client;
 use serde_json::{Value, json, map::Map};
 use std::net::IpAddr;
 use std::sync::Arc;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::engine::{TxVariant, VariantId};
 use crate::network::{IpBoundClientPool, ReqwestClientFactoryFn};
@@ -23,6 +23,7 @@ pub struct StakedLander {
     max_retries: Option<usize>,
     min_context_slot: Option<u64>,
     client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
+    enable_simulation: bool,
 }
 
 impl StakedLander {
@@ -33,6 +34,7 @@ impl StakedLander {
         skip_preflight: Option<bool>,
         max_retries: Option<usize>,
         min_context_slot: Option<u64>,
+        enable_simulation: bool,
     ) -> Self {
         Self {
             endpoints,
@@ -41,6 +43,7 @@ impl StakedLander {
             max_retries,
             min_context_slot,
             client_pool: None,
+            enable_simulation,
         }
     }
 
@@ -51,6 +54,7 @@ impl StakedLander {
         max_retries: Option<usize>,
         min_context_slot: Option<u64>,
         client_pool: Option<Arc<IpBoundClientPool<ReqwestClientFactoryFn>>>,
+        enable_simulation: bool,
     ) -> Self {
         Self {
             endpoints,
@@ -59,6 +63,7 @@ impl StakedLander {
             max_retries,
             min_context_slot,
             client_pool,
+            enable_simulation,
         }
     }
 
@@ -125,6 +130,20 @@ impl StakedLander {
         let variant_id = variant.id();
         let client = self.http_client(local_ip)?;
 
+        if self.enable_simulation {
+            return self
+                .simulate_variant(
+                    &client,
+                    endpoint,
+                    encoded.clone(),
+                    slot,
+                    &blockhash,
+                    variant_id,
+                    local_ip,
+                )
+                .await;
+        }
+
         if let Some(target) = endpoint {
             return self
                 .send_once(
@@ -182,6 +201,92 @@ impl StakedLander {
 
         Err(last_err
             .unwrap_or_else(|| LanderError::fatal("all staked endpoints failed sendTransaction")))
+    }
+
+    async fn simulate_variant(
+        &self,
+        client: &Client,
+        endpoint: Option<&str>,
+        encoded: String,
+        slot: u64,
+        blockhash: &str,
+        variant_id: VariantId,
+        local_ip: Option<IpAddr>,
+    ) -> Result<LanderReceipt, LanderError> {
+        let target_list: Vec<String> = if let Some(single) = endpoint {
+            vec![single.to_string()]
+        } else {
+            self.endpoints
+                .clone()
+                .into_iter()
+                .filter(|value| !value.trim().is_empty())
+                .collect()
+        };
+
+        if target_list.is_empty() {
+            return Err(LanderError::fatal(
+                "no staked endpoints configured for simulation",
+            ));
+        }
+
+        let mut last_err: Option<LanderError> = None;
+        for target in target_list {
+            let mut config = Map::with_capacity(4);
+            config.insert("encoding".to_string(), json!("base64"));
+            config.insert("sigVerify".to_string(), json!(true));
+            if let Some(slot) = self.min_context_slot {
+                if slot > 0 {
+                    config.insert("minContextSlot".to_string(), json!(slot));
+                }
+            }
+            let simulate_payload = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "simulateTransaction",
+                "params": [
+                    encoded,
+                    Value::Object(config),
+                ],
+            });
+
+            match client.post(&target).json(&simulate_payload).send().await {
+                Ok(response) => match response.json::<Value>().await {
+                    Ok(value) => {
+                        let err = value.get("error").cloned().unwrap_or(Value::Null);
+                        let logs = value
+                            .pointer("/result/value/logs")
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        info!(
+                            target: "lander::staked",
+                            endpoint = %target,
+                            error = ?err,
+                            logs = ?logs,
+                            "simulateTransaction completed"
+                        );
+                        return Ok(LanderReceipt {
+                            lander: "staked",
+                            endpoint: target,
+                            slot,
+                            blockhash: blockhash.to_string(),
+                            signature: None,
+                            variant_id,
+                            local_ip,
+                        });
+                    }
+                    Err(err) => {
+                        last_err = Some(LanderError::Network(err));
+                    }
+                },
+                Err(err) => {
+                    last_err = Some(LanderError::Network(err));
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            LanderError::fatal("all staked endpoints failed simulateTransaction")
+        }))
     }
 
     async fn send_once(

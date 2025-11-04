@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fmt::Write as FmtWrite;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -19,26 +20,28 @@ use yellowstone_grpc_proto::tonic::metadata::AsciiMetadataValue;
 use crate::config::{
     CopyDispatchConfig, CopyDispatchMode, CopySourceKind, CopyWalletConfig, LanderSettings,
 };
-use crate::engine::assembly::decorators::{
-    ComputeBudgetDecorator, GuardBudgetDecorator, GuardStrategy, ProfitGuardDecorator, TipDecorator,
+use crate::engine::landing::ExecutionPlan;
+use crate::engine::landing::assembler::{
+    DefaultLandingAssembler, LandingAssembler, LandingAssemblyContext,
 };
-use crate::engine::assembly::{
-    AssemblyContext, DecoratorChain, InstructionBundle, attach_lighthouse,
+use crate::engine::landing::profile::{
+    ComputeUnitPriceStrategy, GuardBudgetKind, LanderKind, LandingProfile, TipStrategy,
 };
 use crate::engine::{
-    ComputeUnitPriceMode, DispatchStrategy, EngineIdentity, LighthouseRuntime,
-    MultiLegInstructions, SwapInstructionsVariant, TransactionBuilder, TxVariantPlanner,
+    ComputeUnitPriceMode, DispatchStrategy, EngineIdentity, JitoTipPlan, LighthouseRuntime,
+    MultiLegInstructions, SwapInstructionsVariant, SwapOpportunity, TransactionBuilder,
+    TxVariantPlanner,
 };
 use crate::instructions::jupiter::types::JUPITER_V6_PROGRAM_ID;
-use crate::lander::{Deadline, LanderFactory, LanderStack};
+use crate::lander::{Deadline, LanderFactory, LanderStack, LanderVariant};
 use crate::monitoring::events;
 use crate::network::IpAllocator;
+use crate::strategy::types::TradePair;
 use crate::wallet::WalletStateManager;
 use flume::{self, Receiver, Sender, TrySendError};
 use parking_lot::Mutex as ParkingMutex;
 
 use super::constants::{MAX_SEEN_SIGNATURES, SYSTEM_PROGRAM_ID};
-use super::grpc::{YellowstoneTransactionClient, parse_transaction_update};
 use super::transaction::filter_transaction;
 use super::transaction::{
     RouteContext, TransactionLoadedAddresses, TransactionTokenBalances, apply_replacements,
@@ -48,6 +51,7 @@ use super::transaction::{
     read_route_quoted_out_amount, resolve_lookup_accounts, split_compute_budget,
     update_route_in_amount, update_route_quoted_out_amount,
 };
+use crate::network::yellowstone::{YellowstoneTransactionClient, parse_transaction_update};
 pub(crate) struct CopyWalletRunner {
     wallet: CopyWalletConfig,
     dispatch: CopyDispatchConfig,
@@ -78,6 +82,51 @@ struct CopyTaskQueue {
     sender: ParkingMutex<Option<Sender<CopyTask>>>,
     receiver: Receiver<CopyTask>,
     wallet: Pubkey,
+}
+
+#[derive(Clone, Default)]
+struct TipDebugInfo {
+    plan_initial: Option<JitoTipPlan>,
+    plan_final: Option<JitoTipPlan>,
+    temp_wallet: Option<Pubkey>,
+    raw_lamports: Option<u64>,
+    adjusted_lamports: Option<u64>,
+    min_tip_applied: bool,
+    source_transfer_detected: bool,
+    detected_tip_lamports: u64,
+    final_tip_lamports: u64,
+}
+
+impl TipDebugInfo {
+    fn as_summary(&self) -> String {
+        let mut out = String::new();
+        let _ = write!(
+            out,
+            "tip_detected={} final_tip={} source_transfer_detected={} min_tip_floor={} ",
+            self.detected_tip_lamports,
+            self.final_tip_lamports,
+            self.source_transfer_detected,
+            self.min_tip_applied
+        );
+        if let Some(wallet) = self.temp_wallet {
+            let _ = write!(out, "temp_wallet={} ", wallet);
+        }
+        if let Some(raw) = self.raw_lamports {
+            let _ = write!(out, "raw_tip={} ", raw);
+        }
+        if let Some(adj) = self.adjusted_lamports {
+            let _ = write!(out, "adjusted_tip={} ", adj);
+        }
+        if let Some(plan) = &self.plan_initial {
+            let _ = write!(out, "plan_initial=({}, {}) ", plan.recipient, plan.lamports);
+        }
+        if let Some(plan) = &self.plan_final {
+            let _ = write!(out, "plan_final=({}, {})", plan.recipient, plan.lamports);
+        } else {
+            let _ = write!(out, "plan_final=<none>");
+        }
+        out.trim_end().to_string()
+    }
 }
 
 const BASE_GUARD_LAMPORTS: u64 = 5_000;
@@ -626,6 +675,7 @@ impl CopyWalletRunner {
         loaded_addresses: Option<&TransactionLoadedAddresses>,
         fanout_count: u32,
     ) -> Result<()> {
+        let mut tip_debug = TipDebugInfo::default();
         let required_signers = message_required_signatures(&transaction.message);
         if required_signers > 1 {
             events::copy_transaction_captured(&self.wallet_pubkey, signature, fanout_count, None);
@@ -650,6 +700,10 @@ impl CopyWalletRunner {
                 );
                 err
             })?;
+        let lookup_table_snapshot: Vec<String> = lookups
+            .iter()
+            .map(|account| account.key.to_string())
+            .collect();
         let (instructions, account_keys) =
             instructions_from_message(&transaction.message, &lookups, loaded_addresses)
                 .context("指令解析失败")
@@ -662,15 +716,10 @@ impl CopyWalletRunner {
                     );
                     err
                 })?;
-        let original_signers = collect_instruction_signers(&instructions);
-        debug!(
-            target: "strategy::copy",
-            wallet = %self.wallet_pubkey,
-            signature = %signature,
-            required_signers,
-            original_signers = ?original_signers,
-            "解析原始指令完成"
-        );
+        let original_signers_snapshot: Vec<String> = collect_instruction_signers(&instructions)
+            .into_iter()
+            .map(|pk| pk.to_string())
+            .collect();
 
         let route_ctx = match instructions.iter().find_map(RouteContext::from_instruction) {
             Some(ctx) => ctx,
@@ -733,6 +782,8 @@ impl CopyWalletRunner {
             &account_keys,
         );
 
+        let mut amount_adjustment_summary = String::from("not_adjusted");
+
         match self
             .adjust_route_amounts(base_info, &mut jupiter_instructions)
             .await?
@@ -754,17 +805,9 @@ impl CopyWalletRunner {
                 mint,
                 available,
             } => {
-                debug!(
-                    target: "strategy::copy",
-                    wallet = %self.wallet_pubkey,
-                    signature = %signature,
-                    mint = %mint,
-                    original_in,
-                    adjusted_in,
-                    original_out,
-                    adjusted_out,
-                    available,
-                    "已根据身份余额调整 route 金额"
+                amount_adjustment_summary = format!(
+                    "applied mint={} original_in={} adjusted_in={} original_out={} adjusted_out={} available={}",
+                    mint, original_in, adjusted_in, original_out, adjusted_out, available
                 );
             }
             AmountAdjustment::NotNeeded => {}
@@ -773,31 +816,8 @@ impl CopyWalletRunner {
         let base_mint = base_info.map(|info| info.mint);
 
         let original_accounts_snapshot = describe_jupiter_accounts(&jupiter_instructions);
-        debug!(
-            target: "strategy::copy",
-            wallet = %self.wallet_pubkey,
-            signature = %signature,
-            accounts = ?original_accounts_snapshot,
-            "Jupiter 指令原始账户"
-        );
-
-        debug!(
-            target: "strategy::copy",
-            wallet = %self.wallet_pubkey,
-            signature = %signature,
-            replacements = ?replacement.mapping,
-            "账户替换表已生成"
-        );
         apply_replacements(&mut jupiter_instructions, &replacement.mapping);
-
         let replaced_accounts_snapshot = describe_jupiter_accounts(&jupiter_instructions);
-        debug!(
-            target: "strategy::copy",
-            wallet = %self.wallet_pubkey,
-            signature = %signature,
-            accounts = ?replaced_accounts_snapshot,
-            "Jupiter 指令替换后账户"
-        );
 
         let mut patched_instructions =
             Vec::with_capacity(compute_budget_instructions.len() + jupiter_instructions.len() + 1);
@@ -834,6 +854,8 @@ impl CopyWalletRunner {
 
         patched_instructions.extend(jupiter_instructions);
         let patched_signers = collect_instruction_signers(&patched_instructions);
+        let patched_signers_snapshot: Vec<String> =
+            patched_signers.iter().map(|pk| pk.to_string()).collect();
         let identity_key = self.identity.pubkey;
         if !patched_signers.contains(&identity_key) {
             warn!(
@@ -845,14 +867,6 @@ impl CopyWalletRunner {
                 "替换后的指令 signer 不包含身份密钥，可能导致签名不足"
             );
         }
-        debug!(
-            target: "strategy::copy",
-            wallet = %self.wallet_pubkey,
-            signature = %signature,
-            identity = %identity_key,
-            patched_signers = ?patched_signers,
-            "指令替换与 ATA 处理完成"
-        );
 
         let (compute_budget, main_instructions, sampled_price) =
             split_compute_budget(&patched_instructions, self.compute_unit_price_mode.as_ref());
@@ -863,6 +877,8 @@ impl CopyWalletRunner {
         let transfer_info = Self::detect_temp_wallet_transfer(&instructions, &route_ctx.authority);
         let mut tip_lamports = 0;
         let mut jito_tip_plan = self.lander_stack.draw_jito_tip_plan();
+        tip_debug.plan_initial = jito_tip_plan.clone();
+        tip_debug.source_transfer_detected = transfer_info.is_some();
         if self.wallet.use_source_tip {
             if let Some((temp_wallet, raw_lamports)) = transfer_info {
                 let deducted = raw_lamports.saturating_sub(TEMP_WALLET_TIP_DEDUCTION_LAMPORTS);
@@ -875,28 +891,11 @@ impl CopyWalletRunner {
                 if adjusted > 0 {
                     let min_applied = adjusted != deducted;
                     tip_lamports = adjusted;
-                    debug!(
-                        target: "strategy::copy",
-                        wallet = %self.wallet_pubkey,
-                        signature = %signature,
-                        temp_wallet = %temp_wallet,
-                        raw_lamports,
-                        tip_lamports,
-                        deduction = TEMP_WALLET_TIP_DEDUCTION_LAMPORTS,
-                        min_tip = MIN_SOURCE_TIP_LAMPORTS,
-                        min_applied,
-                        "已解析临时钱包转账金额并用于 Jito tip"
-                    );
-                } else {
-                    debug!(
-                        target: "strategy::copy",
-                        wallet = %self.wallet_pubkey,
-                        signature = %signature,
-                        temp_wallet = %temp_wallet,
-                        raw_lamports,
-                        deduction = TEMP_WALLET_TIP_DEDUCTION_LAMPORTS,
-                        "解析临时钱包转账金额后仍为 0，tip 指令将被跳过"
-                    );
+                    tip_debug.temp_wallet = Some(temp_wallet);
+                    tip_debug.raw_lamports = Some(raw_lamports);
+                    tip_debug.adjusted_lamports = Some(adjusted);
+                    tip_debug.min_tip_applied = min_applied;
+                    tip_debug.detected_tip_lamports = adjusted;
                 }
             }
 
@@ -904,13 +903,6 @@ impl CopyWalletRunner {
                 if let Some(plan) = jito_tip_plan.as_mut() {
                     plan.lamports = tip_lamports;
                 } else {
-                    debug!(
-                        target: "strategy::copy",
-                        wallet = %self.wallet_pubkey,
-                        signature = %signature,
-                        tip_lamports,
-                        "检测到临时钱包转账，但未启用 Jito tip plan，tip 指令将被跳过"
-                    );
                     tip_lamports = 0;
                 }
             } else {
@@ -918,7 +910,10 @@ impl CopyWalletRunner {
             }
         } else if let Some(plan) = jito_tip_plan.as_ref() {
             tip_lamports = plan.lamports;
+            tip_debug.detected_tip_lamports = plan.lamports;
         }
+        tip_debug.plan_final = jito_tip_plan.clone();
+        tip_debug.final_tip_lamports = tip_lamports;
         events::copy_transaction_captured(
             &self.wallet_pubkey,
             signature,
@@ -926,72 +921,98 @@ impl CopyWalletRunner {
             (tip_lamports > 0).then_some(tip_lamports),
         );
 
-        let mut multi_leg = MultiLegInstructions::new(
+        let prioritization_fee = compute_prioritization_fee(compute_unit_limit, sampled_price);
+        let lookup_table_addresses = lookup_addresses(&transaction.message);
+        let multi_leg = MultiLegInstructions::new(
             compute_budget.clone(),
             main_instructions.clone(),
-            lookup_addresses(&transaction.message),
+            lookup_table_addresses,
             lookups.clone(),
-            None,
+            Some(prioritization_fee),
             raw_compute_unit_limit,
         );
-        multi_leg.dedup_lookup_tables();
+        let variant = SwapInstructionsVariant::MultiLeg(multi_leg);
 
-        let mut initial_instructions = compute_budget.clone();
-        initial_instructions.extend(main_instructions.clone());
-        let mut bundle = InstructionBundle::from_instructions(initial_instructions);
-        bundle.set_lookup_tables(
-            multi_leg.address_lookup_table_addresses.clone(),
-            multi_leg.resolved_lookup_tables.clone(),
+        let (source_mint, amount_in) = self
+            .detect_source_token_delta(
+                &account_keys,
+                token_balances,
+                route_ctx.user_source_token_account,
+            )
+            .map(|(mint, amount)| (Some(mint), amount))
+            .unwrap_or((None, 0));
+
+        let profit_lamports = base_info
+            .map(|info| info.delta().max(0) as u64)
+            .unwrap_or_default();
+        let guard_base_mint = base_mint.or(source_mint);
+        let (plan_base_mint, base_guard_lamports) = match guard_base_mint {
+            Some(mint) => (mint, BASE_GUARD_LAMPORTS),
+            None => (self.identity.pubkey, 0),
+        };
+
+        let trade_pair = TradePair::from_pubkeys(
+            source_mint.unwrap_or(plan_base_mint),
+            guard_base_mint.unwrap_or(plan_base_mint),
         );
 
-        let mut variant = SwapInstructionsVariant::MultiLeg(multi_leg);
-        let prioritization_fee = compute_prioritization_fee(compute_unit_limit, sampled_price);
+        let opportunity = SwapOpportunity {
+            pair: trade_pair,
+            amount_in,
+            profit_lamports,
+            tip_lamports,
+            merged_quote: None,
+            ultra_legs: None,
+        };
 
-        let mut assembly_ctx = AssemblyContext::new(&self.identity);
-        assembly_ctx.base_mint = base_mint.as_ref();
-        assembly_ctx.compute_unit_limit = compute_unit_limit;
-        assembly_ctx.compute_unit_price = sampled_price;
-        assembly_ctx.guard_required = BASE_GUARD_LAMPORTS;
-        assembly_ctx.guard_strategy = GuardStrategy::BasePlusTipAndPrioritizationFee;
-        assembly_ctx.prioritization_fee = prioritization_fee;
-        assembly_ctx.tip_lamports = tip_lamports;
-        assembly_ctx.jito_tip_budget = tip_lamports;
-        assembly_ctx.jito_tip_plan = jito_tip_plan.clone();
-        assembly_ctx.variant = Some(&mut variant);
+        let deadline_instant = Instant::now() + self.landing_timeout;
+        let execution_plan = ExecutionPlan::new(
+            opportunity,
+            variant,
+            plan_base_mint,
+            tip_lamports,
+            base_guard_lamports,
+            compute_unit_limit,
+            prioritization_fee,
+            deadline_instant,
+        );
 
-        let mut decorators = DecoratorChain::new();
-        decorators.register(ComputeBudgetDecorator);
-        decorators.register(TipDecorator);
-        decorators.register(GuardBudgetDecorator);
-        decorators.register(ProfitGuardDecorator);
-
+        let profiles = self.build_landing_profiles(sampled_price, jito_tip_plan.clone());
+        let assembler = DefaultLandingAssembler::new();
+        let mut entries = Vec::with_capacity(profiles.len());
         {
             let mut lighthouse = self.lighthouse.lock().await;
-            attach_lighthouse(&mut assembly_ctx, &mut lighthouse);
-            if let Err(err) = decorators.apply_all(&mut bundle, &mut assembly_ctx).await {
-                return Err(anyhow!("复制交易装配失败: {err}"));
+            for profile in profiles {
+                let mut context = LandingAssemblyContext::new(
+                    &self.identity,
+                    &self.tx_builder,
+                    None,
+                    &mut *lighthouse,
+                );
+                let entry = assembler
+                    .assemble_landing(&mut context, &profile, &execution_plan)
+                    .await
+                    .map_err(|err| anyhow!("复制交易装配失败: {err}"))?;
+                entries.push(entry);
             }
         }
 
-        if let SwapInstructionsVariant::MultiLeg(inner) = &mut variant {
-            bundle.set_lookup_tables(
-                inner.address_lookup_table_addresses.clone(),
-                inner.resolved_lookup_tables.clone(),
+        if entries.is_empty() {
+            warn!(
+                target: "strategy::copy",
+                wallet = %self.wallet_pubkey,
+                signature = %signature,
+                "未生成任何落地计划，跳过复制"
             );
+            return Ok(());
         }
 
-        let final_sequence = bundle.flatten();
-        let prepared = self
-            .tx_builder
-            .build_with_sequence(
-                &self.identity,
-                &variant,
-                final_sequence,
-                tip_lamports,
-                jito_tip_plan.clone(),
-            )
-            .await
-            .map_err(|err| anyhow!("构建复制交易失败: {err}"))?;
+        if let Some(entry) = entries.first() {
+            tip_debug.plan_final = entry.prepared.jito_tip_plan.clone();
+            tip_debug.final_tip_lamports = entry.tip.lamports;
+        }
+
+        let prepared: Vec<_> = entries.iter().map(|entry| entry.prepared.clone()).collect();
 
         let mut layout = self.lander_stack.variant_layout(self.dispatch_strategy);
         if fanout_count > 1 {
@@ -1001,10 +1022,30 @@ impl CopyWalletRunner {
             }
         }
 
-        let dispatch_plan = self.planner.plan(
-            self.dispatch_strategy,
-            std::slice::from_ref(&prepared),
-            &layout,
+        let dispatch_plan = self
+            .planner
+            .plan(self.dispatch_strategy, &prepared, &layout);
+
+        let copy_signature = dispatch_plan
+            .variants_for_lander(0)
+            .first()
+            .and_then(|variant| variant.signature());
+
+        self.log_copy_snapshot(
+            signature,
+            copy_signature.as_deref(),
+            &lookup_table_snapshot,
+            &original_accounts_snapshot,
+            &replaced_accounts_snapshot,
+            &replacement.mapping,
+            &original_signers_snapshot,
+            &patched_signers_snapshot,
+            &tip_debug,
+            &amount_adjustment_summary,
+            fanout_count,
+            (raw_compute_unit_limit, compute_unit_limit),
+            sampled_price,
+            prioritization_fee,
         );
 
         if self.dry_run {
@@ -1020,7 +1061,7 @@ impl CopyWalletRunner {
             );
         }
 
-        let deadline = Deadline::from_instant(Instant::now() + self.landing_timeout);
+        let deadline = Deadline::from_instant(deadline_instant);
         match self
             .lander_stack
             .submit_plan(&dispatch_plan, deadline, "copy")
@@ -1137,6 +1178,72 @@ impl CopyWalletRunner {
         })
     }
 
+    fn detect_source_token_delta(
+        &self,
+        account_keys: &[Pubkey],
+        balances: &TransactionTokenBalances,
+        source_account: Option<Pubkey>,
+    ) -> Option<(Pubkey, u64)> {
+        let account = source_account?;
+        for entry in balances.entries() {
+            if account_keys.get(entry.account_index).copied() == Some(account) {
+                let pre = entry.pre_amount.unwrap_or(0);
+                let post = entry.post_amount.unwrap_or(0);
+                return Some((entry.mint, pre.saturating_sub(post)));
+            }
+        }
+        None
+    }
+
+    fn build_landing_profiles(
+        &self,
+        sampled_compute_unit_price: Option<u64>,
+        jito_tip_plan: Option<JitoTipPlan>,
+    ) -> Vec<LandingProfile> {
+        let mut profiles = Vec::with_capacity(self.lander_stack.count());
+        for variant in self.lander_stack.variants() {
+            match variant {
+                LanderVariant::Jito(_) => {
+                    let label = variant.tip_strategy_label().unwrap_or("stream");
+                    profiles.push(LandingProfile::new(
+                        LanderKind::Jito,
+                        TipStrategy::Jito {
+                            plan: jito_tip_plan.clone(),
+                            label,
+                        },
+                        GuardBudgetKind::BasePlusTip,
+                        ComputeUnitPriceStrategy::Fixed(0),
+                    ));
+                }
+                LanderVariant::Rpc(_) => {
+                    let strategy = sampled_compute_unit_price
+                        .filter(|value| *value > 0)
+                        .map(ComputeUnitPriceStrategy::Fixed)
+                        .unwrap_or(ComputeUnitPriceStrategy::Disabled);
+                    profiles.push(LandingProfile::new(
+                        LanderKind::Rpc,
+                        TipStrategy::UseOpportunity,
+                        GuardBudgetKind::BasePlusPrioritizationFee,
+                        strategy,
+                    ));
+                }
+                LanderVariant::Staked(_) => {
+                    let strategy = sampled_compute_unit_price
+                        .filter(|value| *value > 0)
+                        .map(ComputeUnitPriceStrategy::Fixed)
+                        .unwrap_or(ComputeUnitPriceStrategy::Disabled);
+                    profiles.push(LandingProfile::new(
+                        LanderKind::Staked,
+                        TipStrategy::UseOpportunity,
+                        GuardBudgetKind::BasePlusPrioritizationFee,
+                        strategy,
+                    ));
+                }
+            }
+        }
+        profiles
+    }
+
     fn detect_base_mint(
         &self,
         authority: &Pubkey,
@@ -1197,16 +1304,6 @@ impl CopyWalletRunner {
         let scaled = ((raw as f64) * self.cu_limit_multiplier).round();
         let scaled = scaled.max(1.0).min(u32::MAX as f64);
         let scaled_u32 = scaled as u32;
-        if scaled_u32 != raw {
-            debug!(
-                target: "strategy::copy",
-                wallet = %self.wallet_pubkey,
-                original = raw,
-                scaled = scaled_u32,
-                multiplier = self.cu_limit_multiplier,
-                "compute unit limit 已按系数调整"
-            );
-        }
         scaled_u32.max(1)
     }
 
@@ -1365,6 +1462,99 @@ impl CopyWalletRunner {
         Ok(AmountAdjustment::NotNeeded)
     }
 
+    fn log_copy_snapshot(
+        &self,
+        source_signature: &Signature,
+        copy_signature: Option<&str>,
+        lookup_tables: &[String],
+        original_accounts: &[String],
+        replaced_accounts: &[String],
+        replacements: &HashMap<Pubkey, Pubkey>,
+        original_signers: &[String],
+        patched_signers: &[String],
+        tip_debug: &TipDebugInfo,
+        amount_adjustment: &str,
+        fanout: u32,
+        compute_limits: (u32, u32),
+        compute_unit_price: Option<u64>,
+        prioritization_fee: u64,
+    ) {
+        let mut message = String::new();
+        let copy_sig_display = copy_signature.unwrap_or("<pending>");
+        let (raw_limit, scaled_limit) = compute_limits;
+        let cu_price = compute_unit_price.unwrap_or(0);
+        let _ = writeln!(
+            &mut message,
+            "source_sig={} copy_sig={} fanout={} adjustment={} compute_limit=({}->{}) cu_price={} prioritization_fee={}",
+            source_signature,
+            copy_sig_display,
+            fanout,
+            amount_adjustment,
+            raw_limit,
+            scaled_limit,
+            cu_price,
+            prioritization_fee
+        );
+
+        if !lookup_tables.is_empty() {
+            let _ = writeln!(&mut message, "lookup_tables=[{}]", lookup_tables.join(", "));
+        }
+
+        let mut replacement_pairs: Vec<String> = replacements
+            .iter()
+            .map(|(old, new)| format!("{}->{}", old, new))
+            .collect();
+        replacement_pairs.sort();
+        if !replacement_pairs.is_empty() {
+            let _ = writeln!(
+                &mut message,
+                "replacements=[{}]",
+                replacement_pairs.join(", ")
+            );
+        }
+
+        if !original_accounts.is_empty() {
+            let _ = writeln!(
+                &mut message,
+                "accounts.source=[{}]",
+                original_accounts.join(" | ")
+            );
+        }
+
+        if !replaced_accounts.is_empty() {
+            let _ = writeln!(
+                &mut message,
+                "accounts.copy=[{}]",
+                replaced_accounts.join(" | ")
+            );
+        }
+
+        if !original_signers.is_empty() {
+            let _ = writeln!(
+                &mut message,
+                "signers.source=[{}]",
+                original_signers.join(", ")
+            );
+        }
+
+        if !patched_signers.is_empty() {
+            let _ = writeln!(
+                &mut message,
+                "signers.copy=[{}]",
+                patched_signers.join(", ")
+            );
+        }
+
+        let _ = writeln!(&mut message, "tip {}", tip_debug.as_summary());
+
+        debug!(
+            target: "strategy::copy",
+            wallet = %self.wallet_pubkey,
+            "{}",
+            message.trim_end()
+        );
+    }
+
     fn detect_temp_wallet_transfer(
         instructions: &[Instruction],
         authority: &Pubkey,
@@ -1380,6 +1570,9 @@ impl CopyWalletRunner {
                     return None;
                 }
                 let destination = ix.accounts.get(1)?.pubkey;
+                if destination == solana_sdk::sysvar::instructions::id() {
+                    return None;
+                }
                 let lamports = Self::decode_system_transfer_lamports(&ix.data)?;
                 Some((destination, lamports))
             })

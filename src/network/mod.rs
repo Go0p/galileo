@@ -4,6 +4,7 @@ mod error;
 mod inventory;
 mod pool;
 mod slot;
+pub mod yellowstone;
 
 use std::sync::Arc;
 

@@ -74,6 +74,7 @@ async fn send_transaction(
         submission_client,
         Some(Arc::clone(&submission_client_pool)),
         false,
+        config.galileo.bot.enable_simulation,
     );
 
     let preferred: Vec<String> = if !args.landers.is_empty() {

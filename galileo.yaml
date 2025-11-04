@@ -205,7 +205,7 @@ wallet_keys:
   - P1ay: R0xXQUxMRVQBQpV4ThdnX6Kc5xfbnUpsc/+PNWNhNtjPSkvIWFwoNfBb/4051cMrXUKmGRxPxeyar4E4t2rrC2WCCE24XavuVr4vJ3lQcNHSyimURWALEaIOnrTDTEybI2AH5TJFkMFRCX/omFjJB39/vfyjdR4+fVh3Pq0+zDwhyzCPiyLIiMe/+J2HfWUXEf8pkbwWb3nRN1hwkF7saZ9B9biW54TiEnBAhx4jqWHVHgGmmZJ1/gE3mu6P7TsaQSKwaBRCE/z5TtpnPNRgCHNzTdo1gd/zE3te2mAHhL9tzr3r4jK3j5vJV7dJTavIXutzqJu8LhIup7iN2N8kTLSj3LWkQa8dyhvNdMsY5FOWuIA=
 bot:
   dry_run: 
-    enable: false
+    enable: true
     # dry-run 模式下所有 RPC/落地请求都会路由到该节点，通常指向本地 devnet/sandbox。
     rpc_url: "http://127.0.0.1:8899"
   get_block_hash_by_grpc: true
@@ -216,6 +216,7 @@ bot:
     enabled:
       # - blind_strategy
       - copy_strategy
+      # - pure_blind_strategy
     # 策略配置文件目录（默认为 "strategies"）
     config_dir: "strategies"
   engines:

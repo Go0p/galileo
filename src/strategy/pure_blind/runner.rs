@@ -1,11 +1,14 @@
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use rand::seq::SliceRandom;
 use solana_address_lookup_table_interface::state::AddressLookupTable;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{account::Account, message::AddressLookupTableAccount, pubkey::Pubkey};
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::config;
 use crate::dexes::{
@@ -22,7 +25,9 @@ use crate::dexes::{
 };
 use crate::engine::{Action, EngineError, EngineResult, StrategyContext, StrategyDecision};
 use crate::monitoring::events;
+use crate::strategy::pure_blind::dynamic::DynamicRouteUpdate;
 use crate::strategy::pure_blind::market_cache::{MarketCacheHandle, MarketRecord};
+use crate::strategy::pure_blind::observer::{PoolCatalog, PoolKey, PoolProfile, PoolStatsSnapshot};
 
 use crate::strategy::types::{
     BlindAsset, BlindDex, BlindMarketMeta, BlindOrder, BlindRoutePlan, BlindStep, RouteSource,
@@ -1375,15 +1380,32 @@ struct ResolvedMarketMeta {
 /// 纯盲发策略：不依赖报价，直接构造 route_v2 指令。
 pub struct PureBlindStrategy {
     routes: Vec<BlindRoutePlan>,
+    catalog: Arc<PoolCatalog>,
+    dynamic_rx: UnboundedReceiver<DynamicRouteUpdate>,
+    dynamic_routes: HashMap<PoolKey, DynamicRoute>,
+    base_min_profit: HashMap<Pubkey, u64>,
 }
 
 impl PureBlindStrategy {
-    pub fn new(routes: Vec<BlindRoutePlan>) -> Result<Self> {
-        if routes.is_empty() {
-            bail!("纯盲发模式需要至少一个盲发路由");
+    pub fn new(
+        routes: Vec<BlindRoutePlan>,
+        config: &config::PureBlindStrategyConfig,
+        catalog: Arc<PoolCatalog>,
+        dynamic_rx: UnboundedReceiver<DynamicRouteUpdate>,
+    ) -> Result<Self> {
+        if routes.is_empty() && config.observer.as_ref().map_or(true, |cfg| !cfg.enable) {
+            bail!("纯盲发模式需要至少一个盲发路由或启用观测器");
         }
 
-        Ok(Self { routes })
+        let base_min_profit = build_min_profit_map(&config.assets.base_mints)?;
+
+        Ok(Self {
+            routes,
+            catalog,
+            dynamic_rx,
+            dynamic_routes: HashMap::new(),
+            base_min_profit,
+        })
     }
 }
 
@@ -1401,6 +1423,9 @@ impl Strategy for PureBlindStrategy {
     ) -> StrategyDecision {
         match event {
             StrategyEvent::Tick(_) => {
+                self.poll_dynamic_updates();
+                self.refresh_dynamic_scores();
+
                 let mut batch: Vec<BlindOrder> = Vec::new();
 
                 for route in &self.routes {
@@ -1442,6 +1467,60 @@ impl Strategy for PureBlindStrategy {
                     }
                 }
 
+                let mut dynamic_entries: Vec<&DynamicRoute> =
+                    self.dynamic_routes.values().collect();
+                dynamic_entries
+                    .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+
+                for route in dynamic_entries {
+                    if route.steps.is_empty() {
+                        continue;
+                    }
+                    let Some(first_step) = route.steps.first() else {
+                        continue;
+                    };
+                    if let Some(amounts) = ctx.take_amounts(&first_step.input.mint) {
+                        if amounts.is_empty() {
+                            continue;
+                        }
+                        let reverse_steps = reverse_steps(&route.steps);
+                        for &amount in &amounts {
+                            batch.push(BlindOrder {
+                                amount_in: amount,
+                                steps: route.steps.clone(),
+                                lookup_tables: Vec::new(),
+                                min_profit: route.min_profit,
+                            });
+                            if !reverse_steps.is_empty() {
+                                batch.push(BlindOrder {
+                                    amount_in: amount,
+                                    steps: reverse_steps.clone(),
+                                    lookup_tables: Vec::new(),
+                                    min_profit: route.min_profit,
+                                });
+                            }
+                        }
+
+                        let route_label = route.profile.key.dex_label;
+                        let source_label = "dynamic";
+                        let count = amounts.len();
+                        events::pure_blind_orders_prepared(
+                            route_label,
+                            "forward",
+                            source_label,
+                            count,
+                        );
+                        if !reverse_steps.is_empty() {
+                            events::pure_blind_orders_prepared(
+                                route_label,
+                                "reverse",
+                                source_label,
+                                count,
+                            );
+                        }
+                    }
+                }
+
                 if batch.is_empty() {
                     return ctx.into_decision();
                 }
@@ -1453,6 +1532,100 @@ impl Strategy for PureBlindStrategy {
                     action: Action::DispatchBlind(batch),
                     next_ready_in: None,
                 }
+            }
+        }
+    }
+}
+
+fn build_min_profit_map(bases: &[config::PureBlindBaseMintConfig]) -> Result<HashMap<Pubkey, u64>> {
+    let mut map = HashMap::new();
+    for (idx, base) in bases.iter().enumerate() {
+        let mint_text = base.mint.trim();
+        if mint_text.is_empty() {
+            continue;
+        }
+        let mint = Pubkey::from_str(mint_text).map_err(|err| {
+            anyhow!(
+                "pure_blind_strategy.assets.base_mints[{idx}] mint `{mint_text}` 解析失败: {err}"
+            )
+        })?;
+        let min_profit = base.min_profit.unwrap_or(1).max(1);
+        map.insert(mint, min_profit);
+    }
+    Ok(map)
+}
+
+fn reverse_steps(steps: &[BlindStep]) -> Vec<BlindStep> {
+    steps
+        .iter()
+        .rev()
+        .map(|step| BlindStep {
+            dex: step.dex,
+            market: step.market,
+            base: step.base.clone(),
+            quote: step.quote.clone(),
+            input: step.output.clone(),
+            output: step.input.clone(),
+            meta: step.meta.clone(),
+            flow: match step.flow {
+                SwapFlow::BaseToQuote => SwapFlow::QuoteToBase,
+                SwapFlow::QuoteToBase => SwapFlow::BaseToQuote,
+            },
+        })
+        .collect()
+}
+
+struct DynamicRoute {
+    profile: Arc<PoolProfile>,
+    stats: PoolStatsSnapshot,
+    steps: Vec<BlindStep>,
+    min_profit: u64,
+    score: f64,
+}
+
+impl PureBlindStrategy {
+    fn poll_dynamic_updates(&mut self) {
+        while let Ok(update) = self.dynamic_rx.try_recv() {
+            match update {
+                DynamicRouteUpdate::Activated {
+                    profile,
+                    stats,
+                    steps,
+                } => {
+                    if steps.is_empty() {
+                        continue;
+                    }
+                    let min_profit = steps
+                        .first()
+                        .and_then(|step| self.base_min_profit.get(&step.input.mint).copied())
+                        .unwrap_or(1);
+                    let key = profile.key.clone();
+                    let route = DynamicRoute {
+                        profile,
+                        stats,
+                        steps,
+                        min_profit,
+                        score: 0.0,
+                    };
+                    self.dynamic_routes.insert(key, route);
+                }
+                DynamicRouteUpdate::Retired { key, .. } => {
+                    self.dynamic_routes.remove(&key);
+                }
+            }
+        }
+    }
+
+    fn refresh_dynamic_scores(&mut self) {
+        if self.dynamic_routes.is_empty() {
+            return;
+        }
+
+        let active = self.catalog.active_pools();
+        for entry in active {
+            if let Some(route) = self.dynamic_routes.get_mut(&entry.profile.key) {
+                route.score = entry.score;
+                route.stats = entry.stats;
             }
         }
     }
