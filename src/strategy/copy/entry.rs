@@ -1,7 +1,9 @@
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use solana_sdk::pubkey::Pubkey;
 use tracing::warn;
 
 use crate::cache::AltCache;
@@ -15,7 +17,10 @@ use crate::config::launch::resources::{
     build_rpc_client_pool,
 };
 use crate::config::{AppConfig, LanderSettings, StrategyToggle};
-use crate::engine::{ComputeUnitPriceMode, EngineIdentity, TransactionBuilder};
+use crate::engine::{
+    ComputeUnitPriceMode, EngineIdentity, LighthouseSettings, SolPriceFeedSettings,
+    TransactionBuilder,
+};
 use crate::lander::LanderFactory;
 
 use super::runner::CopyStrategyRunner;
@@ -101,6 +106,7 @@ pub async fn run_copy_strategy(
                 .saturating_mul(60),
         ))
     };
+    let lighthouse_settings = build_lighthouse_settings(&config.galileo.bot.light_house)?;
 
     let runner = CopyStrategyRunner {
         config: copy_config.clone(),
@@ -115,6 +121,7 @@ pub async fn run_copy_strategy(
         dispatch_strategy,
         dry_run: dry_run_enabled,
         wallet_refresh_interval,
+        lighthouse_settings,
     };
 
     runner.run().await
@@ -157,4 +164,56 @@ fn derive_compute_unit_price_mode(settings: &LanderSettings) -> Option<ComputeUn
 fn resolve_landing_timeout(timeouts: &crate::config::EngineTimeoutConfig) -> Duration {
     let ms = timeouts.landing_ms.max(1);
     Duration::from_millis(ms)
+}
+
+fn build_lighthouse_settings(
+    cfg: &crate::config::LightHouseBotConfig,
+) -> Result<LighthouseSettings> {
+    if !cfg.enable {
+        return Ok(LighthouseSettings::default());
+    }
+
+    let mut mints = Vec::with_capacity(cfg.profit_guard_mints.len());
+    for mint_text in &cfg.profit_guard_mints {
+        let trimmed = mint_text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mint = Pubkey::from_str(trimmed).map_err(|err| {
+            anyhow!(
+                "light_house.profit_guard_mints 中的 mint `{}` 无效: {err}",
+                trimmed
+            )
+        })?;
+        mints.push(mint);
+    }
+
+    if mints.is_empty() {
+        return Ok(LighthouseSettings::default());
+    }
+
+    let memory_slots = cfg
+        .memory_slots
+        .and_then(|value| if value == 0 { None } else { Some(value) });
+
+    let sol_price_feed = cfg.sol_price_feed.as_ref().and_then(|feed| {
+        let url = feed.url.trim();
+        if url.is_empty() {
+            None
+        } else {
+            Some(SolPriceFeedSettings {
+                url: url.to_string(),
+                refresh: Duration::from_millis(feed.refresh_ms.max(1)),
+                guard_padding: feed.guard_padding,
+            })
+        }
+    });
+
+    Ok(LighthouseSettings {
+        enable: true,
+        profit_guard_mints: mints,
+        memory_slots,
+        existing_memory_ids: Vec::new(),
+        sol_price_feed,
+    })
 }

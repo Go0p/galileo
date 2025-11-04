@@ -47,6 +47,7 @@ pub fn classify(data: &[u8]) -> RouteKind {
 #[derive(Clone, Debug)]
 pub struct RouteV2Accounts {
     pub user_transfer_authority: Pubkey,
+    pub user_source_token_account: Pubkey,
 }
 
 impl RouteV2Accounts {
@@ -59,12 +60,13 @@ impl RouteV2Accounts {
             RouteKind::RouteV2 | RouteKind::SharedRouteV2 | RouteKind::ExactRouteV2 => {}
             _ => return None,
         }
-        if ix.accounts.len() < 10 {
+        if ix.accounts.len() < 2 {
             return None;
         }
         let accounts = &ix.accounts;
         Some(Self {
             user_transfer_authority: accounts[0].pubkey,
+            user_source_token_account: accounts[1].pubkey,
         })
     }
 }

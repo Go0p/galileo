@@ -966,18 +966,37 @@ pub fn lander_failure(
     }
 }
 
-pub fn copy_transaction_captured(wallet: &Pubkey, signature: &Signature, fanout: u32) {
-    info!(
-        target: "monitoring::copy",
-        wallet = %wallet,
-        signature = %signature,
-        fanout,
-        "{}",
-        format_args!(
-            "复制候选捕获: 钱包={} 签名={} Fanout={}",
-            wallet, signature, fanout
-        )
-    );
+pub fn copy_transaction_captured(
+    wallet: &Pubkey,
+    signature: &Signature,
+    fanout: u32,
+    source_tips: Option<u64>,
+) {
+    match source_tips {
+        Some(source_tips) => info!(
+            target: "monitoring::copy",
+            wallet = %wallet,
+            signature = %signature,
+            fanout,
+            source_tips = source_tips,
+            "{}",
+            format_args!(
+                "复制候选捕获: 钱包={} 签名={} Fanout={} source_tips={}",
+                wallet, signature, fanout, source_tips
+            )
+        ),
+        None => info!(
+            target: "monitoring::copy",
+            wallet = %wallet,
+            signature = %signature,
+            fanout,
+            "{}",
+            format_args!(
+                "复制候选捕获: 钱包={} 签名={} Fanout={}",
+                wallet, signature, fanout
+            )
+        ),
+    }
 
     if prometheus_enabled() {
         counter!(

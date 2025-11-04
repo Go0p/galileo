@@ -1,0 +1,128 @@
+global:
+  rpc_urls:
+    - "https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
+    - "https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b"
+  proxy:
+    default: ""
+    profiles:
+      proxyrack:
+        url: "http://qasizolytipywa:N23L4NF-G9C9XEP-ZHKTIIE-260ZXYE-CD2GZHI-R6OITM2-9CC2JMT@global.rotating.proxyrack.net:10000"
+        per_request: true
+    enable:
+      # quote: proxyrack
+      # lander: proxyrack
+  # yellowstone grpc url
+  yellowstone_grpc_url: ""
+  # yellowstone grpc token
+  yellowstone_grpc_token: ""
+  # 日志级别
+  logging:
+    level: "info"
+    json: false
+    # 日志输出的时区偏移（单位：小时）。示例：8 代表 UTC+8。
+    timezone_offset_hours: 8
+
+engine:
+  backend: "none"
+  # backend: "multi-legs"
+  # backend: "dflow"
+  # 设置为 true 时启用控制台摘要面板，每轮 trade size 批次完成后打印关键统计。
+  enable_console_summary: true
+  time_out:
+    # 超时时间：报价 / 指令 / 落地（单位：毫秒）
+    quote_ms: 5000
+    swap_ms: 10000
+    landing_ms: 5000   
+# 机器人会尝试找到盈利路线，具体方法是：获取给定交易规模的 base_mint 到 intermediate_mints 的报价，
+# 然后再获取 intermediate_mints 到 base_mint 的另一个报价，
+# 并将它们组合起来，形成一条潜在的盈利路线。基本上就是一条从 A -> B -> A 的路线。
+# 当 use_direct_route_only 设置为 true 时，机器人将仅返回类似上述 A -> B -> A 形式的路线。
+# 为了获得更多潜在机会，您可以将其设置为 false，这样可以返回类似 A -> B -> C -> A 形式的路线。
+# 将其设置为 false 的缺点是会减慢获取报价的时间，最终导致交易发送速度变慢。
+intermedium:
+  load_mints_from_files: []
+  load_mints_from_url: ""
+  max_tokens_limit: 20
+  mints:
+    - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    - "So11111111111111111111111111111111111111112"
+    # Bonk
+    # - "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+    # # MET
+    # - "METvsvVRapdj9cFLzq4Tr43xK4tAjQfwX76z3n6mWQL"
+    # # JLP
+    # - "27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4"
+    # # cbBTC
+    # # PUMP
+    # - "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn"
+    # # JitoSOL
+    # - "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn"
+    # # Saros
+    # - "SarosY6Vscao718M4A778z4CGtvcwcGef5M9MEH1LGL"
+  disable_mints: []
+wallet_keys:
+  - P1ay: R0xXQUxMRVQBQpV4ThdnX6Kc5xfbnUpsc/+PNWNhNtjPSkvIWFwoNfBb/4051cMrXUKmGRxPxeyar4E4t2rrC2WCCE24XavuVr4vJ3lQcNHSyimURWALEaIOnrTDTEybI2AH5TJFkMFRCX/omFjJB39/vfyjdR4+fVh3Pq0+zDwhyzCPiyLIiMe/+J2HfWUXEf8pkbwWb3nRN1hwkF7saZ9B9biW54TiEnBAhx4jqWHVHgGmmZJ1/gE3mu6P7TsaQSKwaBRCE/z5TtpnPNRgCHNzTdo1gd/zE3te2mAHhL9tzr3r4jK3j5vJV7dJTavIXutzqJu8LhIup7iN2N8kTLSj3LWkQa8dyhvNdMsY5FOWuIA=
+bot:
+  dry_run: 
+    enable: false
+    # dry-run 模式下所有 RPC/落地请求都会路由到该节点，通常指向本地 devnet/sandbox。
+    rpc_url: "http://127.0.0.1:8899"
+  get_block_hash_by_grpc: true
+  enable_simulation: false
+  auto_refresh_wallet_minute: 30
+  strategies:
+    # 启用的策略列表（策略配置从 strategies/ 目录加载）
+    enabled:
+      - copy_strategy
+    # 策略配置文件目录（默认为 "strategies"）
+    config_dir: "strategies"
+  engines:
+    pairs:
+      - buy_leg: dflow
+        sell_leg: dflow
+  flashloan:
+    products:
+      - marginfi
+    prefer_wallet_balance: true
+  profit_guard:
+    enable: true
+    sol_price_feed:
+      url: "https://hermes.pyth.network/v2/updates/price/latest?ids[]=0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d"
+      # 订阅 sol 的价格，用于守护 USDC 的情况
+      refresh_ms: 10000
+      guard_padding: 300 # 额外冗余（USDC 单位），默认 200
+    profit_guard_mints:
+      - So11111111111111111111111111111111111111112
+      - EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+  cpu_affinity:
+    enable: false
+    worker_cores: []
+    max_blocking_threads: null
+    strict: false
+  network:
+    enable_multiple_ip: false
+    manual_ips: []
+    blacklist_ips: []
+    allow_loopback: false
+    per_ip_inflight_limit: 0
+    cooldown_ms:
+      rate_limited_start: 500
+      timeout_start: 250
+  prometheus:
+    enable: true
+    listen: "127.0.0.1:9898"
+
+flashloan:
+  marginfi:
+    # 闪电贷指令额外的 compute unit 开销
+    compute_unit_overhead: 110000
+    marginfi_account: "3TmqCbKgsBEgnPMmi1YvdHvUq76v8qbx6JFH2YYyettJ"
+
+# lander 相关配置已移至独立的 lander.yaml
+
+# 策略配置已拆分到 strategies/ 目录
+# 如需修改策略配置，请编辑以下文件：
+# - strategies/blind_strategy.yaml
+# - strategies/pure_blind_strategy.yaml
+# - strategies/copy_strategy.yaml
+# - strategies/back_run_strategy.yaml

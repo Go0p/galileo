@@ -20,15 +20,15 @@ global:
         url: "http://qasizolytipywa:N23L4NF-G9C9XEP-ZHKTIIE-260ZXYE-CD2GZHI-R6OITM2-9CC2JMT@global.rotating.proxyrack.net:10000"
         per_request: true
     enable:
-      quote: proxyrack
-      lander: proxyrack
+      # quote: proxyrack
+      # lander: proxyrack
   # yellowstone grpc url
   yellowstone_grpc_url: ""
   # yellowstone grpc token
   yellowstone_grpc_token: ""
   # 日志级别
   logging:
-    level: "info"
+    level: "debug"
     json: false
     # 日志输出的时区偏移（单位：小时）。示例：8 代表 UTC+8。
     timezone_offset_hours: 8
@@ -37,7 +37,7 @@ engine:
   # 可选值：dflow / ultra / multi-legs / kamino / none
   # backend: "none"
   # backend: "kamino"
-  backend: "dflow"
+  backend: "none"
   # backend: "multi-legs"
   # backend: "dflow"
   # 设置为 true 时启用控制台摘要面板，每轮 trade size 批次完成后打印关键统计。
@@ -83,12 +83,12 @@ engine:
   dflow:
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
     leg: "sell"
-    # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
-    api_quote_base: "https://quote-api.dflow.net"
+    api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
+    # api_quote_base: "https://quote-api.dflow.net"
     api_swap_base: "https://quote-api.dflow.net"
     # api_quote_base: "http://109.94.98.33:9800"
     # api_swap_base: "http://109.94.98.33:9800"
-    # api_proxy: "http://192.168.3.3:9999"
+    api_proxy: "http://192.168.3.3:9999"
     # api_proxy: "http://192.168.124.4:9999"
     quote_config:
       use_auto_slippage: false
@@ -205,7 +205,7 @@ wallet_keys:
   - P1ay: R0xXQUxMRVQBQpV4ThdnX6Kc5xfbnUpsc/+PNWNhNtjPSkvIWFwoNfBb/4051cMrXUKmGRxPxeyar4E4t2rrC2WCCE24XavuVr4vJ3lQcNHSyimURWALEaIOnrTDTEybI2AH5TJFkMFRCX/omFjJB39/vfyjdR4+fVh3Pq0+zDwhyzCPiyLIiMe/+J2HfWUXEf8pkbwWb3nRN1hwkF7saZ9B9biW54TiEnBAhx4jqWHVHgGmmZJ1/gE3mu6P7TsaQSKwaBRCE/z5TtpnPNRgCHNzTdo1gd/zE3te2mAHhL9tzr3r4jK3j5vJV7dJTavIXutzqJu8LhIup7iN2N8kTLSj3LWkQa8dyhvNdMsY5FOWuIA=
 bot:
   dry_run: 
-    enable: true
+    enable: false
     # dry-run 模式下所有 RPC/落地请求都会路由到该节点，通常指向本地 devnet/sandbox。
     rpc_url: "http://127.0.0.1:8899"
   get_block_hash_by_grpc: true
@@ -214,7 +214,8 @@ bot:
   strategies:
     # 启用的策略列表（策略配置从 strategies/ 目录加载）
     enabled:
-      - blind_strategy
+      # - blind_strategy
+      - copy_strategy
     # 策略配置文件目录（默认为 "strategies"）
     config_dir: "strategies"
   engines:

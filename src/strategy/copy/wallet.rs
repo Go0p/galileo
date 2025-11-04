@@ -20,12 +20,14 @@ use crate::config::{
     CopyDispatchConfig, CopyDispatchMode, CopySourceKind, CopyWalletConfig, LanderSettings,
 };
 use crate::engine::assembly::decorators::{
-    ComputeBudgetDecorator, GuardBudgetDecorator, GuardStrategy, TipDecorator,
+    ComputeBudgetDecorator, GuardBudgetDecorator, GuardStrategy, ProfitGuardDecorator, TipDecorator,
 };
-use crate::engine::assembly::{AssemblyContext, DecoratorChain, InstructionBundle};
+use crate::engine::assembly::{
+    AssemblyContext, DecoratorChain, InstructionBundle, attach_lighthouse,
+};
 use crate::engine::{
-    ComputeUnitPriceMode, DispatchStrategy, EngineIdentity, MultiLegInstructions,
-    SwapInstructionsVariant, TransactionBuilder, TxVariantPlanner,
+    ComputeUnitPriceMode, DispatchStrategy, EngineIdentity, LighthouseRuntime,
+    MultiLegInstructions, SwapInstructionsVariant, TransactionBuilder, TxVariantPlanner,
 };
 use crate::instructions::jupiter::types::JUPITER_V6_PROGRAM_ID;
 use crate::lander::{Deadline, LanderFactory, LanderStack};
@@ -62,6 +64,7 @@ pub(crate) struct CopyWalletRunner {
     dry_run: bool,
     seen_signatures: tokio::sync::Mutex<SeenSignatures>,
     wallet_state: Arc<WalletStateManager>,
+    lighthouse: Arc<tokio::sync::Mutex<LighthouseRuntime>>,
 }
 
 struct CopyTask {
@@ -80,6 +83,19 @@ struct CopyTaskQueue {
 const BASE_GUARD_LAMPORTS: u64 = 5_000;
 const TEMP_WALLET_TIP_DEDUCTION_LAMPORTS: u64 = LAMPORTS_PER_SOL / 1_000;
 const MIN_SOURCE_TIP_LAMPORTS: u64 = 1_000;
+
+fn compute_prioritization_fee(limit: u32, price: Option<u64>) -> u64 {
+    match price {
+        Some(0) | None => 0,
+        Some(value) => {
+            let fee = (value as u128)
+                .saturating_mul(limit as u128)
+                .checked_div(1_000_000u128)
+                .unwrap_or(0);
+            fee.min(u64::MAX as u128) as u64
+        }
+    }
+}
 
 impl CopyTaskQueue {
     fn new(capacity: usize, wallet: Pubkey) -> Self {
@@ -213,6 +229,7 @@ impl CopyWalletRunner {
         dispatch_strategy: DispatchStrategy,
         wallet_refresh_interval: Option<Duration>,
         dry_run: bool,
+        lighthouse: Arc<tokio::sync::Mutex<LighthouseRuntime>>,
     ) -> Result<Self> {
         let wallet_pubkey = Pubkey::from_str(wallet.address.trim())
             .map_err(|err| anyhow!("wallet address `{}` 解析失败: {err}", wallet.address))?;
@@ -285,6 +302,7 @@ impl CopyWalletRunner {
             dry_run,
             seen_signatures: tokio::sync::Mutex::new(SeenSignatures::new(MAX_SEEN_SIGNATURES)),
             wallet_state,
+            lighthouse,
         })
     }
 
@@ -608,24 +626,42 @@ impl CopyWalletRunner {
         loaded_addresses: Option<&TransactionLoadedAddresses>,
         fanout_count: u32,
     ) -> Result<()> {
-        events::copy_transaction_captured(&self.wallet_pubkey, signature, fanout_count);
-
         let required_signers = message_required_signatures(&transaction.message);
         if required_signers > 1 {
+            events::copy_transaction_captured(&self.wallet_pubkey, signature, fanout_count, None);
             debug!(
-                target: "strategy::copy",
-                wallet = %self.wallet_pubkey,
-                signature = %signature,
-                required_signers,
-                "交易需要多个签名，直接跳过复制"
+            target: "strategy::copy",
+            wallet = %self.wallet_pubkey,
+            signature = %signature,
+            required_signers,
+            "交易需要多个签名，直接跳过复制"
             );
             return Ok(());
         }
 
-        let lookups = resolve_lookup_accounts(&self.rpc_client, &transaction.message).await?;
+        let lookups = resolve_lookup_accounts(&self.rpc_client, &transaction.message)
+            .await
+            .map_err(|err| {
+                events::copy_transaction_captured(
+                    &self.wallet_pubkey,
+                    signature,
+                    fanout_count,
+                    None,
+                );
+                err
+            })?;
         let (instructions, account_keys) =
             instructions_from_message(&transaction.message, &lookups, loaded_addresses)
-                .context("指令解析失败")?;
+                .context("指令解析失败")
+                .map_err(|err| {
+                    events::copy_transaction_captured(
+                        &self.wallet_pubkey,
+                        signature,
+                        fanout_count,
+                        None,
+                    );
+                    err
+                })?;
         let original_signers = collect_instruction_signers(&instructions);
         debug!(
             target: "strategy::copy",
@@ -639,6 +675,12 @@ impl CopyWalletRunner {
         let route_ctx = match instructions.iter().find_map(RouteContext::from_instruction) {
             Some(ctx) => ctx,
             None => {
+                events::copy_transaction_captured(
+                    &self.wallet_pubkey,
+                    signature,
+                    fanout_count,
+                    None,
+                );
                 debug!(
                     target: "strategy::copy",
                     wallet = %self.wallet_pubkey,
@@ -650,6 +692,7 @@ impl CopyWalletRunner {
         };
 
         let Some(token_balances) = token_balances else {
+            events::copy_transaction_captured(&self.wallet_pubkey, signature, fanout_count, None);
             debug!(
                 target: "strategy::copy",
                 wallet = %self.wallet_pubkey,
@@ -683,12 +726,15 @@ impl CopyWalletRunner {
             return Ok(());
         }
 
+        let base_info = self.detect_base_mint(
+            &route_ctx.authority,
+            route_ctx.user_source_token_account,
+            token_balances,
+            &account_keys,
+        );
+
         match self
-            .adjust_route_amounts(
-                &route_ctx.authority,
-                token_balances,
-                &mut jupiter_instructions,
-            )
+            .adjust_route_amounts(base_info, &mut jupiter_instructions)
             .await?
         {
             AmountAdjustment::Skip => {
@@ -724,9 +770,7 @@ impl CopyWalletRunner {
             AmountAdjustment::NotNeeded => {}
         }
 
-        let base_mint = self
-            .detect_base_mint(&route_ctx.authority, token_balances)
-            .map(|info| info.mint);
+        let base_mint = base_info.map(|info| info.mint);
 
         let original_accounts_snapshot = describe_jupiter_accounts(&jupiter_instructions);
         debug!(
@@ -875,6 +919,12 @@ impl CopyWalletRunner {
         } else if let Some(plan) = jito_tip_plan.as_ref() {
             tip_lamports = plan.lamports;
         }
+        events::copy_transaction_captured(
+            &self.wallet_pubkey,
+            signature,
+            fanout_count,
+            (tip_lamports > 0).then_some(tip_lamports),
+        );
 
         let mut multi_leg = MultiLegInstructions::new(
             compute_budget.clone(),
@@ -895,6 +945,7 @@ impl CopyWalletRunner {
         );
 
         let mut variant = SwapInstructionsVariant::MultiLeg(multi_leg);
+        let prioritization_fee = compute_prioritization_fee(compute_unit_limit, sampled_price);
 
         let mut assembly_ctx = AssemblyContext::new(&self.identity);
         assembly_ctx.base_mint = base_mint.as_ref();
@@ -902,6 +953,7 @@ impl CopyWalletRunner {
         assembly_ctx.compute_unit_price = sampled_price;
         assembly_ctx.guard_required = BASE_GUARD_LAMPORTS;
         assembly_ctx.guard_strategy = GuardStrategy::BasePlusTipAndPrioritizationFee;
+        assembly_ctx.prioritization_fee = prioritization_fee;
         assembly_ctx.tip_lamports = tip_lamports;
         assembly_ctx.jito_tip_budget = tip_lamports;
         assembly_ctx.jito_tip_plan = jito_tip_plan.clone();
@@ -911,9 +963,14 @@ impl CopyWalletRunner {
         decorators.register(ComputeBudgetDecorator);
         decorators.register(TipDecorator);
         decorators.register(GuardBudgetDecorator);
+        decorators.register(ProfitGuardDecorator);
 
-        if let Err(err) = decorators.apply_all(&mut bundle, &mut assembly_ctx).await {
-            return Err(anyhow!("复制交易装配失败: {err}"));
+        {
+            let mut lighthouse = self.lighthouse.lock().await;
+            attach_lighthouse(&mut assembly_ctx, &mut lighthouse);
+            if let Err(err) = decorators.apply_all(&mut bundle, &mut assembly_ctx).await {
+                return Err(anyhow!("复制交易装配失败: {err}"));
+            }
         }
 
         if let SwapInstructionsVariant::MultiLeg(inner) = &mut variant {
@@ -1083,8 +1140,35 @@ impl CopyWalletRunner {
     fn detect_base_mint(
         &self,
         authority: &Pubkey,
+        source_token_account: Option<Pubkey>,
         balances: &TransactionTokenBalances,
+        account_keys: &[Pubkey],
     ) -> Option<BaseMintInfo> {
+        if let Some(source_account) = source_token_account {
+            for entry in balances.entries() {
+                let Some(account_key) = account_keys.get(entry.account_index) else {
+                    continue;
+                };
+                if *account_key != source_account {
+                    continue;
+                }
+                if let Some(owner) = entry.owner {
+                    if owner != *authority {
+                        continue;
+                    }
+                }
+                let pre = entry.pre_amount.unwrap_or(0);
+                let post = entry.post_amount.unwrap_or(0);
+                let token_program = entry.token_program.unwrap_or_else(|| spl_token::id());
+                return Some(BaseMintInfo {
+                    mint: entry.mint,
+                    token_program,
+                    pre_amount: pre,
+                    post_amount: post,
+                });
+            }
+        }
+
         balances
             .entries()
             .filter(|entry| entry.owner == Some(*authority))
@@ -1128,11 +1212,10 @@ impl CopyWalletRunner {
 
     async fn adjust_route_amounts(
         &self,
-        authority: &Pubkey,
-        token_balances: &TransactionTokenBalances,
+        base: Option<BaseMintInfo>,
         instructions: &mut [Instruction],
     ) -> Result<AmountAdjustment> {
-        let Some(base) = self.detect_base_mint(authority, token_balances) else {
+        let Some(base) = base else {
             return Ok(AmountAdjustment::NotNeeded);
         };
 

@@ -30,6 +30,7 @@ use super::constants::{ASSOCIATED_TOKEN_PROGRAM_ID, COMPUTE_BUDGET_PROGRAM_ID, S
 #[derive(Clone, Debug)]
 pub(crate) struct RouteContext {
     pub authority: Pubkey,
+    pub user_source_token_account: Option<Pubkey>,
 }
 
 impl RouteContext {
@@ -46,15 +47,17 @@ impl RouteContext {
                 let parsed = RouteV2Accounts::parse(instruction)?;
                 Some(Self {
                     authority: parsed.user_transfer_authority,
+                    user_source_token_account: Some(parsed.user_source_token_account),
                 })
             }
             RouteKind::Route => {
                 let accounts = &instruction.accounts;
-                if accounts.len() < 9 {
+                if accounts.len() < 3 {
                     return None;
                 }
                 Some(Self {
                     authority: accounts[1].pubkey,
+                    user_source_token_account: Some(accounts[2].pubkey),
                 })
             }
             RouteKind::Other => None,
