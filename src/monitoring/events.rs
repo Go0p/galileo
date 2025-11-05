@@ -280,6 +280,70 @@ pub fn pure_blind_orders_prepared(route: &str, direction: &str, source: &str, co
     }
 }
 
+pub fn pure_blind_cache_snapshot_written(target: &str, entries: usize) {
+    info!(
+        target: "monitoring::pure_blind",
+        event = "cache_snapshot_written",
+        target,
+        entries,
+        "pure blind cache snapshot written"
+    );
+
+    if prometheus_enabled() {
+        let counter = counter!(
+            "galileo_pure_blind_cache_snapshot_written_total",
+            "target" => target.to_string()
+        );
+        counter.increment(1);
+        histogram!(
+            "galileo_pure_blind_cache_snapshot_entries",
+            "target" => target.to_string()
+        )
+        .record(entries as f64);
+    }
+}
+
+pub fn pure_blind_cache_snapshot_skipped(target: &str, reason: &str) {
+    debug!(
+        target: "monitoring::pure_blind",
+        event = "cache_snapshot_skipped",
+        target,
+        reason,
+        "pure blind cache snapshot skipped"
+    );
+
+    if prometheus_enabled() {
+        counter!(
+            "galileo_pure_blind_cache_snapshot_skipped_total",
+            "target" => target.to_string(),
+            "reason" => reason.to_string()
+        )
+        .increment(1);
+    }
+}
+
+pub fn pure_blind_cache_pruned(target: &str, count: usize) {
+    if count == 0 {
+        return;
+    }
+
+    warn!(
+        target: "monitoring::pure_blind",
+        event = "cache_pruned",
+        target,
+        count,
+        "pure blind catalog pruned entries"
+    );
+
+    if prometheus_enabled() {
+        counter!(
+            "galileo_pure_blind_cache_pruned_total",
+            "target" => target.to_string()
+        )
+        .increment(count as u64);
+    }
+}
+
 pub fn flashloan_account_precheck(strategy: &str, account: &Pubkey, created: bool) {
     info!(
         target: "monitoring::accounts",

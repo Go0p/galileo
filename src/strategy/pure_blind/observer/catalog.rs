@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::monitoring::events;
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use solana_sdk::pubkey::Pubkey;
@@ -327,6 +328,7 @@ impl PoolCatalog {
             return;
         }
 
+        let now = Instant::now();
         for entry in snapshot.entries {
             let PoolSnapshotEntry {
                 payload,
@@ -341,17 +343,21 @@ impl PoolCatalog {
             record_stats.last_seen_slot = snapshot_stats.last_seen_slot;
             record_stats.estimated_profit_total = snapshot_stats.estimated_profit_total;
 
-            let mut record = PoolRecord {
+            let is_active = self.policy.should_activate(&record_stats);
+            let record = PoolRecord {
                 profile,
                 stats: record_stats,
                 activation: ActivationState {
-                    active: true,
+                    active: is_active,
                     consecutive_failures: 0,
-                    last_observed_at: None,
+                    last_observed_at: Some(now),
                 },
             };
-            if let Some(event) = record.evaluate_activation(&self.policy) {
-                self.push_event(event);
+            if is_active {
+                self.push_event(PoolCatalogEvent::Activated {
+                    profile: Arc::clone(&record.profile),
+                    stats: record.stats.snapshot(),
+                });
             }
             self.entries.insert(key, record);
         }
@@ -386,6 +392,7 @@ impl PoolCatalog {
                 .then(a.1.observations.cmp(&b.1.observations))
         });
 
+        let mut pruned = 0;
         for (key, _) in candidates.into_iter().take(remove_count) {
             if let Some((_, record)) = self.entries.remove(&key) {
                 let stats = record.stats.snapshot();
@@ -395,7 +402,11 @@ impl PoolCatalog {
                     reason: DeactivateReason::Pruned,
                 };
                 self.push_event(event);
+                pruned += 1;
             }
+        }
+        if pruned > 0 {
+            events::pure_blind_cache_pruned("pool", pruned);
         }
     }
 }
@@ -545,5 +556,69 @@ fn compute_score(
             }
         }
         None => base,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::instructions::jupiter::types::EncodedSwap;
+    use crate::strategy::pure_blind::observer::PoolAsset;
+    use serde_json::Value;
+
+    fn sample_pool_profile() -> PoolProfile {
+        let pool_address = Some(Pubkey::new_unique());
+        let input_mint = Some(Pubkey::new_unique());
+        let output_mint = Some(Pubkey::new_unique());
+        let token_program = Pubkey::new_unique();
+        let key = PoolKey::new(
+            "TestDex",
+            Some(Pubkey::new_unique()),
+            pool_address,
+            input_mint,
+            output_mint,
+            1,
+        );
+        PoolProfile::new(
+            key,
+            EncodedSwap::simple(1),
+            "test".to_string(),
+            Value::Null,
+            0,
+            1,
+            Some(PoolAsset::new(input_mint.unwrap(), token_program)),
+            Some(PoolAsset::new(output_mint.unwrap(), token_program)),
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+        )
+    }
+
+    #[test]
+    fn ingest_snapshot_emits_activation_event() {
+        let catalog = PoolCatalog::new(PoolActivationPolicy::default(), 16, 8);
+        let profile = sample_pool_profile();
+        let snapshot = PoolSnapshot {
+            version: SNAPSHOT_VERSION,
+            generated_at: 1,
+            entries: vec![PoolSnapshotEntry {
+                payload: PoolSnapshotPayload::from_profile(&profile),
+                stats: PoolStatsSnapshot {
+                    observations: 3,
+                    first_seen_slot: Some(1),
+                    last_seen_slot: Some(2),
+                    estimated_profit_total: 42,
+                },
+            }],
+        };
+
+        let mut receiver = catalog.subscribe();
+        catalog.ingest_snapshot(snapshot);
+
+        match receiver.try_recv() {
+            Ok(PoolCatalogEvent::Activated { .. }) => {}
+            other => panic!("expected activation event, got {other:?}"),
+        }
+
+        assert_eq!(catalog.active_pools().len(), 1);
     }
 }

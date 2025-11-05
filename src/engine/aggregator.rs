@@ -337,47 +337,23 @@ impl MultiLegInstructions {
     }
 
     pub fn dedup_lookup_tables(&mut self) {
-        let mut merged: HashMap<Pubkey, Vec<Pubkey>> = HashMap::new();
-        let mut seen_addresses: HashMap<Pubkey, HashSet<Pubkey>> = HashMap::new();
-        let mut resolved_order: Vec<Pubkey> = Vec::new();
-
-        for account in std::mem::take(&mut self.resolved_lookup_tables) {
-            let entry = merged.entry(account.key).or_insert_with(|| {
-                resolved_order.push(account.key);
-                Vec::new()
-            });
-            let addr_set = seen_addresses
-                .entry(account.key)
-                .or_insert_with(HashSet::new);
-            for address in account.addresses {
-                if addr_set.insert(address) {
-                    entry.push(address);
-                }
-            }
+        if self.address_lookup_table_addresses.is_empty() {
+            self.resolved_lookup_tables.clear();
+            return;
         }
 
-        let mut final_order: Vec<Pubkey> = Vec::new();
-        let mut seen_keys: HashSet<Pubkey> = HashSet::new();
+        let mut by_key: HashMap<Pubkey, AddressLookupTableAccount> = HashMap::new();
+        for account in &self.resolved_lookup_tables {
+            by_key.entry(account.key).or_insert_with(|| account.clone());
+        }
+
+        let mut resolved = Vec::with_capacity(self.address_lookup_table_addresses.len());
         for key in &self.address_lookup_table_addresses {
-            if merged.contains_key(key) && seen_keys.insert(*key) {
-                final_order.push(*key);
+            if let Some(account) = by_key.get(key) {
+                resolved.push(account.clone());
             }
         }
-        for key in resolved_order {
-            if seen_keys.insert(key) {
-                final_order.push(key);
-            }
-        }
-
-        self.address_lookup_table_addresses = final_order.clone();
-        self.resolved_lookup_tables = final_order
-            .into_iter()
-            .filter_map(|key| {
-                merged
-                    .remove(&key)
-                    .map(|addresses| AddressLookupTableAccount { key, addresses })
-            })
-            .collect();
+        self.resolved_lookup_tables = resolved;
     }
 }
 

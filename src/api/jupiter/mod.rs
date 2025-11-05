@@ -303,7 +303,7 @@ impl JupiterApiClient {
         let elapsed = started.elapsed();
         let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
         if elapsed_ms > self.slow_quote_warn_ms as f64 {
-            warn!(
+            debug!(
                 target: "jupiter::quote",
                 elapsed_ms = format_args!("{elapsed_ms:.3}"),
                 threshold_ms = self.slow_quote_warn_ms,
@@ -488,7 +488,7 @@ impl JupiterApiClient {
         let elapsed = started.elapsed();
         let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
         if elapsed_ms > self.slow_swap_warn_ms as f64 {
-            warn!(
+            debug!(
                 target: "jupiter::swap",
                 elapsed_ms = format_args!("{elapsed_ms:.3}"),
                 threshold_ms = self.slow_swap_warn_ms,

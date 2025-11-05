@@ -34,8 +34,8 @@ global:
     timezone_offset_hours: 8
 
 engine:
-  # 可选值：dflow / ultra / multi-legs / kamino / none
-  backend: "none"
+  # 可选值：jupiter / dflow / ultra / multi-legs / kamino / none
+  backend: "multi-legs"
   # backend: "kamino"
   # backend: "none"
   # backend: "multi-legs"
@@ -49,136 +49,139 @@ engine:
     landing_ms: 5000
 
   jupiter:
-    enable: false
-    api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
-    api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
-    api_proxy: "http://192.168.124.4:9999"
-    quote_config:
-      # 设置为 true 时，机器人将仅寻找两跳（A -> B -> A）交易。设置为 true 将缩短跳转报价时间，加快落地速度。设置为 false 将获得更多机会，但需要更多报价时间。
-      only_direct_routes: false
-      # 仅当 use_direct_route_only 为 false 时，此设置才会生效。
-      # 将中间代币限制为具有稳定流动性的顶级代币集合。这将有助于降低兑换时潜在的高滑点错误率，并将对定价的影响降至最低。
-      # 当您将 use_direct_route_only 设置为 false 时，这可以帮助加快 jupiter 的报价时间。不过，正如它所说，它也会限制在您的路线中使用的额外 mint。
-      restrict_intermediate_tokens: true
-      cadence:
-        # default: 默认的 quote 节奏配置
-        default:
-          # group_parallelism: 同时运行的 quote 组数量上限
-          group_parallelism: auto
-          # intra_group_spacing_ms: 同一波次内组与组之间的最小启动间隔（毫秒）
-          intra_group_spacing_ms: 3000
-          # wave_cooldown_ms: 一波结束后等待下一波的时间（毫秒）
-          wave_cooldown_ms: 0
-        # per_base_mint: 可选，覆盖指定 base mint 的默认节奏
-        #   So11111111111111111111111111111111111111112:
-        #     group_parallelism: 1
-        #     intra_group_spacing_ms: 200
-        #     wave_cooldown_ms: 1000
-    swap_config:
-      # 跳过用户账户相关 RPC 调用，以减少重复拉取。
-      # 设置为 false 时，不会有 setupInstructions 等创建 ATA 的指令
-      # 设置为 true 时，会有 setupInstructions 等创建 ATA 的指令
-      skip_user_accounts_rpc_calls: false
-      # 启用后，它将进行交换模拟以获取使用的计算单元并将其设置在 ComputeBudget 的计算单元限制中
-      # 这会导致一个额外的 RPC 调用来模拟这个交易
-      # 我们建议启用此功能以正确估计计算单元并减少所需的优先费用或有更高的机会被纳入区块
-      dynamic_compute_unit_limit: true
-      wrap_and_unwrap_sol: false
-  ultra:
-    # 腿方向：可选 buy / sell，用于套利腿角色匹配
-    leg: "sell"
-    api_quote_base: "https://ultra-api.jup.ag"
-    api_swap_base: "https://ultra-api.jup.ag"
-    # api_proxy: "http://192.168.124.4:9999"
-    quote_config:
-      use_wsol: true
-      # taker: "k1bWgJv1fdVMCqgDM2jkEfhEzKW7XgGpj8vGGKjgSnJ"
-      taker: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
-      exclude_routers: []
-      priority_fee_lamports: 10
-      cadence:
-        # default: 默认的 quote 节奏配置，适用于所有 base mint
-        default:
-          # group_parallelism: 同一波次内允许同时运行的 quote 组数量；
-          #   - auto: 以 IP 池容量和 per_ip_inflight_limit 为上限自动推导
-          #   - 正整数: 显式限制最大并发度
-          group_parallelism: 10
-          # intra_group_spacing_ms: 当前波次内，相邻 quote 组启动之间的最小间隔（毫秒）；
-          #   设置为 0 表示同一波次的组可以无缝并发。
-          intra_group_spacing_ms: 0
-          # wave_cooldown_ms: 一波所有 quote 组执行完毕后等待的时间（毫秒），
-          #   冷却期内不会开始下一波，适合给对端接口一个稳定的恢复窗口。
-          wave_cooldown_ms: 0
-        # per_base_mint: 针对特定 base mint 覆盖默认节奏（可选）；未开启时沿用 default
-        #   So11111111111111111111111111111111111111112:
-        #     group_parallelism: 1
-        #     intra_group_spacing_ms: 200
-        #     wave_cooldown_ms: 1000
-    swap_config:
-      cu_limit_multiplier: 0.92
-  dflow:
-    # 腿方向：可选 buy / sell，用于套利腿角色匹配
-    leg: "sell"
-    # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
-    # api_quote_base: "https://quote-api.dflow.net"
-    # api_swap_base: "https://quote-api.dflow.net"
-    # api_quote_base: "http://109.94.98.33:9800"
-    # api_swap_base: "http://109.94.98.33:9800"
-    api_quote_base: "http://109.94.98.33:9999"
-    api_swap_base: "http://109.94.98.33:9999"
-    api_proxy: "http://192.168.3.3:9999"
-    # api_proxy: "http://192.168.124.4:9999"
-    quote_config:
-      use_auto_slippage: false
-      only_direct_routes: false
-      max_route_length: 3
-      cadence:
-        # default: 默认的 quote 节奏配置
-        default:
-          # group_parallelism: 同时运行的 quote 组数量上限
-          group_parallelism: auto
-          # intra_group_spacing_ms: 同一波次内组与组之间的最小启动间隔（毫秒）
-          intra_group_spacing_ms: 3000
-          # wave_cooldown_ms: 一波结束后等待下一波的时间（毫秒）
-          wave_cooldown_ms: 0
-        # per_base_mint: 可选，覆盖指定 base mint 的默认节奏
-        #   So11111111111111111111111111111111111111112:
-        #     group_parallelism: 1
-        #     intra_group_spacing_ms: 200
-        #     wave_cooldown_ms: 1000
-    swap_config:
-      dynamic_compute_unit_limit: true
-      wrap_and_unwrap_sol: false
-      cu_limit_multiplier: 0.92
-  titan:
-    # 腿方向：Titan 仅支持 buy 腿
-    leg: "buy"
-    # Titan 推流首条报价超时时间（毫秒），超过后视为异常并重新调度
-    first_quote_timeout_ms: 2000
-    # 开启 loopback 后仅订阅 base→base 的单条 Titan 流，根据 out>in 判断套利
-    ws_url: "wss://api.titan.exchange/api/v1/ws"
-    # 可选：通过 WebSocket 代理抓包/调试 Titan 数据
-    # ws_proxy: "ws://192.168.124.4:9999"
-    ws_proxy: ""
-    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjE5ODM2NDIsImV4cCI6MTc2MTk4NDU0Miwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.Vez2ne5CsMKT0bXSlF4RNt_VOiz5bBg1bDbIjtKDIJE"
-    # Titan , Okx , Metis , Pyth
-    swap_config:
-      # dexes: 
-      # exclude_dexes:
-      only_direct_routes: false
-      providers:
-        - "Titan"
-        # - "Metis"
-    tx_config:
-      user_public_key: "Titan11111111111111111111111111111111111111"
-      # user_public_key: "goopNoaJhhrzxi6oq2j4chcyHKGucAeVZSk4QBA7Gu1"
-      create_output_token_account: false
-      use_wsol: true
-    # 服务端推送报价更新的间隔，单位毫秒。
-    interval_ms: 800
-    # 每次更新最多返回的报价数量。
-    num_quotes: 2
-  kamino:
+    jupiter_buy:
+      enable: true
+      leg: "buy"
+      api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
+      api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
+      api_proxy: "http://192.168.124.4:9999"
+      quote_config:
+        only_direct_routes: false
+        restrict_intermediate_tokens: true
+        cadence:
+          default:
+            group_parallelism: auto
+            intra_group_spacing_ms: 3000
+            wave_cooldown_ms: 0
+      swap_config:
+        use_shared_accounts: false
+        skip_user_accounts_rpc_calls: false
+        dynamic_compute_unit_limit: true
+        wrap_and_unwrap_sol: false
+    jupiter_sell:
+      enable: true
+      leg: "sell"
+      api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
+      api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
+      api_proxy: "http://192.168.124.4:9999"
+      quote_config:
+        only_direct_routes: false
+        restrict_intermediate_tokens: true
+        cadence:
+          default:
+            group_parallelism: auto
+            intra_group_spacing_ms: 3000
+            wave_cooldown_ms: 0
+      swap_config:
+        use_shared_accounts: false
+        skip_user_accounts_rpc_calls: false
+        dynamic_compute_unit_limit: true
+        wrap_and_unwrap_sol: false
+  # ultra:
+  #   # 腿方向：可选 buy / sell，用于套利腿角色匹配
+  #   leg: "sell"
+  #   api_quote_base: "https://ultra-api.jup.ag"
+  #   api_swap_base: "https://ultra-api.jup.ag"
+  #   # api_proxy: "http://192.168.124.4:9999"
+  #   quote_config:
+  #     use_wsol: true
+  #     # taker: "k1bWgJv1fdVMCqgDM2jkEfhEzKW7XgGpj8vGGKjgSnJ"
+  #     taker: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
+  #     exclude_routers: []
+  #     priority_fee_lamports: 10
+  #     cadence:
+  #       # default: 默认的 quote 节奏配置，适用于所有 base mint
+  #       default:
+  #         # group_parallelism: 同一波次内允许同时运行的 quote 组数量；
+  #         #   - auto: 以 IP 池容量和 per_ip_inflight_limit 为上限自动推导
+  #         #   - 正整数: 显式限制最大并发度
+  #         group_parallelism: 10
+  #         # intra_group_spacing_ms: 当前波次内，相邻 quote 组启动之间的最小间隔（毫秒）；
+  #         #   设置为 0 表示同一波次的组可以无缝并发。
+  #         intra_group_spacing_ms: 0
+  #         # wave_cooldown_ms: 一波所有 quote 组执行完毕后等待的时间（毫秒），
+  #         #   冷却期内不会开始下一波，适合给对端接口一个稳定的恢复窗口。
+  #         wave_cooldown_ms: 0
+  #       # per_base_mint: 针对特定 base mint 覆盖默认节奏（可选）；未开启时沿用 default
+  #       #   So11111111111111111111111111111111111111112:
+  #       #     group_parallelism: 1
+  #       #     intra_group_spacing_ms: 200
+  #       #     wave_cooldown_ms: 1000
+  #   swap_config:
+  #     cu_limit_multiplier: 0.92
+  # dflow:
+  #   # 腿方向：可选 buy / sell，用于套利腿角色匹配
+  #   leg: "sell"
+  #   # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
+  #   # api_quote_base: "https://quote-api.dflow.net"
+  #   # api_swap_base: "https://quote-api.dflow.net"
+  #   # api_quote_base: "http://109.94.98.33:9800"
+  #   # api_swap_base: "http://109.94.98.33:9800"
+  #   api_quote_base: "http://109.94.98.33:9999"
+  #   api_swap_base: "http://109.94.98.33:9999"
+  #   api_proxy: "http://192.168.3.3:9999"
+  #   # api_proxy: "http://192.168.124.4:9999"
+  #   quote_config:
+  #     use_auto_slippage: false
+  #     only_direct_routes: false
+  #     max_route_length: 3
+  #     cadence:
+  #       # default: 默认的 quote 节奏配置
+  #       default:
+  #         # group_parallelism: 同时运行的 quote 组数量上限
+  #         group_parallelism: auto
+  #         # intra_group_spacing_ms: 同一波次内组与组之间的最小启动间隔（毫秒）
+  #         intra_group_spacing_ms: 3000
+  #         # wave_cooldown_ms: 一波结束后等待下一波的时间（毫秒）
+  #         wave_cooldown_ms: 0
+  #       # per_base_mint: 可选，覆盖指定 base mint 的默认节奏
+  #       #   So11111111111111111111111111111111111111112:
+  #       #     group_parallelism: 1
+  #       #     intra_group_spacing_ms: 200
+  #       #     wave_cooldown_ms: 1000
+  #   swap_config:
+  #     dynamic_compute_unit_limit: true
+  #     wrap_and_unwrap_sol: false
+  #     cu_limit_multiplier: 0.92
+  # titan:
+  #   # 腿方向：Titan 仅支持 buy 腿
+  #   leg: "buy"
+  #   # Titan 推流首条报价超时时间（毫秒），超过后视为异常并重新调度
+  #   first_quote_timeout_ms: 2000
+  #   # 开启 loopback 后仅订阅 base→base 的单条 Titan 流，根据 out>in 判断套利
+  #   ws_url: "wss://api.titan.exchange/api/v1/ws"
+  #   # 可选：通过 WebSocket 代理抓包/调试 Titan 数据
+  #   # ws_proxy: "ws://192.168.124.4:9999"
+  #   ws_proxy: ""
+  #   jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjE5ODM2NDIsImV4cCI6MTc2MTk4NDU0Miwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.Vez2ne5CsMKT0bXSlF4RNt_VOiz5bBg1bDbIjtKDIJE"
+  #   # Titan , Okx , Metis , Pyth
+  #   swap_config:
+  #     # dexes: 
+  #     # exclude_dexes:
+  #     only_direct_routes: false
+  #     providers:
+  #       - "Titan"
+  #       # - "Metis"
+  #   tx_config:
+  #     user_public_key: "Titan11111111111111111111111111111111111111"
+  #     # user_public_key: "goopNoaJhhrzxi6oq2j4chcyHKGucAeVZSk4QBA7Gu1"
+  #     create_output_token_account: false
+  #     use_wsol: true
+  #   # 服务端推送报价更新的间隔，单位毫秒。
+  #   interval_ms: 800
+  #   # 每次更新最多返回的报价数量。
+  #   num_quotes: 2
+  # kamino:
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
     leg: "sell"
     api_quote_base: "https://api.kamino.finance"
@@ -206,6 +209,9 @@ engine:
         # - "fluxbeam"
         # - "raydium"
         - "hashflow"
+        # - "jupiterEuropa"
+        # - "jupiterSelfHosted"
+        # - "jupiter"
         # - "okx"
         # - "clover"
         # - "zeroEx"
@@ -252,15 +258,15 @@ bot:
   strategies:
     # 启用的策略列表（策略配置从 strategies/ 目录加载）
     enabled:
-      # - blind_strategy
+      - blind_strategy
       # - copy_strategy
-      - pure_blind_strategy
+      # - pure_blind_strategy
     # 策略配置文件目录（默认为 "strategies"）
     config_dir: "strategies"
   engines:
     pairs:
-      - buy_leg: dflow
-        sell_leg: dflow
+      - buy_leg: jupiter
+        sell_leg: jupiter
   flashloan:
     products:
       - marginfi
@@ -285,7 +291,7 @@ bot:
     manual_ips: []
     blacklist_ips: []
     allow_loopback: false
-    per_ip_inflight_limit: 0
+    per_ip_inflight_limit: null
     cooldown_ms:
       rate_limited_start: 500
       timeout_start: 250

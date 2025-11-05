@@ -15,7 +15,7 @@ Galileo 已移除历史 Jupiter 依赖，所有聚合器配置均通过 `galileo
 - `[bot.dry_run]`：包含 `enable` 与 `rpc_url`。启用后，所有策略的 RPC 调用与落地请求会改用该节点，并强制落地器退化为 RPC，适合在本地 devnet/sandbox 回放交易。
 
 ## 2. 聚合器引擎
-`[engine.backend]` 支持 `dflow` / `ultra` / `kamino` / `multi-legs` / `none`，各自子表涵盖 API 端点、代理以及并发参数：
+`[engine.backend]` 支持 `jupiter` / `dflow` / `ultra` / `kamino` / `multi-legs` / `none`，各自子表涵盖 API 端点、代理以及并发参数：
 
 - `[engine.console_summary]`：`enable` 控制是否开启控制台机会摘要面板；启用后，每轮 trade size 批次结束会输出机会数、延迟与落地统计（当前仅适用于单引擎 Quote 流程），默认关闭以保持日志精简。
 - `[engine.dflow]`
@@ -35,7 +35,21 @@ Galileo 已移除历史 Jupiter 依赖，所有聚合器配置均通过 `galileo
   - `quote_config.resolve_lookup_tables_via_rpc`：`true` 时只返回 lookup table key，装配阶段改由我们主动拉取账户列表。
 
 - `[engine.multi_leg]`
-  - `backend = "multi-legs"` 时启用多腿组合。具体腿角色由 `engine.dflow.leg` / `engine.ultra.leg` / `engine.titan.leg` 指定，是否注册则由 `bot.engines.pairs` 控制；同时需在 `bot.strategies.enabled` 中包含 `blind_strategy` 以提供交易对。
+  - `backend = "multi-legs"` 时启用多腿组合。具体腿角色由 `engine.jupiter`（多实例场景可写成 `jupiter_buy:` / `jupiter_sell:` 等子项）/ `engine.dflow.leg` / `engine.ultra.leg` / `engine.titan.leg` 指定，是否注册则由 `bot.engines.pairs` 控制；同时需在 `bot.strategies.enabled` 中包含 `blind_strategy` 以提供交易对。
+  - 当需要为 Jupiter 声明多条腿时，可在 `engine.jupiter` 下改写为：
+    ```yaml
+    engine:
+      jupiter:
+        jupiter_buy:
+          leg: "buy"
+          api_quote_base: "..."
+          api_swap_base: "..."
+        jupiter_sell:
+          leg: "sell"
+          api_quote_base: "..."
+          api_swap_base: "..."
+    ```
+    旧版单实例写法仍然兼容（直接在 `engine.jupiter` 中配置字段）。
   - 各聚合器的 `swap_config.wrap_and_unwrap_sol`、`dynamic_compute_unit_limit` 等选项会注入 `MultiLegEngineContext`，直接影响组合装配。
 
 ## 3. Titan / Flashloan / 上链器

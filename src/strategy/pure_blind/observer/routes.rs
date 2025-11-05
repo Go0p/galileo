@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use super::profile::{PoolAsset, PoolProfile};
 use super::snapshot::{PoolSnapshotPayload, RouteSnapshot, RouteSnapshotEntry, SNAPSHOT_VERSION};
+use crate::monitoring::events;
 use dashmap::{DashMap, mapref::entry::Entry};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -274,6 +275,7 @@ impl RouteCatalog {
             return;
         }
 
+        let now = Instant::now();
         for entry in snapshot.entries {
             let Some(key) = RouteKey::new(entry.markets.clone()) else {
                 continue;
@@ -292,22 +294,27 @@ impl RouteCatalog {
                 entry.base_asset,
             ));
 
-            let mut record = RouteRecord {
+            let stats = RouteStats {
+                observations: entry.stats.observations,
+                first_seen_slot: entry.stats.first_seen_slot,
+                last_seen_slot: entry.stats.last_seen_slot,
+                estimated_profit_total: entry.stats.estimated_profit_total,
+            };
+            let is_active = self.policy.should_activate(&stats);
+            let record = RouteRecord {
                 profile,
-                stats: RouteStats {
-                    observations: entry.stats.observations,
-                    first_seen_slot: entry.stats.first_seen_slot,
-                    last_seen_slot: entry.stats.last_seen_slot,
-                    estimated_profit_total: entry.stats.estimated_profit_total,
-                },
+                stats,
                 activation: ActivationState {
-                    active: true,
+                    active: is_active,
                     consecutive_failures: 0,
-                    last_observed_at: None,
+                    last_observed_at: Some(now),
                 },
             };
-            if let Some(event) = record.evaluate_activation(&self.policy) {
-                self.push_event(event);
+            if is_active {
+                self.push_event(RouteCatalogEvent::Activated {
+                    profile: Arc::clone(&record.profile),
+                    stats: record.stats.snapshot(),
+                });
             }
             self.entries.insert(key, record);
         }
@@ -463,6 +470,7 @@ impl RouteCatalog {
                 .then(a.1.observations.cmp(&b.1.observations))
         });
 
+        let mut pruned = 0;
         for (key, _) in candidates.into_iter().take(remove_count) {
             if let Some((_, record)) = self.entries.remove(&key) {
                 let stats = record.stats.snapshot();
@@ -472,7 +480,11 @@ impl RouteCatalog {
                     reason: RouteDeactivateReason::Pruned,
                 };
                 self.push_event(deactivated);
+                pruned += 1;
             }
+        }
+        if pruned > 0 {
+            events::pure_blind_cache_pruned("route", pruned);
         }
     }
 }
@@ -515,5 +527,68 @@ fn compute_score(
             }
         }
         None => base,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::instructions::jupiter::types::EncodedSwap;
+    use crate::strategy::pure_blind::observer::PoolKey;
+    use serde_json::Value;
+
+    fn dummy_pool_profile() -> PoolProfile {
+        let key = PoolKey::new(
+            "TestDex",
+            Some(Pubkey::new_unique()),
+            Some(Pubkey::new_unique()),
+            Some(Pubkey::new_unique()),
+            Some(Pubkey::new_unique()),
+            1,
+        );
+        PoolProfile::new(
+            key,
+            EncodedSwap::simple(1),
+            "test".to_string(),
+            Value::Null,
+            0,
+            1,
+            None,
+            None,
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+        )
+    }
+
+    #[test]
+    fn ingest_snapshot_emits_activation() {
+        let policy = RouteActivationPolicy::new(1, None, Duration::from_secs(60));
+        let catalog = RouteCatalog::new(policy, 16, 8);
+        let profile = dummy_pool_profile();
+        let key = RouteKey::new(vec![profile.key.pool_address.unwrap()]).unwrap();
+        let snapshot = RouteSnapshot {
+            version: SNAPSHOT_VERSION,
+            generated_at: 1,
+            entries: vec![RouteSnapshotEntry {
+                markets: key.markets.to_vec(),
+                steps: vec![PoolSnapshotPayload::from_profile(&profile)],
+                lookup_tables: Vec::new(),
+                base_asset: None,
+                stats: RouteStatsSnapshot {
+                    observations: 2,
+                    first_seen_slot: Some(1),
+                    last_seen_slot: Some(2),
+                    estimated_profit_total: 10,
+                },
+            }],
+        };
+
+        let mut receiver = catalog.subscribe();
+        catalog.ingest_snapshot(snapshot);
+        match receiver.try_recv() {
+            Ok(RouteCatalogEvent::Activated { .. }) => {}
+            other => panic!("expected route activation, got {other:?}"),
+        }
+        assert_eq!(catalog.active_routes().len(), 1);
     }
 }

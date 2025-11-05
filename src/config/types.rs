@@ -8,6 +8,7 @@ use serde::de::value::MapAccessDeserializer;
 use serde::de::{Deserializer, Error as DeError, MapAccess, Unexpected, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
+use serde_json::Value as JsonValue;
 use serde_with::serde_as;
 
 use crate::engine::DispatchStrategy;
@@ -304,7 +305,7 @@ pub struct EngineConfig {
     #[serde(default)]
     pub enable_console_summary: bool,
     #[serde(default)]
-    pub jupiter: JupiterEngineConfig,
+    pub jupiter: JupiterEngineSet,
     #[serde(default)]
     pub dflow: DflowEngineConfig,
     #[serde(default)]
@@ -550,6 +551,8 @@ pub struct JupiterEngineConfig {
     #[serde(default)]
     pub enable: bool,
     #[serde(default)]
+    pub leg: Option<LegRole>,
+    #[serde(default)]
     pub api_quote_base: Option<String>,
     #[serde(default)]
     pub api_swap_base: Option<String>,
@@ -581,6 +584,90 @@ impl Default for JupiterQuoteConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct JupiterEngineSet {
+    default: Option<JupiterEngineConfig>,
+    named: BTreeMap<String, JupiterEngineConfig>,
+}
+
+impl JupiterEngineSet {
+    pub fn primary(&self) -> Option<&JupiterEngineConfig> {
+        self.default.as_ref().or_else(|| self.named.values().next())
+    }
+
+    pub fn default_config(&self) -> Option<&JupiterEngineConfig> {
+        self.default.as_ref()
+    }
+
+    pub fn named_configs(&self) -> &BTreeMap<String, JupiterEngineConfig> {
+        &self.named
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.default.is_none() && self.named.is_empty()
+    }
+}
+
+impl Default for JupiterEngineSet {
+    fn default() -> Self {
+        Self {
+            default: Some(JupiterEngineConfig::default()),
+            named: BTreeMap::new(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for JupiterEngineSet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Option::<JsonValue>::deserialize(deserializer)?;
+        let Some(raw) = value else {
+            return Ok(Self::default());
+        };
+
+        let JsonValue::Object(map) = raw else {
+            return Err(DeError::custom("jupiter 字段必须是 object"));
+        };
+
+        let known_fields = [
+            "enable",
+            "leg",
+            "api_quote_base",
+            "api_swap_base",
+            "api_proxy",
+            "quote_config",
+            "swap_config",
+        ];
+
+        let mut default_entries = serde_json::Map::new();
+        let mut named = BTreeMap::new();
+
+        for (name, entry_value) in map {
+            if known_fields.contains(&name.as_str()) {
+                default_entries.insert(name, entry_value);
+                continue;
+            }
+
+            let cfg: JupiterEngineConfig = serde_json::from_value(entry_value)
+                .map_err(|err| DeError::custom(format!("解析 jupiter.{name} 配置失败: {err}")))?;
+            named.insert(name, cfg);
+        }
+
+        let default = if default_entries.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_value(JsonValue::Object(default_entries))
+                    .map_err(DeError::custom)?,
+            )
+        };
+
+        Ok(Self { default, named })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct JupiterSwapConfig {
     #[serde(default)]
@@ -589,6 +676,8 @@ pub struct JupiterSwapConfig {
     pub dynamic_compute_unit_limit: bool,
     #[serde(default)]
     pub wrap_and_unwrap_sol: bool,
+    #[serde(default)]
+    pub use_shared_accounts: Option<bool>,
 }
 
 impl Default for JupiterSwapConfig {
@@ -597,6 +686,7 @@ impl Default for JupiterSwapConfig {
             skip_user_accounts_rpc_calls: false,
             dynamic_compute_unit_limit: super::default_true(),
             wrap_and_unwrap_sol: false,
+            use_shared_accounts: None,
         }
     }
 }
@@ -1247,6 +1337,7 @@ impl StrategyToggle {
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EngineLegBackend {
+    Jupiter,
     Dflow,
     Ultra,
     Kamino,

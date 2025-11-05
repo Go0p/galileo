@@ -8,9 +8,10 @@ use crate::api::serde_helpers::field_as_string;
 
 /// Jupiter 支持的 swap 模式。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub enum SwapMode {
+    #[serde(rename = "ExactIn", alias = "exactIn")]
     ExactIn,
+    #[serde(rename = "ExactOut", alias = "exactOut")]
     ExactOut,
 }
 

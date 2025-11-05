@@ -29,6 +29,7 @@ use crate::engine::multi_leg::{
     orchestrator::MultiLegOrchestrator,
     providers::{
         dflow::DflowLegProvider,
+        jupiter::JupiterLegProvider,
         kamino::KaminoLegProvider,
         titan::{TitanLegProvider, TitanWsQuoteSource},
         ultra::UltraLegProvider,
@@ -450,6 +451,7 @@ fn build_multi_leg_runtime(
 ) -> Result<MultiLegRuntime> {
     let mut orchestrator = MultiLegOrchestrator::new();
 
+    register_jupiter_legs(&mut orchestrator, config)?;
     register_ultra_leg(&mut orchestrator, config, identity)?;
     register_dflow_leg(&mut orchestrator, config)?;
     register_kamino_leg(
@@ -517,31 +519,177 @@ fn log_multi_leg_init(runtime: &MultiLegRuntime, dry_run: bool) {
     }
 }
 
+fn register_jupiter_legs(
+    orchestrator: &mut MultiLegOrchestrator,
+    config: &AppConfig,
+) -> Result<()> {
+    let jupiter_cfg = &config.galileo.engine.jupiter;
+    let has_default = jupiter_cfg.default_config().is_some();
+    let named_len = jupiter_cfg.named_configs().len();
+    debug!(
+        target: "multi_leg::jupiter",
+        has_default,
+        named_len,
+        "Jupiter 多腿配置概览"
+    );
+
+    if !has_default && named_len == 0 {
+        debug!(
+            target: "multi_leg::jupiter",
+            "未配置任意 Jupiter 腿，跳过 Jupiter 注册"
+        );
+        return Ok(());
+    }
+
+    let mut register_entry = |label: &str, entry: &config::JupiterEngineConfig| -> Result<()> {
+        let leg = match entry.leg {
+            Some(leg) => leg,
+            None => {
+                debug!(
+                    target: "multi_leg::jupiter",
+                    instance = %label,
+                    "未配置 jupiter.leg，跳过该实例"
+                );
+                return Ok(());
+            }
+        };
+
+        if !entry.enable {
+            debug!(
+                target: "multi_leg::jupiter",
+                instance = %label,
+                "enable = false，跳过该实例"
+            );
+            return Ok(());
+        }
+
+        let leg_allowed = match leg {
+            LegRole::Buy => config
+                .galileo
+                .bot
+                .engines
+                .buy_leg_enabled(EngineLegBackend::Jupiter),
+            LegRole::Sell => config
+                .galileo
+                .bot
+                .engines
+                .sell_leg_enabled(EngineLegBackend::Jupiter),
+        };
+        if !leg_allowed {
+            debug!(
+                target: "multi_leg::jupiter",
+                instance = %label,
+                side = ?leg,
+                "bot.engines 未允许该腿，跳过"
+            );
+            return Ok(());
+        }
+
+        let quote_base = entry
+            .api_quote_base
+            .as_ref()
+            .ok_or_else(|| anyhow!("jupiter.{label}.api_quote_base 未配置"))?
+            .trim()
+            .to_string();
+        if quote_base.is_empty() {
+            return Err(anyhow!("jupiter.{label}.api_quote_base 不能为空"));
+        }
+        let swap_base = entry
+            .api_swap_base
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| quote_base.clone());
+
+        let proxy_override = entry
+            .api_proxy
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty());
+        let module_proxy = resolve_proxy_profile(&config.galileo.global, "quote");
+        let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+        let effective_proxy =
+            override_proxy_selection(proxy_override, module_proxy.clone(), global_proxy.clone());
+
+        if let Some(url) = proxy_override {
+            info!(
+                target: "jupiter",
+                instance = %label,
+                proxy = %url,
+                "Jupiter API 请求将通过配置的代理发送"
+            );
+        } else if let Some(selection) = module_proxy {
+            info!(
+                target: "jupiter",
+                instance = %label,
+                proxy = %selection.url,
+                per_request = selection.per_request,
+                "Jupiter API 请求将通过 profile 代理发送"
+            );
+        } else if let Some(selection) = global_proxy.clone() {
+            info!(
+                target: "jupiter",
+                instance = %label,
+                proxy = %selection.url,
+                per_request = selection.per_request,
+                "Jupiter API 请求将通过全局代理发送"
+            );
+        }
+
+        let http_client =
+            build_http_client_with_options(effective_proxy.as_ref(), false, None, None)?;
+        let client_pool = build_http_client_pool(effective_proxy.clone(), false, None);
+        let api_client = JupiterApiClient::with_ip_pool(
+            http_client,
+            quote_base,
+            swap_base,
+            &config.galileo.engine.time_out,
+            &config.galileo.global.logging,
+            Some(client_pool),
+        );
+
+        let provider = JupiterLegProvider::new(
+            api_client,
+            LegSide::from(leg),
+            entry.quote_config.clone(),
+            entry.swap_config.clone(),
+        );
+        orchestrator.register_owned_provider(provider);
+        Ok(())
+    };
+
+    if let Some(default_cfg) = config.galileo.engine.jupiter.default_config() {
+        register_entry("default", default_cfg)?;
+    }
+    for (name, cfg) in config.galileo.engine.jupiter.named_configs() {
+        register_entry(name, cfg)?;
+    }
+
+    Ok(())
+}
+
 fn register_ultra_leg(
     orchestrator: &mut MultiLegOrchestrator,
     config: &AppConfig,
     identity: &EngineIdentity,
 ) -> Result<()> {
     let ultra_cfg = &config.galileo.engine.ultra;
-    let leg = ultra_cfg
-        .leg
-        .ok_or_else(|| anyhow!("ultra.leg 必须在 multi-legs 模式下配置"))?;
+    let mut legs: Vec<LegRole> = Vec::new();
+    if let Some(single) = ultra_cfg.leg {
+        legs.push(single);
+    }
+    if !ultra_cfg.legs.is_empty() {
+        legs.extend(ultra_cfg.legs.iter().copied());
+    }
 
-    let leg_allowed = match leg {
-        LegRole::Buy => config
-            .galileo
-            .bot
-            .engines
-            .buy_leg_enabled(EngineLegBackend::Ultra),
-        LegRole::Sell => config
-            .galileo
-            .bot
-            .engines
-            .sell_leg_enabled(EngineLegBackend::Ultra),
-    };
-    if !leg_allowed {
+    if legs.is_empty() {
+        debug!(
+            target: "multi_leg::ultra",
+            "未配置 Ultra 腿角色，跳过 Ultra 注册"
+        );
         return Ok(());
     }
+
     let api_base = ultra_cfg
         .api_quote_base
         .as_ref()
@@ -611,22 +759,50 @@ fn register_ultra_leg(
         .transpose()?
         .flatten();
 
-    let provider = UltraLegProvider::new(
-        ultra_client,
-        LegSide::from(leg),
-        ultra_cfg.quote_config.clone(),
-        identity.pubkey,
-        request_taker_override,
-    );
-    orchestrator.register_owned_provider(provider);
+    for leg in legs {
+        let leg_allowed = match leg {
+            LegRole::Buy => config
+                .galileo
+                .bot
+                .engines
+                .buy_leg_enabled(EngineLegBackend::Ultra),
+            LegRole::Sell => config
+                .galileo
+                .bot
+                .engines
+                .sell_leg_enabled(EngineLegBackend::Ultra),
+        };
+        if !leg_allowed {
+            debug!(
+                target: "multi_leg::ultra",
+                side = ?leg,
+                "bot.engines 未允许该腿，跳过"
+            );
+            continue;
+        }
+
+        let provider = UltraLegProvider::new(
+            ultra_client.clone(),
+            LegSide::from(leg),
+            ultra_cfg.quote_config.clone(),
+            identity.pubkey,
+            request_taker_override,
+        );
+        orchestrator.register_owned_provider(provider);
+    }
+
     Ok(())
 }
 
 fn register_dflow_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfig) -> Result<()> {
     let dflow_cfg = &config.galileo.engine.dflow;
-    let leg = dflow_cfg
-        .leg
-        .ok_or_else(|| anyhow!("dflow.leg 必须在 multi-legs 模式下配置"))?;
+    let Some(leg) = dflow_cfg.leg else {
+        debug!(
+            target: "multi_leg::dflow",
+            "未配置 DFlow 腿角色，跳过 DFlow 注册"
+        );
+        return Ok(());
+    };
 
     let leg_allowed = match leg {
         LegRole::Buy => config
@@ -722,9 +898,13 @@ fn register_kamino_leg(
     alt_cache: AltCache,
 ) -> Result<()> {
     let kamino_cfg = &config.galileo.engine.kamino;
-    let leg = kamino_cfg
-        .leg
-        .ok_or_else(|| anyhow!("kamino.leg 必须在 multi-legs 模式下配置"))?;
+    let Some(leg) = kamino_cfg.leg else {
+        debug!(
+            target: "multi_leg::kamino",
+            "未配置 Kamino 腿角色，跳过 Kamino 注册"
+        );
+        return Ok(());
+    };
 
     let leg_allowed = match leg {
         LegRole::Buy => config
@@ -873,10 +1053,18 @@ fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
         return Ok(());
     }
 
-    if titan_cfg.leg != Some(LegRole::Buy) {
-        return Err(anyhow!(
-            "Titan 仅支持 buy 腿，请设置 engine.titan.leg = \"buy\""
-        ));
+    match titan_cfg.leg {
+        None => {
+            debug!(
+                target: "multi_leg::titan",
+                "未配置 Titan 腿角色，跳过 Titan 注册"
+            );
+            return Ok(());
+        }
+        Some(LegRole::Buy) => {}
+        Some(other) => {
+            return Err(anyhow!("Titan 仅支持 buy 腿，收到 {:?}", other));
+        }
     }
 
     let ws_url = titan_cfg
@@ -976,9 +1164,11 @@ fn resolve_quote_cadence(
     backend: &StrategyBackend<'_>,
 ) -> QuoteCadence {
     match backend {
-        StrategyBackend::Jupiter { .. } => {
-            QuoteCadence::from_config(&engine.jupiter.quote_config.cadence)
-        }
+        StrategyBackend::Jupiter { .. } => engine
+            .jupiter
+            .primary()
+            .map(|cfg| QuoteCadence::from_config(&cfg.quote_config.cadence))
+            .unwrap_or_else(QuoteCadence::default),
         StrategyBackend::Dflow { .. } => {
             QuoteCadence::from_config(&engine.dflow.quote_config.cadence)
         }
@@ -1277,8 +1467,14 @@ async fn run_pure_blind_engine(
         .map_err(|err| anyhow!(err))?;
 
     let strategy_engine = StrategyEngine::new(
-        PureBlindStrategy::new(routes, pure_config, pool_catalog, route_catalog, dynamic_rx)
-            .map_err(|err| anyhow!(err))?,
+        PureBlindStrategy::new(
+            routes,
+            pure_config,
+            Arc::clone(&pool_catalog),
+            Arc::clone(&route_catalog),
+            dynamic_rx,
+        )
+        .map_err(|err| anyhow!(err))?,
         lander_stack.clone(),
         identity,
         ip_allocator,
@@ -1299,6 +1495,17 @@ async fn run_pure_blind_engine(
         handle.abort();
     }
 
+    if let Err(err) = cache_manager
+        .flush(pool_catalog.as_ref(), route_catalog.as_ref())
+        .await
+    {
+        warn!(
+            target: "pure_blind::cache",
+            error = %err,
+            "退出前写入纯盲发快照失败"
+        );
+    }
+
     result.map_err(|err| anyhow!(err))?;
 
     Ok(())
@@ -1314,8 +1521,14 @@ async fn prepare_swap_components(
     match backend {
         StrategyBackend::Jupiter { api_client } => {
             info!(target: "strategy", "使用 Jupiter 聚合器");
-            let quote_defaults = config.galileo.engine.jupiter.quote_config.clone();
-            let swap_defaults = config.galileo.engine.jupiter.swap_config.clone();
+            let primary_cfg = config
+                .galileo
+                .engine
+                .jupiter
+                .primary()
+                .ok_or_else(|| anyhow!("缺少 Jupiter 引擎配置"))?;
+            let quote_defaults = primary_cfg.quote_config.clone();
+            let swap_defaults = primary_cfg.swap_config.clone();
             identity.set_skip_user_accounts_rpc_calls(swap_defaults.skip_user_accounts_rpc_calls);
             let quote_executor =
                 QuoteExecutor::for_jupiter((*api_client).clone(), quote_defaults.clone());

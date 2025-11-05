@@ -1,5 +1,5 @@
 use super::quote::QuoteResponsePayload;
-use crate::api::serde_helpers::field_as_string;
+use crate::api::serde_helpers::{field_as_string, hash_as_string_or_bytes};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use solana_sdk::hash::Hash;
@@ -27,6 +27,8 @@ pub struct SwapInstructionsRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dynamic_compute_unit_limit: Option<bool>,
     pub wrap_and_unwrap_sol: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_shared_accounts: Option<bool>,
 }
 
 impl SwapInstructionsRequest {
@@ -41,6 +43,7 @@ impl SwapInstructionsRequest {
             skip_user_accounts_rpc_calls: None,
             dynamic_compute_unit_limit: None,
             wrap_and_unwrap_sol: true,
+            use_shared_accounts: None,
         }
     }
 }
@@ -49,7 +52,7 @@ impl SwapInstructionsRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockhashMetadata {
-    #[serde(with = "field_as_string")]
+    #[serde(with = "hash_as_string_or_bytes")]
     pub blockhash: Hash,
     pub last_valid_block_height: u64,
 }

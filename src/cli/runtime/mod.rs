@@ -56,7 +56,12 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
 
     let aggregator = match config.galileo.engine.backend {
         crate::config::EngineBackend::Jupiter => {
-            let jupiter_cfg = &config.galileo.engine.jupiter;
+            let jupiter_cfg = config
+                .galileo
+                .engine
+                .jupiter
+                .primary()
+                .ok_or_else(|| anyhow!("缺少 Jupiter 引擎配置"))?;
             let quote_base = jupiter_cfg
                 .api_quote_base
                 .as_ref()

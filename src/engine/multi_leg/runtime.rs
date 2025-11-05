@@ -222,29 +222,23 @@ impl MultiLegRuntime {
     }
 
     async fn populate_leg_plan(&self, plan: &mut LegPlan) -> Result<()> {
-        let mut unique = Vec::new();
-        let mut seen = HashMap::new();
-        for key in &plan.address_lookup_table_addresses {
-            if !seen.contains_key(key) {
-                seen.insert(*key, ());
-                unique.push(*key);
-            }
-        }
-
-        if unique.is_empty() {
+        if plan.address_lookup_table_addresses.is_empty() {
             plan.resolved_lookup_tables.clear();
             self.rebuild_plan_instructions(plan)?;
             return Ok(());
         }
 
-        let tables = self.alt_cache.fetch_many(&self.rpc, &unique).await?;
-        let mut table_map: HashMap<Pubkey, _> =
+        let tables = self
+            .alt_cache
+            .fetch_many(&self.rpc, &plan.address_lookup_table_addresses)
+            .await?;
+        let table_map: HashMap<Pubkey, _> =
             tables.into_iter().map(|table| (table.key, table)).collect();
 
         plan.resolved_lookup_tables = plan
             .address_lookup_table_addresses
             .iter()
-            .filter_map(|key| table_map.remove(key))
+            .filter_map(|key| table_map.get(key).cloned())
             .collect();
 
         self.rebuild_plan_instructions(plan)?;

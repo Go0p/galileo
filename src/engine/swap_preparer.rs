@@ -637,11 +637,10 @@ fn combine_ultra_swaps(
 
     let mut address_lookup_table_addresses = forward.address_lookup_table_addresses.clone();
     address_lookup_table_addresses.extend(reverse.address_lookup_table_addresses.clone());
-    dedup_pubkeys(&mut address_lookup_table_addresses);
 
     let mut resolved_lookup_tables = forward.resolved_lookup_tables.clone();
     resolved_lookup_tables.extend(reverse.resolved_lookup_tables.clone());
-    dedup_lookup_tables(&mut resolved_lookup_tables);
+    dedup_lookup_tables(&mut resolved_lookup_tables, &address_lookup_table_addresses);
 
     let prioritization_fee_total = forward
         .prioritization_fee_lamports
@@ -663,35 +662,22 @@ fn combine_ultra_swaps(
     }
 }
 
-fn dedup_pubkeys(keys: &mut Vec<Pubkey>) {
-    let mut seen = HashSet::new();
-    keys.retain(|key| seen.insert(*key));
-}
-
-fn dedup_lookup_tables(tables: &mut Vec<AddressLookupTableAccount>) {
-    let mut merged: HashMap<Pubkey, Vec<Pubkey>> = HashMap::new();
-    let mut seen_addresses: HashMap<Pubkey, HashSet<Pubkey>> = HashMap::new();
-    let mut order: Vec<Pubkey> = Vec::new();
-
-    for table in std::mem::take(tables) {
-        let entry = merged.entry(table.key).or_insert_with(|| {
-            order.push(table.key);
-            Vec::new()
-        });
-        let addr_set = seen_addresses.entry(table.key).or_insert_with(HashSet::new);
-        for address in table.addresses {
-            if addr_set.insert(address) {
-                entry.push(address);
-            }
-        }
+fn dedup_lookup_tables(tables: &mut Vec<AddressLookupTableAccount>, order: &[Pubkey]) {
+    if order.is_empty() {
+        tables.clear();
+        return;
     }
 
-    *tables = order
-        .into_iter()
-        .filter_map(|key| {
-            merged
-                .remove(&key)
-                .map(|addresses| AddressLookupTableAccount { key, addresses })
-        })
-        .collect();
+    let mut by_key: HashMap<Pubkey, AddressLookupTableAccount> = HashMap::new();
+    for table in std::mem::take(tables) {
+        by_key.entry(table.key).or_insert_with(|| table.clone());
+    }
+
+    let mut resolved = Vec::with_capacity(order.len());
+    for key in order {
+        if let Some(table) = by_key.get(key) {
+            resolved.push(table.clone());
+        }
+    }
+    *tables = resolved;
 }

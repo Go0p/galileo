@@ -12,6 +12,7 @@ use tokio::time::{MissedTickBehavior, interval};
 use tracing::{debug, info, warn};
 
 use crate::config::PureBlindCacheConfig;
+use crate::monitoring::events;
 use crate::strategy::pure_blind::observer::catalog::PoolCatalog;
 use crate::strategy::pure_blind::observer::routes::RouteCatalog;
 use crate::strategy::pure_blind::observer::snapshot::{PoolSnapshot, RouteSnapshot};
@@ -28,6 +29,148 @@ pub struct PureBlindCacheManager {
     routes_path: PathBuf,
     snapshot_interval: Duration,
     snapshot_ttl: Option<Duration>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::instructions::jupiter::types::EncodedSwap;
+    use crate::strategy::pure_blind::observer::profile::{
+        PoolAsset, PoolKey, PoolProfile, PoolStatsSnapshot,
+    };
+    use crate::strategy::pure_blind::observer::routes::RouteStatsSnapshot;
+    use crate::strategy::pure_blind::observer::snapshot::{
+        PoolSnapshot, PoolSnapshotEntry, PoolSnapshotPayload, RouteSnapshot, RouteSnapshotEntry,
+        SNAPSHOT_VERSION,
+    };
+    use crate::strategy::pure_blind::observer::{
+        PoolActivationPolicy, PoolCatalog, RouteActivationPolicy, RouteCatalog,
+    };
+    use serde_json::Value;
+    use solana_sdk::pubkey::Pubkey;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    fn build_pool_profile() -> PoolProfile {
+        PoolProfile::new(
+            PoolKey::new(
+                "Test",
+                Some(Pubkey::new_unique()),
+                Some(Pubkey::new_unique()),
+                Some(Pubkey::new_unique()),
+                Some(Pubkey::new_unique()),
+                7,
+            ),
+            EncodedSwap::simple(7),
+            "variant".to_string(),
+            Value::Null,
+            0,
+            1,
+            Some(PoolAsset::new(Pubkey::new_unique(), Pubkey::new_unique())),
+            Some(PoolAsset::new(Pubkey::new_unique(), Pubkey::new_unique())),
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+        )
+    }
+
+    #[tokio::test]
+    async fn restore_and_flush_activate_and_persist() {
+        let pool_catalog = Arc::new(PoolCatalog::new(
+            PoolActivationPolicy::new(0, None, Duration::from_secs(60)),
+            16,
+            10,
+        ));
+        let route_catalog = Arc::new(RouteCatalog::new(
+            RouteActivationPolicy::new(0, None, Duration::from_secs(60)),
+            16,
+            10,
+        ));
+
+        let temp = TempDir::new().expect("create temp dir");
+        let cache_dir = temp.path().to_string_lossy().to_string();
+        let config = PureBlindCacheConfig {
+            enable_persistence: true,
+            cache_dir: Some(cache_dir.clone()),
+            max_pools: 10,
+            max_routes: 10,
+            snapshot_interval_secs: 1,
+            snapshot_ttl_secs: 3600,
+        };
+
+        let manager = PureBlindCacheManager::new(&config);
+
+        let profile = build_pool_profile();
+        let pool_snapshot = PoolSnapshot {
+            version: SNAPSHOT_VERSION,
+            generated_at: 0,
+            entries: vec![PoolSnapshotEntry {
+                payload: PoolSnapshotPayload::from_profile(&profile),
+                stats: PoolStatsSnapshot {
+                    observations: 3,
+                    first_seen_slot: Some(1),
+                    last_seen_slot: Some(2),
+                    estimated_profit_total: 9,
+                },
+            }],
+        };
+        let markets = vec![profile.key.pool_address.unwrap()];
+        let route_snapshot = RouteSnapshot {
+            version: SNAPSHOT_VERSION,
+            generated_at: 0,
+            entries: vec![RouteSnapshotEntry {
+                markets: markets.clone(),
+                steps: vec![PoolSnapshotPayload::from_profile(&profile)],
+                lookup_tables: Vec::new(),
+                base_asset: profile.input_asset,
+                stats: RouteStatsSnapshot {
+                    observations: 2,
+                    first_seen_slot: Some(1),
+                    last_seen_slot: Some(2),
+                    estimated_profit_total: 5,
+                },
+            }],
+        };
+
+        tokio::fs::create_dir_all(&cache_dir)
+            .await
+            .expect("create cache dir");
+        tokio::fs::write(
+            Path::new(&cache_dir).join(POOLS_FILE),
+            serde_json::to_vec(&pool_snapshot).unwrap(),
+        )
+        .await
+        .expect("write pools snapshot");
+        tokio::fs::write(
+            Path::new(&cache_dir).join(ROUTES_FILE),
+            serde_json::to_vec(&route_snapshot).unwrap(),
+        )
+        .await
+        .expect("write routes snapshot");
+
+        manager
+            .restore(pool_catalog.as_ref(), route_catalog.as_ref())
+            .await
+            .expect("restore snapshot");
+
+        manager
+            .flush(pool_catalog.as_ref(), route_catalog.as_ref())
+            .await
+            .expect("flush snapshots");
+
+        let pools_bytes = tokio::fs::read(Path::new(&cache_dir).join(POOLS_FILE))
+            .await
+            .expect("read pools snapshot");
+        let routes_bytes = tokio::fs::read(Path::new(&cache_dir).join(ROUTES_FILE))
+            .await
+            .expect("read routes snapshot");
+        let pools_snapshot: PoolSnapshot = serde_json::from_slice(&pools_bytes).unwrap();
+        let routes_snapshot: RouteSnapshot = serde_json::from_slice(&routes_bytes).unwrap();
+        assert_eq!(pools_snapshot.version, SNAPSHOT_VERSION);
+        assert_eq!(routes_snapshot.version, SNAPSHOT_VERSION);
+        assert!(routes_snapshot.generated_at > 0);
+    }
 }
 
 impl PureBlindCacheManager {
@@ -62,68 +205,16 @@ impl PureBlindCacheManager {
         route_catalog: &RouteCatalog,
     ) -> Result<()> {
         if !self.enabled {
+            events::pure_blind_cache_snapshot_skipped("pool", "disabled");
+            events::pure_blind_cache_snapshot_skipped("route", "disabled");
             return Ok(());
         }
 
         self.ensure_dir().await?;
         let now = Self::now_secs();
 
-        if let Some(snapshot) = self.read_snapshot::<PoolSnapshot>(&self.pools_path).await? {
-            if self.is_snapshot_expired(snapshot.generated_at, now) {
-                warn!(
-                    target: "pure_blind::cache",
-                    path = %self.pools_path.display(),
-                    "池子快照已过期，忽略"
-                );
-            } else {
-                let count = snapshot.entries.len();
-                if count > 0 {
-                    pool_catalog.ingest_snapshot(snapshot);
-                    info!(
-                        target: "pure_blind::cache",
-                        path = %self.pools_path.display(),
-                        count,
-                        "已恢复池子画像快照"
-                    );
-                } else {
-                    debug!(
-                        target: "pure_blind::cache",
-                        path = %self.pools_path.display(),
-                        "池子快照为空，跳过恢复"
-                    );
-                }
-            }
-        }
-
-        if let Some(snapshot) = self
-            .read_snapshot::<RouteSnapshot>(&self.routes_path)
-            .await?
-        {
-            if self.is_snapshot_expired(snapshot.generated_at, now) {
-                warn!(
-                    target: "pure_blind::cache",
-                    path = %self.routes_path.display(),
-                    "路线快照已过期，忽略"
-                );
-            } else {
-                let count = snapshot.entries.len();
-                if count > 0 {
-                    route_catalog.ingest_snapshot(snapshot);
-                    info!(
-                        target: "pure_blind::cache",
-                        path = %self.routes_path.display(),
-                        count,
-                        "已恢复路线快照"
-                    );
-                } else {
-                    debug!(
-                        target: "pure_blind::cache",
-                        path = %self.routes_path.display(),
-                        "路线快照为空，跳过恢复"
-                    );
-                }
-            }
-        }
+        self.restore_pool_snapshot(pool_catalog, now).await?;
+        self.restore_route_snapshot(route_catalog, now).await?;
 
         Ok(())
     }
@@ -141,6 +232,18 @@ impl PureBlindCacheManager {
         Some(tokio::spawn(async move {
             manager.run_loop(pool_catalog, route_catalog).await;
         }))
+    }
+
+    pub async fn flush(
+        &self,
+        pool_catalog: &PoolCatalog,
+        route_catalog: &RouteCatalog,
+    ) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        self.ensure_dir().await?;
+        self.write_snapshots(pool_catalog, route_catalog).await
     }
 
     async fn run_loop(self, pool_catalog: Arc<PoolCatalog>, route_catalog: Arc<RouteCatalog>) {
@@ -200,11 +303,13 @@ impl PureBlindCacheManager {
             .with_context(|| {
                 format!("写入池子快照失败: {}", self.pools_path.as_path().display())
             })?;
+        events::pure_blind_cache_snapshot_written("pool", pool_snapshot.entries.len());
         self.write_snapshot(&self.routes_path, &route_snapshot)
             .await
             .with_context(|| {
                 format!("写入路线快照失败: {}", self.routes_path.as_path().display())
             })?;
+        events::pure_blind_cache_snapshot_written("route", route_snapshot.entries.len());
 
         debug!(
             target: "pure_blind::cache",
@@ -268,5 +373,83 @@ impl PureBlindCacheManager {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs())
             .unwrap_or(0)
+    }
+
+    async fn restore_pool_snapshot(&self, pool_catalog: &PoolCatalog, now: u64) -> Result<()> {
+        match self.read_snapshot::<PoolSnapshot>(&self.pools_path).await {
+            Ok(Some(snapshot)) => {
+                if self.is_snapshot_expired(snapshot.generated_at, now) {
+                    warn!(
+                        target: "pure_blind::cache",
+                        path = %self.pools_path.display(),
+                        "池子快照已过期，忽略"
+                    );
+                    events::pure_blind_cache_snapshot_skipped("pool", "expired");
+                } else if snapshot.entries.is_empty() {
+                    debug!(
+                        target: "pure_blind::cache",
+                        path = %self.pools_path.display(),
+                        "池子快照为空，跳过恢复"
+                    );
+                    events::pure_blind_cache_snapshot_skipped("pool", "empty");
+                } else {
+                    let count = snapshot.entries.len();
+                    pool_catalog.ingest_snapshot(snapshot);
+                    info!(
+                        target: "pure_blind::cache",
+                        path = %self.pools_path.display(),
+                        count,
+                        "已恢复池子画像快照"
+                    );
+                }
+            }
+            Ok(None) => {
+                events::pure_blind_cache_snapshot_skipped("pool", "missing");
+            }
+            Err(err) => {
+                events::pure_blind_cache_snapshot_skipped("pool", "error");
+                return Err(err);
+            }
+        }
+        Ok(())
+    }
+
+    async fn restore_route_snapshot(&self, route_catalog: &RouteCatalog, now: u64) -> Result<()> {
+        match self.read_snapshot::<RouteSnapshot>(&self.routes_path).await {
+            Ok(Some(snapshot)) => {
+                if self.is_snapshot_expired(snapshot.generated_at, now) {
+                    warn!(
+                        target: "pure_blind::cache",
+                        path = %self.routes_path.display(),
+                        "路线快照已过期，忽略"
+                    );
+                    events::pure_blind_cache_snapshot_skipped("route", "expired");
+                } else if snapshot.entries.is_empty() {
+                    debug!(
+                        target: "pure_blind::cache",
+                        path = %self.routes_path.display(),
+                        "路线快照为空，跳过恢复"
+                    );
+                    events::pure_blind_cache_snapshot_skipped("route", "empty");
+                } else {
+                    let count = snapshot.entries.len();
+                    route_catalog.ingest_snapshot(snapshot);
+                    info!(
+                        target: "pure_blind::cache",
+                        path = %self.routes_path.display(),
+                        count,
+                        "已恢复路线快照"
+                    );
+                }
+            }
+            Ok(None) => {
+                events::pure_blind_cache_snapshot_skipped("route", "missing");
+            }
+            Err(err) => {
+                events::pure_blind_cache_snapshot_skipped("route", "error");
+                return Err(err);
+            }
+        }
+        Ok(())
     }
 }
