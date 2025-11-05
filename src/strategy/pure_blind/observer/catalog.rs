@@ -9,12 +9,14 @@ use solana_sdk::pubkey::Pubkey;
 use tokio::sync::broadcast;
 
 use super::profile::{PoolKey, PoolObservation, PoolProfile, PoolStats, PoolStatsSnapshot};
+use super::snapshot::{PoolSnapshot, PoolSnapshotEntry, PoolSnapshotPayload, SNAPSHOT_VERSION};
 
 pub struct PoolCatalog {
     entries: DashMap<PoolKey, PoolRecord>,
     policy: PoolActivationPolicy,
     events: Mutex<Vec<PoolCatalogEvent>>,
     event_tx: broadcast::Sender<PoolCatalogEvent>,
+    max_entries: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -118,10 +120,11 @@ pub enum PoolCatalogEvent {
 pub enum DeactivateReason {
     Decay,
     Failure,
+    Pruned,
 }
 
 impl PoolCatalog {
-    pub fn new(policy: PoolActivationPolicy, event_capacity: usize) -> Self {
+    pub fn new(policy: PoolActivationPolicy, event_capacity: usize, max_entries: usize) -> Self {
         let capacity = event_capacity.max(16);
         let (event_tx, _) = broadcast::channel(capacity);
         Self {
@@ -129,13 +132,14 @@ impl PoolCatalog {
             policy,
             events: Mutex::new(Vec::new()),
             event_tx,
+            max_entries,
         }
     }
 }
 
 impl Default for PoolCatalog {
     fn default() -> Self {
-        Self::new(PoolActivationPolicy::default(), 1024)
+        Self::new(PoolActivationPolicy::default(), 1024, 0)
     }
 }
 
@@ -144,7 +148,7 @@ impl PoolCatalog {
         use dashmap::mapref::entry::Entry;
         let now = Instant::now();
 
-        match self.entries.entry(observation.key.clone()) {
+        let update = match self.entries.entry(observation.key.clone()) {
             Entry::Occupied(mut entry) => {
                 let record = entry.get_mut();
                 record.update(observation, now);
@@ -168,7 +172,9 @@ impl PoolCatalog {
                     stats,
                 }
             }
-        }
+        };
+        self.enforce_capacity();
+        update
     }
 
     pub fn get_profile(&self, key: &PoolKey) -> Option<Arc<PoolProfile>> {
@@ -283,6 +289,115 @@ impl PoolCatalog {
         guard.push(event.clone());
         let _ = self.event_tx.send(event);
     }
+
+    pub fn export_snapshot(&self, generated_at: u64) -> PoolSnapshot {
+        let mut entries: Vec<PoolSnapshotEntry> = self
+            .entries
+            .iter()
+            .filter(|entry| entry.value().activation.active)
+            .map(|entry| {
+                let value = entry.value();
+                PoolSnapshotEntry {
+                    payload: PoolSnapshotPayload::from_profile(&value.profile),
+                    stats: value.stats.snapshot(),
+                }
+            })
+            .collect();
+
+        if self.max_entries > 0 && entries.len() > self.max_entries {
+            entries.sort_by(|a, b| {
+                let slot_a = a.stats.last_seen_slot.unwrap_or(0);
+                let slot_b = b.stats.last_seen_slot.unwrap_or(0);
+                slot_a
+                    .cmp(&slot_b)
+                    .then(a.stats.observations.cmp(&b.stats.observations))
+            });
+            entries.truncate(self.max_entries);
+        }
+
+        PoolSnapshot {
+            version: SNAPSHOT_VERSION,
+            generated_at,
+            entries,
+        }
+    }
+
+    pub fn ingest_snapshot(&self, snapshot: PoolSnapshot) {
+        if snapshot.version != SNAPSHOT_VERSION {
+            return;
+        }
+
+        for entry in snapshot.entries {
+            let PoolSnapshotEntry {
+                payload,
+                stats: snapshot_stats,
+            } = entry;
+            let profile_inner = payload.into_profile();
+            let key = profile_inner.key.clone();
+            let profile = Arc::new(profile_inner);
+            let mut record_stats = PoolStats::default();
+            record_stats.observations = snapshot_stats.observations;
+            record_stats.first_seen_slot = snapshot_stats.first_seen_slot;
+            record_stats.last_seen_slot = snapshot_stats.last_seen_slot;
+            record_stats.estimated_profit_total = snapshot_stats.estimated_profit_total;
+
+            let mut record = PoolRecord {
+                profile,
+                stats: record_stats,
+                activation: ActivationState {
+                    active: true,
+                    consecutive_failures: 0,
+                    last_observed_at: None,
+                },
+            };
+            if let Some(event) = record.evaluate_activation(&self.policy) {
+                self.push_event(event);
+            }
+            self.entries.insert(key, record);
+        }
+
+        self.enforce_capacity();
+    }
+
+    fn enforce_capacity(&self) {
+        if self.max_entries == 0 {
+            return;
+        }
+        let current = self.entries.len();
+        if current <= self.max_entries {
+            return;
+        }
+
+        let remove_count = current - self.max_entries;
+        let mut candidates: Vec<(PoolKey, PoolStatsSnapshot)> = self
+            .entries
+            .iter()
+            .map(|entry| {
+                let stats = entry.value().stats.snapshot();
+                (entry.key().clone(), stats)
+            })
+            .collect();
+
+        candidates.sort_by(|a, b| {
+            let slot_a = a.1.last_seen_slot.unwrap_or(0);
+            let slot_b = b.1.last_seen_slot.unwrap_or(0);
+            slot_a
+                .cmp(&slot_b)
+                .then(a.1.observations.cmp(&b.1.observations))
+        });
+
+        for (key, _) in candidates.into_iter().take(remove_count) {
+            if let Some((_, record)) = self.entries.remove(&key) {
+                let stats = record.stats.snapshot();
+                let event = PoolCatalogEvent::Deactivated {
+                    profile: record.profile,
+                    stats,
+                    reason: DeactivateReason::Pruned,
+                };
+                self.push_event(event);
+            }
+        }
+    }
 }
 
 impl PoolRecord {
@@ -294,6 +409,9 @@ impl PoolRecord {
             observation.swap_payload.clone(),
             observation.input_index,
             observation.output_index,
+            observation.input_asset,
+            observation.output_asset,
+            Arc::new(observation.lookup_tables.to_vec()),
             Arc::new(observation.remaining_accounts.to_vec()),
         );
         let mut stats = PoolStats::default();
@@ -308,19 +426,33 @@ impl PoolRecord {
     }
 
     fn update(&mut self, observation: PoolObservation<'_>, now: Instant) {
-        if self.profile.remaining_accounts.is_empty() && !observation.remaining_accounts.is_empty()
-        {
-            let mut_profile = Arc::make_mut(&mut self.profile);
-            *mut_profile = PoolProfile::new(
-                observation.key.clone(),
-                observation.swap.clone(),
-                observation.swap_variant.to_string(),
-                observation.swap_payload.clone(),
-                observation.input_index,
-                observation.output_index,
-                Arc::new(observation.remaining_accounts.to_vec()),
-            );
+        let mut_profile = Arc::make_mut(&mut self.profile);
+
+        if mut_profile.remaining_accounts.is_empty() && !observation.remaining_accounts.is_empty() {
+            *Arc::make_mut(&mut mut_profile.remaining_accounts) =
+                observation.remaining_accounts.to_vec();
         }
+
+        if let Some(asset) = observation.input_asset {
+            if mut_profile.input_asset.is_none() {
+                mut_profile.input_asset = Some(asset);
+            }
+        }
+        if let Some(asset) = observation.output_asset {
+            if mut_profile.output_asset.is_none() {
+                mut_profile.output_asset = Some(asset);
+            }
+        }
+
+        if !observation.lookup_tables.is_empty() {
+            let tables = Arc::make_mut(&mut mut_profile.lookup_tables);
+            for table in observation.lookup_tables {
+                if !tables.contains(table) {
+                    tables.push(*table);
+                }
+            }
+        }
+
         self.stats
             .record(observation.slot, observation.estimated_profit);
         self.activation.register_observation(now);

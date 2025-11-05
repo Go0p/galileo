@@ -35,9 +35,9 @@ global:
 
 engine:
   # 可选值：dflow / ultra / multi-legs / kamino / none
-  # backend: "none"
-  # backend: "kamino"
   backend: "none"
+  # backend: "kamino"
+  # backend: "none"
   # backend: "multi-legs"
   # backend: "dflow"
   # 设置为 true 时启用控制台摘要面板，每轮 trade size 批次完成后打印关键统计。
@@ -48,6 +48,42 @@ engine:
     swap_ms: 10000
     landing_ms: 5000
 
+  jupiter:
+    enable: false
+    api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
+    api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
+    api_proxy: "http://192.168.124.4:9999"
+    quote_config:
+      # 设置为 true 时，机器人将仅寻找两跳（A -> B -> A）交易。设置为 true 将缩短跳转报价时间，加快落地速度。设置为 false 将获得更多机会，但需要更多报价时间。
+      only_direct_routes: false
+      # 仅当 use_direct_route_only 为 false 时，此设置才会生效。
+      # 将中间代币限制为具有稳定流动性的顶级代币集合。这将有助于降低兑换时潜在的高滑点错误率，并将对定价的影响降至最低。
+      # 当您将 use_direct_route_only 设置为 false 时，这可以帮助加快 jupiter 的报价时间。不过，正如它所说，它也会限制在您的路线中使用的额外 mint。
+      restrict_intermediate_tokens: true
+      cadence:
+        # default: 默认的 quote 节奏配置
+        default:
+          # group_parallelism: 同时运行的 quote 组数量上限
+          group_parallelism: auto
+          # intra_group_spacing_ms: 同一波次内组与组之间的最小启动间隔（毫秒）
+          intra_group_spacing_ms: 3000
+          # wave_cooldown_ms: 一波结束后等待下一波的时间（毫秒）
+          wave_cooldown_ms: 0
+        # per_base_mint: 可选，覆盖指定 base mint 的默认节奏
+        #   So11111111111111111111111111111111111111112:
+        #     group_parallelism: 1
+        #     intra_group_spacing_ms: 200
+        #     wave_cooldown_ms: 1000
+    swap_config:
+      # 跳过用户账户相关 RPC 调用，以减少重复拉取。
+      # 设置为 false 时，不会有 setupInstructions 等创建 ATA 的指令
+      # 设置为 true 时，会有 setupInstructions 等创建 ATA 的指令
+      skip_user_accounts_rpc_calls: false
+      # 启用后，它将进行交换模拟以获取使用的计算单元并将其设置在 ComputeBudget 的计算单元限制中
+      # 这会导致一个额外的 RPC 调用来模拟这个交易
+      # 我们建议启用此功能以正确估计计算单元并减少所需的优先费用或有更高的机会被纳入区块
+      dynamic_compute_unit_limit: true
+      wrap_and_unwrap_sol: false
   ultra:
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
     leg: "sell"
@@ -83,11 +119,13 @@ engine:
   dflow:
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
     leg: "sell"
-    api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
+    # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
     # api_quote_base: "https://quote-api.dflow.net"
-    api_swap_base: "https://quote-api.dflow.net"
+    # api_swap_base: "https://quote-api.dflow.net"
     # api_quote_base: "http://109.94.98.33:9800"
     # api_swap_base: "http://109.94.98.33:9800"
+    api_quote_base: "http://109.94.98.33:9999"
+    api_swap_base: "http://109.94.98.33:9999"
     api_proxy: "http://192.168.3.3:9999"
     # api_proxy: "http://192.168.124.4:9999"
     quote_config:
@@ -215,8 +253,8 @@ bot:
     # 启用的策略列表（策略配置从 strategies/ 目录加载）
     enabled:
       # - blind_strategy
-      - copy_strategy
-      # - pure_blind_strategy
+      # - copy_strategy
+      - pure_blind_strategy
     # 策略配置文件目录（默认为 "strategies"）
     config_dir: "strategies"
   engines:

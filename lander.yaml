@@ -34,9 +34,10 @@ lander:
       # - https://slc.mainnet.block-engine.jito.wtf/api/v1/bundles
 
     # 小费策略，
-    # 支持的值 fixed, range, stream
+    # 支持的值 fixed, range, stream, api
     tip_strategy: "fixed"
-
+    tip_floor_api: "https://bundles.jito.wtf/api/v1/bundles/tip_floor"
+    refresh_ms: 5000
     # 使用固定的 lamports 作为小费
     fixed_tip: 2444
     # 随机小费，随机在 range_tips 中选择一个（仅当 tip_strategy=range 生效）

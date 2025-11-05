@@ -405,6 +405,7 @@ async fn acquire_permit(semaphore: &Arc<Semaphore>) -> EngineResult<OwnedSemapho
 
 pub(crate) fn classify_ip_outcome(err: &EngineError) -> Option<IpLeaseOutcome> {
     match err {
+        EngineError::Jupiter(inner) => classify_jupiter(inner),
         EngineError::Dflow(inner) => classify_dflow(inner),
         EngineError::Kamino(inner) => classify_kamino(inner),
         EngineError::Ultra(inner) => classify_ultra(inner),
@@ -421,6 +422,17 @@ pub(crate) fn classify_dflow(err: &crate::api::dflow::DflowError) -> Option<IpLe
         DflowError::RateLimited { .. } => Some(IpLeaseOutcome::RateLimited),
         DflowError::ApiStatus { status, .. } => map_status(status),
         DflowError::Http(inner) => classify_reqwest(inner),
+        _ => None,
+    }
+}
+
+pub(crate) fn classify_jupiter(err: &crate::api::jupiter::JupiterError) -> Option<IpLeaseOutcome> {
+    use crate::api::jupiter::JupiterError;
+    match err {
+        JupiterError::RateLimited { .. } => Some(IpLeaseOutcome::RateLimited),
+        JupiterError::ApiStatus { status, .. } => map_status(status),
+        JupiterError::Timeout { .. } => Some(IpLeaseOutcome::Timeout),
+        JupiterError::Http(inner) => classify_reqwest(inner),
         _ => None,
     }
 }

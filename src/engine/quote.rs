@@ -7,11 +7,12 @@ use super::aggregator::{KaminoQuote, QuoteResponseVariant};
 use crate::api::dflow::{
     DflowApiClient, DflowError, QuoteRequest as DflowQuoteRequest, SlippageBps, SlippagePreset,
 };
+use crate::api::jupiter::{JupiterApiClient, JupiterError, QuoteRequest as JupiterQuoteRequest};
 use crate::api::kamino::{KaminoApiClient, KaminoError, QuoteRequest as KaminoQuoteRequest};
 use crate::api::ultra::{
     OrderRequest as UltraOrderRequest, Router as UltraRouter, UltraApiClient, UltraError,
 };
-use crate::config::{DflowQuoteConfig, KaminoQuoteConfig, UltraQuoteConfig};
+use crate::config::{DflowQuoteConfig, JupiterQuoteConfig, KaminoQuoteConfig, UltraQuoteConfig};
 use crate::engine::quote_dispatcher;
 use crate::network::{IpLeaseHandle, IpLeaseOutcome};
 use crate::strategy::types::TradePair;
@@ -33,6 +34,10 @@ impl QuoteConfig {}
 
 #[derive(Clone)]
 pub enum QuoteBackend {
+    Jupiter {
+        client: JupiterApiClient,
+        defaults: JupiterQuoteConfig,
+    },
     Dflow {
         client: DflowApiClient,
         defaults: DflowQuoteConfig,
@@ -102,6 +107,12 @@ pub struct QuoteExecutor {
 }
 
 impl QuoteExecutor {
+    pub fn for_jupiter(client: JupiterApiClient, defaults: JupiterQuoteConfig) -> Self {
+        Self {
+            backend: QuoteBackend::Jupiter { client, defaults },
+        }
+    }
+
     pub fn for_dflow(client: DflowApiClient, defaults: DflowQuoteConfig) -> Self {
         Self {
             backend: QuoteBackend::Dflow { client, defaults },
@@ -139,6 +150,53 @@ impl QuoteExecutor {
     ) -> EngineResult<Option<QuoteResponseVariant>> {
         let local_ip = Some(lease.ip());
         match &self.backend {
+            QuoteBackend::Jupiter { client, defaults } => {
+                let mut request =
+                    JupiterQuoteRequest::new(pair.input_pubkey, pair.output_pubkey, amount);
+                request.slippage_bps = Some(config.slippage_bps);
+                if config.only_direct_routes || defaults.only_direct_routes {
+                    request.only_direct_routes = Some(true);
+                }
+                request.restrict_intermediate_tokens = Some(defaults.restrict_intermediate_tokens);
+                if !config.dex_whitelist.is_empty() {
+                    request.dexes = Some(config.dex_whitelist.join(","));
+                }
+                if !config.dex_blacklist.is_empty() {
+                    request.exclude_dexes = Some(config.dex_blacklist.join(","));
+                }
+
+                match client.quote_with_ip(&request, local_ip).await {
+                    Ok(response) => {
+                        Ok(Some(QuoteResponseVariant::Jupiter(response.into_payload())))
+                    }
+                    Err(JupiterError::RateLimited { status, body, .. }) => {
+                        lease.mark_outcome(IpLeaseOutcome::RateLimited);
+                        warn!(
+                            target: "engine::quote",
+                            status = status.as_u16(),
+                            input_mint = %pair.input_mint,
+                            output_mint = %pair.output_mint,
+                            "Jupiter 报价命中限流，跳过本轮: {body}"
+                        );
+                        Ok(None)
+                    }
+                    Err(err) => {
+                        if let Some(outcome) = quote_dispatcher::classify_jupiter(&err) {
+                            lease.mark_outcome(outcome);
+                        }
+                        let detail = err.describe();
+                        warn!(
+                            target: "engine::quote",
+                            input_mint = %pair.input_mint,
+                            output_mint = %pair.output_mint,
+                            amount = amount,
+                            error = %detail,
+                            "Jupiter 报价失败，跳过当前路线"
+                        );
+                        Ok(None)
+                    }
+                }
+            }
             QuoteBackend::Dflow { client, defaults } => {
                 let mut request =
                     DflowQuoteRequest::new(pair.input_pubkey, pair.output_pubkey, amount);

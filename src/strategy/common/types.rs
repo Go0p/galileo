@@ -177,6 +177,7 @@ pub struct BlindOrder {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteSource {
     Manual,
+    #[allow(dead_code)]
     Auto,
 }
 

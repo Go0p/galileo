@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 use tracing::{info, warn};
 
 use crate::api::dflow::DflowApiClient;
+use crate::api::jupiter::JupiterApiClient;
 use crate::api::kamino::KaminoApiClient;
 use crate::api::ultra::UltraApiClient;
 use crate::cli::args::{Cli, Command};
@@ -17,6 +18,9 @@ use crate::config::launch::resources::{build_http_client_pool, build_http_client
 use crate::config::{AppConfig, StrategyToggle};
 
 enum AggregatorContext {
+    Jupiter {
+        api_client: JupiterApiClient,
+    },
     Dflow {
         api_client: DflowApiClient,
     },
@@ -51,6 +55,69 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         .strategy_enabled(StrategyToggle::CopyStrategy);
 
     let aggregator = match config.galileo.engine.backend {
+        crate::config::EngineBackend::Jupiter => {
+            let jupiter_cfg = &config.galileo.engine.jupiter;
+            let quote_base = jupiter_cfg
+                .api_quote_base
+                .as_ref()
+                .ok_or_else(|| anyhow!("jupiter.api_quote_base 未配置"))?
+                .trim()
+                .to_string();
+            if quote_base.is_empty() {
+                return Err(anyhow!("jupiter.api_quote_base 不能为空"));
+            }
+            let swap_base = jupiter_cfg
+                .api_swap_base
+                .clone()
+                .unwrap_or_else(|| quote_base.clone());
+            let proxy_override = jupiter_cfg
+                .api_proxy
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty());
+            let module_proxy = resolve_proxy_profile(&config.galileo.global, "quote");
+            let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+            let effective_proxy = override_proxy_selection(
+                proxy_override,
+                module_proxy.clone(),
+                global_proxy.clone(),
+            );
+
+            if let Some(url) = proxy_override {
+                info!(
+                    target: "jupiter",
+                    proxy = %url,
+                    "Jupiter API 请求将通过配置的代理发送"
+                );
+            } else if let Some(selection) = module_proxy {
+                info!(
+                    target: "jupiter",
+                    proxy = %selection.url,
+                    per_request = selection.per_request,
+                    "Jupiter API 请求将通过 profile 代理发送"
+                );
+            } else if let Some(selection) = global_proxy.clone() {
+                info!(
+                    target: "jupiter",
+                    proxy = %selection.url,
+                    per_request = selection.per_request,
+                    "Jupiter API 请求将通过全局代理发送"
+                );
+            }
+
+            let api_http_client =
+                build_http_client_with_options(effective_proxy.as_ref(), false, None, None)?;
+            let api_client_pool = build_http_client_pool(effective_proxy.clone(), false, None);
+            let api_client = JupiterApiClient::with_ip_pool(
+                api_http_client,
+                quote_base,
+                swap_base,
+                &config.galileo.engine.time_out,
+                &config.galileo.global.logging,
+                Some(api_client_pool),
+            );
+            AggregatorContext::Jupiter { api_client }
+        }
         crate::config::EngineBackend::Dflow => {
             let quote_base = config
                 .galileo
@@ -278,6 +345,10 @@ async fn dispatch(
             .await?;
         }
         Command::Run => match &aggregator {
+            AggregatorContext::Jupiter { api_client } => {
+                let backend = crate::cli::strategy::StrategyBackend::Jupiter { api_client };
+                run_strategy(&config, &backend, StrategyMode::Live).await?;
+            }
             AggregatorContext::Dflow { api_client } => {
                 let backend = crate::cli::strategy::StrategyBackend::Dflow { api_client };
                 run_strategy(&config, &backend, StrategyMode::Live).await?;
@@ -308,6 +379,10 @@ async fn dispatch(
             }
         },
         Command::StrategyDryRun => match &aggregator {
+            AggregatorContext::Jupiter { api_client } => {
+                let backend = crate::cli::strategy::StrategyBackend::Jupiter { api_client };
+                run_strategy(&config, &backend, StrategyMode::DryRun).await?;
+            }
             AggregatorContext::Dflow { api_client } => {
                 let backend = crate::cli::strategy::StrategyBackend::Dflow { api_client };
                 run_strategy(&config, &backend, StrategyMode::DryRun).await?;

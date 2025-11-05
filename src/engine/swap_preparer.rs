@@ -12,8 +12,11 @@ use crate::api::dflow::{
     ComputeUnitPriceMicroLamports as DflowComputeUnitPriceMicroLamports, DflowApiClient,
     SwapInstructionsRequest as DflowSwapInstructionsRequest,
 };
+use crate::api::jupiter::{
+    JupiterApiClient, SwapInstructionsRequest as JupiterSwapInstructionsRequest,
+};
 use crate::cache::AltCache;
-use crate::config::{DflowSwapConfig, KaminoQuoteConfig, UltraSwapConfig};
+use crate::config::{DflowSwapConfig, JupiterSwapConfig, KaminoQuoteConfig, UltraSwapConfig};
 use crate::engine::ultra::{
     UltraAdapter, UltraAdapterError, UltraContext, UltraFinalizedSwap, UltraLookupResolver,
     UltraPreparationParams, UltraPreparedSwap,
@@ -57,6 +60,10 @@ impl ComputeUnitPriceMode {
 
 #[derive(Clone)]
 pub enum SwapPreparerBackend {
+    Jupiter {
+        client: JupiterApiClient,
+        defaults: JupiterSwapConfig,
+    },
     Dflow {
         client: DflowApiClient,
         defaults: DflowSwapConfig,
@@ -82,6 +89,20 @@ pub struct SwapPreparer {
 }
 
 impl SwapPreparer {
+    pub fn for_jupiter(
+        client: JupiterApiClient,
+        request_defaults: JupiterSwapConfig,
+        compute_unit_price: Option<ComputeUnitPriceMode>,
+    ) -> Self {
+        Self {
+            backend: SwapPreparerBackend::Jupiter {
+                client,
+                defaults: request_defaults,
+            },
+            compute_unit_price,
+        }
+    }
+
     pub fn for_dflow(
         client: DflowApiClient,
         request_defaults: DflowSwapConfig,
@@ -152,6 +173,44 @@ impl SwapPreparer {
         let local_ip = Some(lease.ip());
 
         let variant = match (&self.backend, payload) {
+            (
+                SwapPreparerBackend::Jupiter { client, defaults },
+                QuotePayloadVariant::Jupiter(inner),
+            ) => {
+                let mut request = JupiterSwapInstructionsRequest::from_quote(
+                    inner.payload.clone(),
+                    identity.pubkey,
+                );
+                request.wrap_and_unwrap_sol = defaults.wrap_and_unwrap_sol;
+                let skip_accounts = defaults.skip_user_accounts_rpc_calls
+                    || identity.skip_user_accounts_rpc_calls();
+                request.skip_user_accounts_rpc_calls = Some(skip_accounts);
+                request.dynamic_compute_unit_limit = Some(defaults.dynamic_compute_unit_limit);
+
+                if let Some(strategy) = &self.compute_unit_price {
+                    let price = strategy.sample();
+                    if price > 0 {
+                        request.compute_unit_price_micro_lamports = Some(price);
+                    }
+                }
+
+                if let Some(fee) = identity.fee_account() {
+                    match Pubkey::from_str(fee) {
+                        Ok(pubkey) => request.fee_account = Some(pubkey),
+                        Err(err) => {
+                            warn!(
+                                target = "engine::swap_preparer",
+                                fee_account = fee,
+                                error = %err,
+                                "Jupiter 手续费账户解析失败，忽略配置"
+                            );
+                        }
+                    }
+                }
+
+                let response = client.swap_instructions_with_ip(&request, local_ip).await?;
+                SwapInstructionsVariant::Jupiter(response)
+            }
             (
                 SwapPreparerBackend::Dflow { client, defaults },
                 QuotePayloadVariant::Dflow(inner),

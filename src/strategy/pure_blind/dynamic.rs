@@ -1,9 +1,12 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use solana_address_lookup_table_interface::state::AddressLookupTable;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::account::Account;
+use solana_sdk::message::AddressLookupTableAccount;
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::mpsc;
 use tokio::time::{Interval, interval};
@@ -22,24 +25,26 @@ use crate::dexes::zerofi::{ZEROFI_PROGRAM_ID, ZeroFiAdapter};
 use crate::strategy::types::{BlindAsset, BlindDex, BlindMarketMeta, BlindStep};
 
 use super::observer::{
-    DeactivateReason, PoolCatalog, PoolCatalogEvent, PoolKey, PoolProfile, PoolStatsSnapshot,
+    PoolProfile, RouteCatalog, RouteCatalogEvent, RouteDeactivateReason, RouteKey, RouteProfile,
+    RouteStatsSnapshot,
 };
 
 #[derive(Debug)]
 pub enum DynamicRouteUpdate {
     Activated {
-        profile: Arc<PoolProfile>,
-        stats: PoolStatsSnapshot,
+        profile: Arc<RouteProfile>,
+        stats: RouteStatsSnapshot,
         steps: Vec<BlindStep>,
+        lookup_tables: Vec<AddressLookupTableAccount>,
     },
     Retired {
-        key: PoolKey,
-        _reason: DeactivateReason,
+        key: RouteKey,
+        _reason: RouteDeactivateReason,
     },
 }
 
 pub fn spawn_dynamic_worker(
-    catalog: Arc<PoolCatalog>,
+    catalog: Arc<RouteCatalog>,
     rpc_client: Arc<RpcClient>,
     decay_duration: Duration,
 ) -> mpsc::UnboundedReceiver<DynamicRouteUpdate> {
@@ -65,7 +70,7 @@ pub fn spawn_dynamic_worker(
                                 warn!(
                                     target: "pure_blind::dynamic",
                                     error = %err,
-                                    "处理池子事件失败"
+                                    "处理路线事件失败"
                                 );
                             }
                         }
@@ -101,17 +106,18 @@ async fn maybe_tick(interval: &mut Option<Interval>) {
 
 async fn handle_event(
     tx: &mpsc::UnboundedSender<DynamicRouteUpdate>,
-    event: PoolCatalogEvent,
+    event: RouteCatalogEvent,
     rpc_client: Arc<RpcClient>,
 ) -> Result<()> {
     match event {
-        PoolCatalogEvent::Activated { profile, stats } => {
-            match build_steps(Arc::clone(&profile), rpc_client).await {
-                Ok(steps) => {
+        RouteCatalogEvent::Activated { profile, stats } => {
+            match build_dynamic_route(Arc::clone(&profile), rpc_client).await {
+                Ok(payload) => {
                     let update = DynamicRouteUpdate::Activated {
                         profile,
                         stats,
-                        steps,
+                        steps: payload.steps,
+                        lookup_tables: payload.lookup_tables,
                     };
                     let _ = tx.send(update);
                 }
@@ -119,21 +125,18 @@ async fn handle_event(
                     warn!(
                         target: "pure_blind::dynamic",
                         error = %err,
-                        dex = profile.key.dex_label,
-                        pool = ?profile.key.pool_address,
-                        "池子激活但构造动态路线失败"
+                        markets = ?profile.markets(),
+                        "路线激活但构造动态闭环失败"
                     );
                 }
             }
         }
-        PoolCatalogEvent::Deactivated {
-            profile,
-            reason: _reason,
-            ..
+        RouteCatalogEvent::Deactivated {
+            profile, reason, ..
         } => {
             let update = DynamicRouteUpdate::Retired {
                 key: profile.key.clone(),
-                _reason,
+                _reason: reason,
             };
             let _ = tx.send(update);
         }
@@ -141,40 +144,57 @@ async fn handle_event(
     Ok(())
 }
 
-async fn build_steps(
-    profile: Arc<PoolProfile>,
+struct DynamicRoutePayload {
+    steps: Vec<BlindStep>,
+    lookup_tables: Vec<AddressLookupTableAccount>,
+}
+
+async fn build_dynamic_route(
+    profile: Arc<RouteProfile>,
     rpc_client: Arc<RpcClient>,
-) -> Result<Vec<BlindStep>> {
-    let pool_address = profile
-        .key
-        .pool_address
-        .ok_or_else(|| anyhow!("pool profile 缺少池子地址"))?;
-    let program = profile
-        .key
-        .dex_program
-        .ok_or_else(|| anyhow!("pool profile 缺少 DEX 程序号"))?;
+) -> Result<DynamicRoutePayload> {
+    if profile.steps.is_empty() {
+        return Err(anyhow!("route profile 缺少步骤"));
+    }
 
-    let account = rpc_client
-        .get_account(&pool_address)
-        .await
-        .with_context(|| format!("获取池子账户失败: {pool_address}"))?;
+    let mut steps = Vec::with_capacity(profile.steps.len());
+    for pool_profile in profile.steps.iter() {
+        let pool_address = pool_profile
+            .key
+            .pool_address
+            .ok_or_else(|| anyhow!("route 步骤缺少池子地址"))?;
+        let program = pool_profile
+            .key
+            .dex_program
+            .ok_or_else(|| anyhow!("route 步骤缺少 DEX 程序号"))?;
 
-    let resolved = resolve_market_meta(&rpc_client, program, pool_address, account).await?;
-    let (flow, input_asset, output_asset) =
-        resolve_flow(&profile, &resolved.base_asset, &resolved.quote_asset)?;
+        let account = rpc_client
+            .get_account(&pool_address)
+            .await
+            .with_context(|| format!("获取池子账户失败: {pool_address}"))?;
 
-    let step = BlindStep {
-        dex: resolved.dex,
-        market: pool_address,
-        base: resolved.base_asset.clone(),
-        quote: resolved.quote_asset.clone(),
-        input: input_asset,
-        output: output_asset,
-        meta: resolved.meta.clone(),
-        flow,
-    };
+        let resolved = resolve_market_meta(&rpc_client, program, pool_address, account).await?;
+        let (flow, input_asset, output_asset) =
+            resolve_flow(pool_profile, &resolved.base_asset, &resolved.quote_asset)?;
 
-    Ok(vec![step])
+        steps.push(BlindStep {
+            dex: resolved.dex,
+            market: pool_address,
+            base: resolved.base_asset.clone(),
+            quote: resolved.quote_asset.clone(),
+            input: input_asset,
+            output: output_asset,
+            meta: resolved.meta.clone(),
+            flow,
+        });
+    }
+
+    let lookup_tables = fetch_lookup_tables(&rpc_client, profile.lookup_tables.as_ref()).await?;
+
+    Ok(DynamicRoutePayload {
+        steps,
+        lookup_tables,
+    })
 }
 
 struct ResolvedMeta {
@@ -324,6 +344,23 @@ fn resolve_flow(
     base_asset: &BlindAsset,
     quote_asset: &BlindAsset,
 ) -> Result<(SwapFlow, BlindAsset, BlindAsset)> {
+    if let (Some(input), Some(output)) = (&profile.input_asset, &profile.output_asset) {
+        if input.mint == base_asset.mint && output.mint == quote_asset.mint {
+            return Ok((
+                SwapFlow::BaseToQuote,
+                BlindAsset::new(input.mint, input.token_program),
+                BlindAsset::new(output.mint, output.token_program),
+            ));
+        }
+        if input.mint == quote_asset.mint && output.mint == base_asset.mint {
+            return Ok((
+                SwapFlow::QuoteToBase,
+                BlindAsset::new(input.mint, input.token_program),
+                BlindAsset::new(output.mint, output.token_program),
+            ));
+        }
+    }
+
     let input_mint = profile
         .key
         .input_mint
@@ -356,4 +393,45 @@ fn resolve_flow(
         base_asset.mint,
         quote_asset.mint,
     ))
+}
+
+async fn fetch_lookup_tables(
+    rpc_client: &RpcClient,
+    tables: &[Pubkey],
+) -> Result<Vec<AddressLookupTableAccount>> {
+    if tables.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut unique: Vec<Pubkey> = Vec::with_capacity(tables.len());
+    let mut seen = HashSet::new();
+    for table in tables {
+        if seen.insert(*table) {
+            unique.push(*table);
+        }
+    }
+
+    if unique.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let accounts = rpc_client
+        .get_multiple_accounts(&unique)
+        .await
+        .context("获取地址查找表账户失败")?;
+
+    let mut resolved = Vec::new();
+    for (key, maybe_account) in unique.into_iter().zip(accounts.into_iter()) {
+        let Some(account) = maybe_account else {
+            continue;
+        };
+        let table = AddressLookupTable::deserialize(&account.data)
+            .with_context(|| format!("解析地址查找表失败: {key}"))?;
+        resolved.push(AddressLookupTableAccount {
+            key,
+            addresses: table.addresses.into_owned(),
+        });
+    }
+
+    Ok(resolved)
 }

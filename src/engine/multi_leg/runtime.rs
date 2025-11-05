@@ -509,6 +509,7 @@ fn calculate_profit(plan: &LegPairPlan) -> i128 {
 fn to_ip_task_kind(descriptor: &LegDescriptor) -> IpTaskKind {
     let aggregator = match descriptor.kind {
         AggregatorKind::Ultra => MultiLegAggregatorKind::Ultra,
+        AggregatorKind::Jupiter => MultiLegAggregatorKind::Jupiter,
         AggregatorKind::Dflow => MultiLegAggregatorKind::Dflow,
         AggregatorKind::Titan => MultiLegAggregatorKind::Titan,
         AggregatorKind::Kamino => MultiLegAggregatorKind::Kamino,

@@ -3,11 +3,27 @@
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use solana_sdk::pubkey::Pubkey;
 
 use crate::instructions::jupiter::decoder::ParsedSwapAccounts;
 use crate::instructions::jupiter::types::EncodedSwap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PoolAsset {
+    pub mint: Pubkey,
+    pub token_program: Pubkey,
+}
+
+impl PoolAsset {
+    pub fn new(mint: Pubkey, token_program: Pubkey) -> Self {
+        Self {
+            mint,
+            token_program,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct PoolProfile {
@@ -17,6 +33,9 @@ pub struct PoolProfile {
     pub swap_payload: Value,
     pub input_index: u8,
     pub output_index: u8,
+    pub input_asset: Option<PoolAsset>,
+    pub output_asset: Option<PoolAsset>,
+    pub lookup_tables: Arc<Vec<Pubkey>>,
     pub remaining_accounts: Arc<Vec<Pubkey>>,
 }
 
@@ -28,6 +47,9 @@ impl PoolProfile {
         swap_payload: Value,
         input_index: u8,
         output_index: u8,
+        input_asset: Option<PoolAsset>,
+        output_asset: Option<PoolAsset>,
+        lookup_tables: Arc<Vec<Pubkey>>,
         remaining_accounts: Arc<Vec<Pubkey>>,
     ) -> Self {
         Self {
@@ -37,6 +59,9 @@ impl PoolProfile {
             swap_payload,
             input_index,
             output_index,
+            input_asset,
+            output_asset,
+            lookup_tables,
             remaining_accounts,
         }
     }
@@ -72,7 +97,7 @@ impl PoolStats {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct PoolStatsSnapshot {
     pub observations: u64,
     pub first_seen_slot: Option<u64>,
@@ -87,10 +112,13 @@ pub struct PoolObservation<'a> {
     pub swap_variant: &'a str,
     pub swap_payload: &'a Value,
     pub remaining_accounts: &'a [Pubkey],
+    pub lookup_tables: &'a [Pubkey],
     pub input_index: u8,
     pub output_index: u8,
     pub slot: u64,
     pub estimated_profit: Option<i128>,
+    pub input_asset: Option<PoolAsset>,
+    pub output_asset: Option<PoolAsset>,
 }
 
 #[derive(Debug, Clone, Eq)]
@@ -137,6 +165,24 @@ impl PoolKey {
             swap_discriminant,
         )
     }
+
+    pub fn from_snapshot(
+        dex_label: &str,
+        dex_program: Option<Pubkey>,
+        pool_address: Option<Pubkey>,
+        input_mint: Option<Pubkey>,
+        output_mint: Option<Pubkey>,
+        swap_discriminant: u8,
+    ) -> Self {
+        Self::new(
+            canonical_dex_label(dex_label),
+            dex_program,
+            pool_address,
+            input_mint,
+            output_mint,
+            swap_discriminant,
+        )
+    }
 }
 
 impl PartialEq for PoolKey {
@@ -158,5 +204,23 @@ impl Hash for PoolKey {
         self.input_mint.hash(state);
         self.output_mint.hash(state);
         self.swap_discriminant.hash(state);
+    }
+}
+
+fn canonical_dex_label(label: &str) -> &'static str {
+    match label {
+        "HumidiFi" => "HumidiFi",
+        "Whirlpool" => "Whirlpool",
+        "WhirlpoolSwapV2" => "WhirlpoolSwapV2",
+        "RaydiumClmm" => "RaydiumClmm",
+        "RaydiumClmmV2" => "RaydiumClmmV2",
+        "RaydiumCp" | "RaydiumCP" => "RaydiumCp",
+        "MeteoraDlmm" => "MeteoraDlmm",
+        "SolFi" => "SolFi",
+        "SolFiV2" => "SolFiV2",
+        "TesseraV" | "Tessera" => "TesseraV",
+        "ZeroFi" => "ZeroFi",
+        "ObricV2" => "ObricV2",
+        other => Box::leak(other.to_string().into_boxed_str()),
     }
 }

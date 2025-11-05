@@ -304,6 +304,8 @@ pub struct EngineConfig {
     #[serde(default)]
     pub enable_console_summary: bool,
     #[serde(default)]
+    pub jupiter: JupiterEngineConfig,
+    #[serde(default)]
     pub dflow: DflowEngineConfig,
     #[serde(default)]
     pub ultra: UltraEngineConfig,
@@ -379,6 +381,7 @@ const fn default_landing_timeout_ms() -> u64 {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum EngineBackend {
+    Jupiter,
     Dflow,
     Ultra,
     Kamino,
@@ -540,6 +543,62 @@ pub struct DflowEngineConfig {
     pub quote_config: DflowQuoteConfig,
     #[serde(default)]
     pub swap_config: DflowSwapConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JupiterEngineConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub api_quote_base: Option<String>,
+    #[serde(default)]
+    pub api_swap_base: Option<String>,
+    #[serde(default)]
+    pub api_proxy: Option<String>,
+    #[serde(default)]
+    pub quote_config: JupiterQuoteConfig,
+    #[serde(default)]
+    pub swap_config: JupiterSwapConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JupiterQuoteConfig {
+    #[serde(default)]
+    pub only_direct_routes: bool,
+    #[serde(default = "super::default_true")]
+    pub restrict_intermediate_tokens: bool,
+    #[serde(default)]
+    pub cadence: QuoteCadenceConfig,
+}
+
+impl Default for JupiterQuoteConfig {
+    fn default() -> Self {
+        Self {
+            only_direct_routes: false,
+            restrict_intermediate_tokens: super::default_true(),
+            cadence: QuoteCadenceConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JupiterSwapConfig {
+    #[serde(default)]
+    pub skip_user_accounts_rpc_calls: bool,
+    #[serde(default = "super::default_true")]
+    pub dynamic_compute_unit_limit: bool,
+    #[serde(default)]
+    pub wrap_and_unwrap_sol: bool,
+}
+
+impl Default for JupiterSwapConfig {
+    fn default() -> Self {
+        Self {
+            skip_user_accounts_rpc_calls: false,
+            dynamic_compute_unit_limit: super::default_true(),
+            wrap_and_unwrap_sol: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1386,9 +1445,6 @@ pub struct PureBlindStrategyConfig {
     /// 纯盲发执行时的全局 CU 预算放大倍数。
     #[serde(default = "super::default_one")]
     pub cu_multiplier: f64,
-    /// 市场缓存下载与过滤配置，用于自动路由生成。
-    #[serde(default)]
-    pub market_cache: PureBlindMarketCacheConfig,
     /// 纯盲发资产集合（入口 mint、候选中间资产、黑名单等）。
     #[serde(default)]
     pub assets: PureBlindAssetsConfig,
@@ -1404,24 +1460,9 @@ pub struct PureBlindStrategyConfig {
     /// 池子画像激活阈值与衰减策略，控制动态盲发路由的上线/下线。
     #[serde(default)]
     pub activation: PureBlindActivationConfig,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct PureBlindMarketCacheConfig {
+    /// 池子/路线持久化与缓存相关配置。
     #[serde(default)]
-    pub path: String,
-    #[serde(default)]
-    pub download_url: String,
-    #[serde(default)]
-    pub proxy: Option<String>,
-    #[serde(default)]
-    pub auto_refresh_minutes: u64,
-    #[serde(default)]
-    pub exclude_other_dex_program_ids: bool,
-    #[serde(default)]
-    pub exclude_dex_program_ids: Vec<String>,
-    #[serde(default)]
-    pub min_liquidity_usd: u64,
+    pub cache: PureBlindCacheConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1523,6 +1564,55 @@ const fn default_min_hits() -> u64 {
 
 const fn default_decay_seconds() -> u64 {
     60
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PureBlindCacheConfig {
+    #[serde(default = "default_cache_enable_persistence")]
+    pub enable_persistence: bool,
+    #[serde(default)]
+    pub cache_dir: Option<String>,
+    #[serde(default = "default_cache_max_pools")]
+    pub max_pools: usize,
+    #[serde(default = "default_cache_max_routes")]
+    pub max_routes: usize,
+    #[serde(default = "default_cache_snapshot_interval_secs")]
+    pub snapshot_interval_secs: u64,
+    #[serde(default = "default_cache_snapshot_ttl_secs")]
+    pub snapshot_ttl_secs: u64,
+}
+
+impl Default for PureBlindCacheConfig {
+    fn default() -> Self {
+        Self {
+            enable_persistence: default_cache_enable_persistence(),
+            cache_dir: None,
+            max_pools: default_cache_max_pools(),
+            max_routes: default_cache_max_routes(),
+            snapshot_interval_secs: default_cache_snapshot_interval_secs(),
+            snapshot_ttl_secs: default_cache_snapshot_ttl_secs(),
+        }
+    }
+}
+
+const fn default_cache_enable_persistence() -> bool {
+    true
+}
+
+const fn default_cache_max_pools() -> usize {
+    50
+}
+
+const fn default_cache_max_routes() -> usize {
+    20
+}
+
+const fn default_cache_snapshot_interval_secs() -> u64 {
+    30
+}
+
+const fn default_cache_snapshot_ttl_secs() -> u64 {
+    3600
 }
 
 fn deserialize_u64_value<'de, D>(deserializer: D) -> Result<u64, D::Error>
@@ -1846,6 +1936,10 @@ pub struct LanderJitoConfig {
     #[serde(default)]
     pub max_stream_tip_lamports: Option<u64>,
     #[serde(default)]
+    pub tip_floor_api: Option<String>,
+    #[serde(default, rename = "refresh_ms")]
+    pub tip_floor_refresh_ms: Option<u64>,
+    #[serde(default)]
     pub uuid_config: Vec<LanderJitoUuidConfig>,
 }
 
@@ -1854,6 +1948,7 @@ pub enum TipStrategyKind {
     Fixed,
     Range,
     Stream,
+    Api,
 }
 
 impl Default for TipStrategyKind {
@@ -1873,7 +1968,7 @@ impl<'de> Deserialize<'de> for TipStrategyKind {
             type Value = TipStrategyKind;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("one of: fixed, range, stream")
+                formatter.write_str("one of: fixed, range, stream, api")
             }
 
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
@@ -1884,9 +1979,10 @@ impl<'de> Deserialize<'de> for TipStrategyKind {
                     "fixed" => Ok(TipStrategyKind::Fixed),
                     "range" => Ok(TipStrategyKind::Range),
                     "stream" => Ok(TipStrategyKind::Stream),
+                    "api" => Ok(TipStrategyKind::Api),
                     other => Err(DeError::unknown_variant(
                         other,
-                        &["fixed", "range", "stream"],
+                        &["fixed", "range", "stream", "api"],
                     )),
                 }
             }

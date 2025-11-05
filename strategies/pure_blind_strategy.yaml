@@ -3,23 +3,6 @@
 # 纯盲发策略允许使用的落地器（顺序影响优先级）
 enable_landers: []
 
-market_cache:
-  path: "./cache/pure_markets.json"              
-  # 自动拉取更新时用
-  download_url: "https://cache.jup.ag/markets?v=4" 
-  proxy: "http://192.168.124.4:2080"
-  # 可选：定时刷新缓存（0=禁用）
-  auto_refresh_minutes: 120
-  # 当设置为 true 时，dexes 下有实现的，盲发支持的，才会保留，否则会过滤掉
-  exclude_other_dex_program_ids: true
-  exclude_dex_program_ids: [
-    "CAMMCz6GM1DNKyvHRAAmcX6vLLANBYdmsKtfgfcJQ68X",
-    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
-    "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"
-  ]
-  # 可选：按 TVL/深度阈值过滤
-  min_liquidity_usd: 50000                       
-
 # 描述闭环入口资产以及想要探索的中间资产集合
 assets:
   base_mints:

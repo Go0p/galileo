@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -26,108 +26,48 @@ use crate::dexes::{
 use crate::engine::{Action, EngineError, EngineResult, StrategyContext, StrategyDecision};
 use crate::monitoring::events;
 use crate::strategy::pure_blind::dynamic::DynamicRouteUpdate;
-use crate::strategy::pure_blind::market_cache::{MarketCacheHandle, MarketRecord};
-use crate::strategy::pure_blind::observer::{PoolCatalog, PoolKey, PoolProfile, PoolStatsSnapshot};
+use crate::strategy::pure_blind::observer::{
+    PoolCatalog, RouteCatalog, RouteKey, RouteProfile, RouteStatsSnapshot,
+};
 
 use crate::strategy::types::{
     BlindAsset, BlindDex, BlindMarketMeta, BlindOrder, BlindRoutePlan, BlindStep, RouteSource,
 };
 use crate::strategy::{Strategy, StrategyEvent};
-use tracing::{info, warn};
 
 /// 纯盲发路由构建器：按配置解析盲发市场并生成双向路由。
-pub struct PureBlindRouteBuilder<'a> {
-    config: &'a config::PureBlindStrategyConfig,
-    rpc_client: &'a RpcClient,
-    market_cache: &'a MarketCacheHandle,
-}
-
 const LOOKUP_TABLE_PROGRAM_ID: Pubkey =
     solana_sdk::pubkey!("AddressLookupTab1e1111111111111111111111111");
 
-const REQUIRED_MARKETS_PER_PAIR: usize = 2;
-const MAX_CANDIDATES_PER_PAIR: usize = 8;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RouteType {
-    TwoHop,
-    ThreeHop,
-}
-
-struct BaseMintEntry<'a> {
-    config: &'a config::PureBlindBaseMintConfig,
-    mint: Pubkey,
-    route_type: RouteType,
-    min_profit: u64,
-}
-
-struct IntermediateEntry {
-    mint: Pubkey,
-    text: String,
-}
-
-struct AutoRouteSpec<'a> {
-    base: &'a BaseMintEntry<'a>,
-    intermediate: &'a IntermediateEntry,
-    pair_key: PairKey,
-}
-
-#[derive(Clone)]
-struct AutoMarketCandidate {
-    market: Pubkey,
-    lookup_table: Option<Pubkey>,
-    meta: ResolvedMarketMeta,
-}
-
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
-struct PairKey {
-    a: Pubkey,
-    b: Pubkey,
-}
-
-impl PairKey {
-    fn new(x: Pubkey, y: Pubkey) -> Self {
-        if x <= y {
-            Self { a: x, b: y }
-        } else {
-            Self { a: y, b: x }
-        }
-    }
+pub struct PureBlindRouteBuilder<'a> {
+    config: &'a config::PureBlindStrategyConfig,
+    rpc_client: &'a RpcClient,
 }
 
 impl<'a> PureBlindRouteBuilder<'a> {
-    pub fn new(
-        config: &'a config::PureBlindStrategyConfig,
-        rpc_client: &'a RpcClient,
-        market_cache: &'a MarketCacheHandle,
-    ) -> Self {
-        Self {
-            config,
-            rpc_client,
-            market_cache,
-        }
+    pub fn new(config: &'a config::PureBlindStrategyConfig, rpc_client: &'a RpcClient) -> Self {
+        Self { config, rpc_client }
     }
 
     pub async fn build(&self) -> EngineResult<Vec<BlindRoutePlan>> {
-        let base_entries = self.parse_base_entries()?;
-        let base_mints: Vec<Pubkey> = base_entries.iter().map(|entry| entry.mint).collect();
+        let base_mints = self.parse_base_mints()?;
 
-        let (manual_market_set, mut dedup_route_keys) = self.collect_manual_route_sets();
-
-        let mut plans = self.build_manual_routes(&base_mints).await?;
-
-        let auto_routes = self
-            .build_auto_routes(
-                &base_entries,
-                &base_mints,
-                &manual_market_set,
-                &mut dedup_route_keys,
-            )
-            .await?;
-
-        plans.extend(auto_routes);
+        let plans = self.build_manual_routes(&base_mints).await?;
 
         if plans.is_empty() {
+            if self
+                .config
+                .observer
+                .as_ref()
+                .map_or(false, |observer| observer.enable)
+            {
+                tracing::info!(
+                    target: "strategy::pure_blind",
+                    "未配置静态盲发路由，将等待观察器注入动态路线"
+                );
+                return Ok(plans);
+            }
+
             return Err(EngineError::InvalidConfig(
                 "纯盲发模式未生成任何可用路由，请检查 pure_blind_strategy 配置".into(),
             ));
@@ -341,36 +281,6 @@ impl<'a> PureBlindRouteBuilder<'a> {
         Ok(plan)
     }
 
-    fn collect_manual_route_sets(&self) -> (HashSet<Pubkey>, HashSet<String>) {
-        let mut markets: HashSet<Pubkey> = HashSet::new();
-        let mut route_keys: HashSet<String> = HashSet::new();
-
-        for route in &self.config.overrides {
-            let mut per_route: Vec<Pubkey> = Vec::with_capacity(route.legs.len());
-            for leg in &route.legs {
-                let trimmed = leg.market.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if let Ok(market) = Pubkey::from_str(trimmed) {
-                    markets.insert(market);
-                    per_route.push(market);
-                }
-            }
-            if !per_route.is_empty() {
-                route_keys.insert(Self::canonical_market_key(&per_route));
-            }
-        }
-
-        (markets, route_keys)
-    }
-
-    fn canonical_market_key(markets: &[Pubkey]) -> String {
-        let mut values: Vec<String> = markets.iter().map(|m| m.to_string()).collect();
-        values.sort();
-        values.join("|")
-    }
-
     fn base_min_profit(&self, mint: &Pubkey) -> Option<u64> {
         self.config
             .assets
@@ -389,8 +299,8 @@ impl<'a> PureBlindRouteBuilder<'a> {
             .next()
     }
 
-    fn parse_base_entries(&self) -> EngineResult<Vec<BaseMintEntry<'_>>> {
-        let mut entries = Vec::with_capacity(self.config.assets.base_mints.len());
+    fn parse_base_mints(&self) -> EngineResult<Vec<Pubkey>> {
+        let mut mints = Vec::with_capacity(self.config.assets.base_mints.len());
 
         for (idx, base) in self.config.assets.base_mints.iter().enumerate() {
             let mint_text = base.mint.trim();
@@ -404,647 +314,24 @@ impl<'a> PureBlindRouteBuilder<'a> {
                 ))
             })?;
 
-            let route_type = match base
-                .route_type
-                .as_deref()
-                .map(|value| value.trim().to_ascii_lowercase())
-            {
-                Some(value) if value == "3hop" => RouteType::ThreeHop,
-                Some(value) if value.is_empty() || value == "2hop" => RouteType::TwoHop,
-                None => RouteType::TwoHop,
-                Some(other) => {
+            if let Some(route_type) = base.route_type.as_deref().map(|value| value.trim()) {
+                if !route_type.is_empty() && route_type != "2hop" && route_type != "3hop" {
                     return Err(EngineError::InvalidConfig(format!(
-                        "pure_blind_strategy.assets.base_mints[{idx}] route_type `{other}` 无效，仅支持 2hop / 3hop"
+                        "pure_blind_strategy.assets.base_mints[{idx}] route_type `{route_type}` 无效，仅支持 2hop / 3hop"
                     )));
                 }
-            };
+            }
 
-            let min_profit = base.min_profit.unwrap_or(1).max(1);
-
-            entries.push(BaseMintEntry {
-                config: base,
-                mint,
-                route_type,
-                min_profit,
-            });
+            mints.push(mint);
         }
 
-        if entries.is_empty() {
+        if mints.is_empty() {
             return Err(EngineError::InvalidConfig(
                 "纯盲发模式需要至少一个有效的 pure_blind_strategy.assets.base_mints 配置".into(),
             ));
         }
 
-        Ok(entries)
-    }
-
-    fn parse_intermediate_entries(&self) -> EngineResult<Vec<IntermediateEntry>> {
-        let blacklist: HashSet<String> = self
-            .config
-            .assets
-            .blacklist_mints
-            .iter()
-            .map(|mint| mint.trim().to_ascii_lowercase())
-            .filter(|mint| !mint.is_empty())
-            .collect();
-
-        let mut entries = Vec::with_capacity(self.config.assets.intermediates.len());
-
-        for (idx, value) in self.config.assets.intermediates.iter().enumerate() {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if blacklist.contains(&trimmed.to_ascii_lowercase()) {
-                continue;
-            }
-
-            let mint = Pubkey::from_str(trimmed).map_err(|err| {
-                EngineError::InvalidConfig(format!(
-                    "pure_blind_strategy.assets.intermediates[{idx}] mint `{trimmed}` 解析失败: {err}"
-                ))
-            })?;
-
-            entries.push(IntermediateEntry {
-                mint,
-                text: trimmed.to_string(),
-            });
-        }
-
-        if entries.is_empty() {
-            return Err(EngineError::InvalidConfig(
-                "pure_blind_strategy.assets.intermediates 不能为空".into(),
-            ));
-        }
-
-        Ok(entries)
-    }
-
-    #[cfg_attr(feature = "hotpath", hotpath::measure)]
-    async fn build_auto_routes(
-        &self,
-        base_entries: &[BaseMintEntry<'_>],
-        base_mints: &[Pubkey],
-        manual_markets: &HashSet<Pubkey>,
-        dedup_route_keys: &mut HashSet<String>,
-    ) -> EngineResult<Vec<BlindRoutePlan>> {
-        let intermediates = self.parse_intermediate_entries()?;
-        let two_hop_bases: Vec<&BaseMintEntry<'_>> = base_entries
-            .iter()
-            .filter(|entry| matches!(entry.route_type, RouteType::TwoHop))
-            .collect();
-        let three_hop_bases: Vec<&BaseMintEntry<'_>> = base_entries
-            .iter()
-            .filter(|entry| matches!(entry.route_type, RouteType::ThreeHop))
-            .collect();
-
-        if two_hop_bases.is_empty() && three_hop_bases.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // 如果只有 3hop 请求，这里不要提前返回，后面仍需依赖 intermediates
-
-        let mut specs = Vec::new();
-        for base in &two_hop_bases {
-            for intermediate in &intermediates {
-                if intermediate.mint == base.mint {
-                    continue;
-                }
-                specs.push(AutoRouteSpec {
-                    base,
-                    intermediate,
-                    pair_key: PairKey::new(base.mint, intermediate.mint),
-                });
-            }
-        }
-
-        let mut required_pairs: HashSet<PairKey> = HashSet::new();
-        for spec in &specs {
-            required_pairs.insert(spec.pair_key);
-        }
-        for base in &three_hop_bases {
-            for intermediate in &intermediates {
-                if intermediate.mint == base.mint {
-                    continue;
-                }
-                required_pairs.insert(PairKey::new(base.mint, intermediate.mint));
-            }
-        }
-        if !three_hop_bases.is_empty() {
-            for idx in 0..intermediates.len() {
-                for jdx in (idx + 1)..intermediates.len() {
-                    let first = &intermediates[idx];
-                    let second = &intermediates[jdx];
-                    if first.mint == second.mint {
-                        continue;
-                    }
-                    required_pairs.insert(PairKey::new(first.mint, second.mint));
-                }
-            }
-        }
-
-        let snapshot = match self.market_cache.try_snapshot() {
-            Some(records) => records,
-            None => {
-                warn!(
-                    target: "strategy::pure_blind",
-                    "市场缓存尚未就绪，自动路由生成已跳过"
-                );
-                return Ok(Vec::new());
-            }
-        };
-
-        let mut required_tokens: HashSet<Pubkey> = HashSet::new();
-        for base in &two_hop_bases {
-            required_tokens.insert(base.mint);
-        }
-        for base in &three_hop_bases {
-            required_tokens.insert(base.mint);
-        }
-        for intermediate in &intermediates {
-            required_tokens.insert(intermediate.mint);
-        }
-
-        let mut pair_candidates: HashMap<PairKey, Vec<AutoMarketCandidate>> = HashMap::new();
-        let mut meta_cache: HashMap<Pubkey, ResolvedMarketMeta> = HashMap::new();
-
-        const MARKET_BATCH: usize = 50;
-        let mut candidate_batch: Vec<MarketRecord> = Vec::with_capacity(MARKET_BATCH);
-
-        for record in snapshot {
-            if Self::all_pairs_satisfied(&pair_candidates, &required_pairs) {
-                break;
-            }
-
-            if manual_markets.contains(&record.market) {
-                continue;
-            }
-
-            if let Some(group) = record.routing_group {
-                if group > 3 {
-                    continue;
-                }
-            }
-
-            if !record.token_mints.is_empty()
-                && !record
-                    .token_mints
-                    .iter()
-                    .any(|mint| required_tokens.contains(mint))
-            {
-                continue;
-            }
-
-            candidate_batch.push(record);
-
-            if candidate_batch.len() >= MARKET_BATCH {
-                self.ingest_market_batch(
-                    &candidate_batch,
-                    &mut meta_cache,
-                    &mut pair_candidates,
-                    &required_pairs,
-                )
-                .await?;
-                candidate_batch.clear();
-            }
-        }
-
-        if !candidate_batch.is_empty()
-            && !Self::all_pairs_satisfied(&pair_candidates, &required_pairs)
-        {
-            self.ingest_market_batch(
-                &candidate_batch,
-                &mut meta_cache,
-                &mut pair_candidates,
-                &required_pairs,
-            )
-            .await?;
-        }
-
-        let mut routes = Vec::new();
-
-        for spec in specs {
-            let Some(candidates) = pair_candidates.get(&spec.pair_key) else {
-                warn!(
-                    target: "strategy::pure_blind",
-                    base = %spec.base.config.mint,
-                    intermediate = %spec.intermediate.text,
-                    "未找到满足条件的两腿市场，自动路线跳过"
-                );
-                continue;
-            };
-
-            if candidates.len() < REQUIRED_MARKETS_PER_PAIR {
-                warn!(
-                    target: "strategy::pure_blind",
-                    base = %spec.base.config.mint,
-                    intermediate = %spec.intermediate.text,
-                    available = candidates.len(),
-                    "候选市场数量不足以构造两腿闭环"
-                );
-                continue;
-            }
-
-            let mut built = false;
-
-            'search: for i in 0..candidates.len() {
-                for j in (i + 1)..candidates.len() {
-                    let first = candidates[i].clone();
-                    let second = candidates[j].clone();
-
-                    let permutations = [vec![first.clone(), second.clone()], vec![second, first]];
-
-                    for combo in permutations {
-                        let markets: Vec<Pubkey> = combo.iter().map(|item| item.market).collect();
-                        let route_key = Self::canonical_market_key(&markets);
-                        if dedup_route_keys.contains(&route_key) {
-                            continue;
-                        }
-
-                        let mut lookup_tables: HashSet<Pubkey> = HashSet::new();
-                        let resolved: Vec<ResolvedMarketMeta> = combo
-                            .iter()
-                            .map(|candidate| {
-                                if let Some(table) = candidate.lookup_table {
-                                    lookup_tables.insert(table);
-                                }
-                                candidate.meta.clone()
-                            })
-                            .collect();
-
-                        let suffix: String =
-                            route_key.chars().filter(|ch| *ch != '|').take(16).collect();
-                        let label = format!(
-                            "auto_{}_{}_{}",
-                            spec.base.config.mint.trim(),
-                            spec.intermediate.text,
-                            suffix
-                        );
-
-                        let lookup_tables = self
-                            .fetch_lookup_tables(
-                                &lookup_tables.into_iter().collect::<Vec<_>>(),
-                                &label,
-                            )
-                            .await?;
-
-                        match self.assemble_route_plan(
-                            label,
-                            resolved,
-                            lookup_tables,
-                            base_mints,
-                            Some(spec.base.mint),
-                            RouteSource::Auto,
-                            Some(spec.base.min_profit),
-                        ) {
-                            Ok(plan) => {
-                                dedup_route_keys.insert(route_key);
-                                info!(
-                                    target: "strategy::pure_blind",
-                                    route = plan.label(),
-                                    legs = plan.forward.len(),
-                                    source = plan.source().as_str(),
-                                    "新增自动纯盲发闭环"
-                                );
-                                routes.push(plan);
-                                built = true;
-                                break 'search;
-                            }
-                            Err(err) => {
-                                warn!(
-                                    target: "strategy::pure_blind",
-                                    base = %spec.base.config.mint,
-                                    intermediate = %spec.intermediate.text,
-                                    markets = %markets
-                                        .iter()
-                                        .map(|m| m.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join(","),
-                                    error = %err,
-                                    "自动闭环构建失败，尝试下一个组合"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-
-            if !built {
-                warn!(
-                    target: "strategy::pure_blind",
-                    base = %spec.base.config.mint,
-                    intermediate = %spec.intermediate.text,
-                    "未找到符合要求的闭环组合，已跳过"
-                );
-            }
-        }
-
-        if !three_hop_bases.is_empty() && intermediates.len() < 2 {
-            warn!(
-                target: "strategy::pure_blind",
-                "纯盲配置请求 3hop 路线，但 intermediates 不足 2 个，已跳过"
-            );
-        }
-
-        for base in &three_hop_bases {
-            if intermediates.len() < 2 {
-                continue;
-            }
-
-            for idx in 0..intermediates.len() {
-                let first = &intermediates[idx];
-                if first.mint == base.mint {
-                    continue;
-                }
-                for jdx in (idx + 1)..intermediates.len() {
-                    let second = &intermediates[jdx];
-                    if second.mint == base.mint {
-                        continue;
-                    }
-
-                    let orders = [(first, second), (second, first)];
-                    for (primary, secondary) in orders {
-                        if primary.mint == secondary.mint {
-                            continue;
-                        }
-                        if let Some(plan) = self
-                            .build_three_hop_route(
-                                base,
-                                primary,
-                                secondary,
-                                &pair_candidates,
-                                base_mints,
-                                dedup_route_keys,
-                            )
-                            .await?
-                        {
-                            routes.push(plan);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(routes)
-    }
-
-    async fn build_three_hop_route(
-        &self,
-        base: &BaseMintEntry<'_>,
-        first: &IntermediateEntry,
-        second: &IntermediateEntry,
-        pair_candidates: &HashMap<PairKey, Vec<AutoMarketCandidate>>,
-        base_mints: &[Pubkey],
-        dedup_route_keys: &mut HashSet<String>,
-    ) -> EngineResult<Option<BlindRoutePlan>> {
-        let pair_first = PairKey::new(base.mint, first.mint);
-        let pair_mid = PairKey::new(first.mint, second.mint);
-        let pair_last = PairKey::new(second.mint, base.mint);
-
-        let Some(first_candidates) = pair_candidates.get(&pair_first) else {
-            warn!(
-                target: "strategy::pure_blind",
-                base = %base.config.mint,
-                mid1 = %first.text,
-                "三跳路线缺少 base↔mid1 市场"
-            );
-            return Ok(None);
-        };
-
-        let Some(mid_candidates) = pair_candidates.get(&pair_mid) else {
-            warn!(
-                target: "strategy::pure_blind",
-                mid1 = %first.text,
-                mid2 = %second.text,
-                "三跳路线缺少 mid1↔mid2 市场"
-            );
-            return Ok(None);
-        };
-
-        let Some(last_candidates) = pair_candidates.get(&pair_last) else {
-            warn!(
-                target: "strategy::pure_blind",
-                mid2 = %second.text,
-                base = %base.config.mint,
-                "三跳路线缺少 mid2↔base 市场"
-            );
-            return Ok(None);
-        };
-
-        for cand_first in first_candidates.iter().take(MAX_CANDIDATES_PER_PAIR) {
-            for cand_mid in mid_candidates.iter().take(MAX_CANDIDATES_PER_PAIR) {
-                for cand_last in last_candidates.iter().take(MAX_CANDIDATES_PER_PAIR) {
-                    if cand_first.market == cand_mid.market
-                        || cand_first.market == cand_last.market
-                        || cand_mid.market == cand_last.market
-                    {
-                        continue;
-                    }
-
-                    let combo = [cand_first.clone(), cand_mid.clone(), cand_last.clone()];
-                    let markets: Vec<Pubkey> = combo.iter().map(|item| item.market).collect();
-                    let route_key = Self::canonical_market_key(&markets);
-                    if dedup_route_keys.contains(&route_key) {
-                        continue;
-                    }
-
-                    let mut lookup_tables: HashSet<Pubkey> = HashSet::new();
-                    let resolved: Vec<ResolvedMarketMeta> = combo
-                        .iter()
-                        .map(|candidate| {
-                            if let Some(table) = candidate.lookup_table {
-                                lookup_tables.insert(table);
-                            }
-                            candidate.meta.clone()
-                        })
-                        .collect();
-
-                    let suffix: String =
-                        route_key.chars().filter(|ch| *ch != '|').take(16).collect();
-                    let label = format!(
-                        "auto3_{}_{}_{}_{}",
-                        base.config.mint.trim(),
-                        first.text,
-                        second.text,
-                        suffix
-                    );
-
-                    let lookup_tables = self
-                        .fetch_lookup_tables(&lookup_tables.into_iter().collect::<Vec<_>>(), &label)
-                        .await?;
-
-                    match self.assemble_route_plan(
-                        label,
-                        resolved,
-                        lookup_tables,
-                        base_mints,
-                        Some(base.mint),
-                        RouteSource::Auto,
-                        Some(base.min_profit),
-                    ) {
-                        Ok(plan) => {
-                            dedup_route_keys.insert(route_key);
-                            info!(
-                                target: "strategy::pure_blind",
-                                route = plan.label(),
-                                legs = plan.forward.len(),
-                                source = plan.source().as_str(),
-                                "新增自动三跳纯盲发闭环"
-                            );
-                            return Ok(Some(plan));
-                        }
-                        Err(err) => {
-                            warn!(
-                                target: "strategy::pure_blind",
-                                base = %base.config.mint,
-                                mid1 = %first.text,
-                                mid2 = %second.text,
-                                markets = %markets
-                                    .iter()
-                                    .map(|m| m.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(","),
-                                error = %err,
-                                "三跳闭环校验失败，尝试下一个组合"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(None)
-    }
-
-    fn all_pairs_satisfied(
-        candidates: &HashMap<PairKey, Vec<AutoMarketCandidate>>,
-        required: &HashSet<PairKey>,
-    ) -> bool {
-        required.iter().all(|key| {
-            candidates
-                .get(key)
-                .map(|values| values.len() >= REQUIRED_MARKETS_PER_PAIR)
-                .unwrap_or(false)
-        })
-    }
-
-    async fn ingest_market_batch(
-        &self,
-        records: &[MarketRecord],
-        cache: &mut HashMap<Pubkey, ResolvedMarketMeta>,
-        pair_candidates: &mut HashMap<PairKey, Vec<AutoMarketCandidate>>,
-        required_pairs: &HashSet<PairKey>,
-    ) -> EngineResult<()> {
-        if records.is_empty() {
-            return Ok(());
-        }
-
-        let mut missing: Vec<Pubkey> = Vec::new();
-        for record in records {
-            if !cache.contains_key(&record.market) {
-                missing.push(record.market);
-            }
-        }
-
-        const ACCOUNT_BATCH_LIMIT: usize = 100;
-        if !missing.is_empty() {
-            for chunk in missing.chunks(ACCOUNT_BATCH_LIMIT) {
-                match self.rpc_client.get_multiple_accounts(chunk).await {
-                    Ok(accounts) => {
-                        for (market, maybe_account) in
-                            chunk.iter().copied().zip(accounts.into_iter())
-                        {
-                            let Some(account) = maybe_account else {
-                                warn!(
-                                    target: "strategy::pure_blind",
-                                    market = %market,
-                                    "无法获取市场账户，跳过"
-                                );
-                                continue;
-                            };
-
-                            match self.resolve_market_meta(market, &account).await {
-                                Ok(meta) => {
-                                    cache.insert(market, meta);
-                                }
-                                Err(err) => {
-                                    warn!(
-                                        target: "strategy::pure_blind",
-                                        market = %market,
-                                        error = %err,
-                                        "解析市场元数据失败，跳过自动路由候选"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        warn!(
-                            target: "strategy::pure_blind",
-                            error = %err,
-                            chunk = chunk.len(),
-                            "批量获取市场账户失败，逐个回退"
-                        );
-                        for market in chunk.iter().copied() {
-                            match self.rpc_client.get_account(&market).await {
-                                Ok(account) => {
-                                    match self.resolve_market_meta(market, &account).await {
-                                        Ok(meta) => {
-                                            cache.insert(market, meta);
-                                        }
-                                        Err(err) => {
-                                            warn!(
-                                                target: "strategy::pure_blind",
-                                                market = %market,
-                                                error = %err,
-                                                "解析市场元数据失败，跳过自动路由候选"
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    warn!(
-                                        target: "strategy::pure_blind",
-                                        market = %market,
-                                        error = %err,
-                                        "获取市场账户失败，跳过"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        for record in records {
-            let market = record.market;
-            let Some(meta) = cache.get(&market) else {
-                continue;
-            };
-
-            let pair_key = PairKey::new(meta.base_asset.mint, meta.quote_asset.mint);
-            if !required_pairs.contains(&pair_key) {
-                continue;
-            }
-
-            let entry = pair_candidates.entry(pair_key).or_default();
-            if entry.iter().any(|candidate| candidate.market == market) {
-                continue;
-            }
-            if entry.len() >= MAX_CANDIDATES_PER_PAIR {
-                continue;
-            }
-
-            entry.push(AutoMarketCandidate {
-                market,
-                lookup_table: record.lookup_table,
-                meta: meta.clone(),
-            });
-        }
-
-        Ok(())
+        Ok(mints)
     }
 
     fn build_closed_loop(resolved: &[ResolvedMarketMeta]) -> Option<Vec<BlindStep>> {
@@ -1380,9 +667,10 @@ struct ResolvedMarketMeta {
 /// 纯盲发策略：不依赖报价，直接构造 route_v2 指令。
 pub struct PureBlindStrategy {
     routes: Vec<BlindRoutePlan>,
-    catalog: Arc<PoolCatalog>,
+    _pool_catalog: Arc<PoolCatalog>,
+    route_catalog: Arc<RouteCatalog>,
     dynamic_rx: UnboundedReceiver<DynamicRouteUpdate>,
-    dynamic_routes: HashMap<PoolKey, DynamicRoute>,
+    dynamic_routes: HashMap<RouteKey, DynamicRoute>,
     base_min_profit: HashMap<Pubkey, u64>,
 }
 
@@ -1390,7 +678,8 @@ impl PureBlindStrategy {
     pub fn new(
         routes: Vec<BlindRoutePlan>,
         config: &config::PureBlindStrategyConfig,
-        catalog: Arc<PoolCatalog>,
+        pool_catalog: Arc<PoolCatalog>,
+        route_catalog: Arc<RouteCatalog>,
         dynamic_rx: UnboundedReceiver<DynamicRouteUpdate>,
     ) -> Result<Self> {
         if routes.is_empty() && config.observer.as_ref().map_or(true, |cfg| !cfg.enable) {
@@ -1401,7 +690,8 @@ impl PureBlindStrategy {
 
         Ok(Self {
             routes,
-            catalog,
+            _pool_catalog: pool_catalog,
+            route_catalog,
             dynamic_rx,
             dynamic_routes: HashMap::new(),
             base_min_profit,
@@ -1488,31 +778,37 @@ impl Strategy for PureBlindStrategy {
                             batch.push(BlindOrder {
                                 amount_in: amount,
                                 steps: route.steps.clone(),
-                                lookup_tables: Vec::new(),
+                                lookup_tables: route.lookup_tables.clone(),
                                 min_profit: route.min_profit,
                             });
                             if !reverse_steps.is_empty() {
                                 batch.push(BlindOrder {
                                     amount_in: amount,
                                     steps: reverse_steps.clone(),
-                                    lookup_tables: Vec::new(),
+                                    lookup_tables: route.lookup_tables.clone(),
                                     min_profit: route.min_profit,
                                 });
                             }
                         }
 
-                        let route_label = route.profile.key.dex_label;
+                        let route_label = route
+                            .profile
+                            .markets()
+                            .iter()
+                            .map(|market| market.to_string())
+                            .collect::<Vec<_>>()
+                            .join("->");
                         let source_label = "dynamic";
                         let count = amounts.len();
                         events::pure_blind_orders_prepared(
-                            route_label,
+                            &route_label,
                             "forward",
                             source_label,
                             count,
                         );
                         if !reverse_steps.is_empty() {
                             events::pure_blind_orders_prepared(
-                                route_label,
+                                &route_label,
                                 "reverse",
                                 source_label,
                                 count,
@@ -1576,9 +872,10 @@ fn reverse_steps(steps: &[BlindStep]) -> Vec<BlindStep> {
 }
 
 struct DynamicRoute {
-    profile: Arc<PoolProfile>,
-    stats: PoolStatsSnapshot,
+    profile: Arc<RouteProfile>,
+    stats: RouteStatsSnapshot,
     steps: Vec<BlindStep>,
+    lookup_tables: Vec<AddressLookupTableAccount>,
     min_profit: u64,
     score: f64,
 }
@@ -1591,19 +888,26 @@ impl PureBlindStrategy {
                     profile,
                     stats,
                     steps,
+                    lookup_tables,
                 } => {
                     if steps.is_empty() {
                         continue;
                     }
-                    let min_profit = steps
-                        .first()
-                        .and_then(|step| self.base_min_profit.get(&step.input.mint).copied())
+                    let min_profit = profile
+                        .base_asset
+                        .and_then(|asset| self.base_min_profit.get(&asset.mint).copied())
+                        .or_else(|| {
+                            steps.first().and_then(|step| {
+                                self.base_min_profit.get(&step.input.mint).copied()
+                            })
+                        })
                         .unwrap_or(1);
                     let key = profile.key.clone();
                     let route = DynamicRoute {
                         profile,
                         stats,
                         steps,
+                        lookup_tables,
                         min_profit,
                         score: 0.0,
                     };
@@ -1621,7 +925,7 @@ impl PureBlindStrategy {
             return;
         }
 
-        let active = self.catalog.active_pools();
+        let active = self.route_catalog.active_routes();
         for entry in active {
             if let Some(route) = self.dynamic_routes.get_mut(&entry.profile.key) {
                 route.score = entry.score;

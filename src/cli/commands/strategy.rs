@@ -4,9 +4,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use crate::api::dflow::DflowApiClient;
+use crate::api::jupiter::JupiterApiClient;
 use crate::api::kamino::KaminoApiClient;
 use crate::api::titan::TitanSubscriptionConfig;
 use crate::api::ultra::UltraApiClient;
@@ -45,10 +47,11 @@ use crate::engine::{
 use crate::lander::LanderFactory;
 use crate::monitoring::events;
 use crate::network::IpAllocator;
+use crate::strategy::pure_blind::cache::PureBlindCacheManager;
 use crate::strategy::pure_blind::dynamic::spawn_dynamic_worker;
-use crate::strategy::pure_blind::market_cache::init_market_cache;
 use crate::strategy::pure_blind::observer::{
-    PoolActivationPolicy, PoolCatalog, PoolObserverSettings, spawn_pool_observer,
+    PoolActivationPolicy, PoolCatalog, PoolObserverSettings, RouteActivationPolicy, RouteCatalog,
+    spawn_pool_observer,
 };
 use crate::strategy::run_copy_strategy;
 use crate::strategy::{
@@ -66,6 +69,9 @@ pub enum StrategyMode {
 }
 
 pub enum StrategyBackend<'a> {
+    Jupiter {
+        api_client: &'a JupiterApiClient,
+    },
     Dflow {
         api_client: &'a DflowApiClient,
     },
@@ -970,6 +976,9 @@ fn resolve_quote_cadence(
     backend: &StrategyBackend<'_>,
 ) -> QuoteCadence {
     match backend {
+        StrategyBackend::Jupiter { .. } => {
+            QuoteCadence::from_config(&engine.jupiter.quote_config.cadence)
+        }
         StrategyBackend::Dflow { .. } => {
             QuoteCadence::from_config(&engine.dflow.quote_config.cadence)
         }
@@ -1057,23 +1066,6 @@ async fn run_pure_blind_engine(
         Some(rpc_client_pool),
         alt_cache.clone(),
         dry_run_enabled,
-    );
-
-    let market_cache_handle = init_market_cache(
-        &pure_config.market_cache,
-        &pure_config.assets,
-        submission_client.clone(),
-    )
-    .await
-    .map_err(|err| anyhow!("初始化纯盲发市场缓存失败: {err}"))?;
-    let market_count = market_cache_handle
-        .try_snapshot()
-        .map_or(0, |records| records.len());
-    info!(
-        target: "strategy",
-        markets = market_count,
-        path = %pure_config.market_cache.path,
-        "纯盲发市场缓存已就绪"
     );
 
     let marginfi_cfg = &config.galileo.flashloan.marginfi;
@@ -1195,7 +1187,22 @@ async fn run_pure_blind_engine(
         .as_ref()
         .map(|cfg| cfg.queue_capacity)
         .unwrap_or(1024);
-    let catalog = Arc::new(PoolCatalog::new(activation_policy, observer_queue_capacity));
+    let pool_catalog = Arc::new(PoolCatalog::new(
+        activation_policy,
+        observer_queue_capacity,
+        pure_config.cache.max_pools,
+    ));
+    let route_catalog = Arc::new(RouteCatalog::new(
+        RouteActivationPolicy::new(
+            pure_config.activation.min_hits,
+            pure_config.activation.min_estimated_profit,
+            decay_duration,
+        ),
+        observer_queue_capacity,
+        pure_config.cache.max_routes,
+    ));
+
+    let cache_manager = PureBlindCacheManager::new(&pure_config.cache);
 
     if let Some(observer_cfg) = pure_config.observer.as_ref().filter(|cfg| cfg.enable) {
         let endpoint = observer_cfg
@@ -1232,7 +1239,13 @@ async fn run_pure_blind_engine(
             wallets,
         };
 
-        if let Err(err) = spawn_pool_observer(settings, Arc::clone(&catalog)).await {
+        if let Err(err) = spawn_pool_observer(
+            settings,
+            Arc::clone(&pool_catalog),
+            Arc::clone(&route_catalog),
+        )
+        .await
+        {
             warn!(
                 target: "pure_blind::observer",
                 error = %err,
@@ -1242,18 +1255,29 @@ async fn run_pure_blind_engine(
     }
 
     let dynamic_rx = spawn_dynamic_worker(
-        Arc::clone(&catalog),
+        Arc::clone(&route_catalog),
         Arc::clone(&rpc_client),
         decay_duration,
     );
 
-    let routes = PureBlindRouteBuilder::new(pure_config, rpc_client.as_ref(), &market_cache_handle)
+    if let Err(err) = cache_manager.restore(&pool_catalog, &route_catalog).await {
+        warn!(
+            target: "pure_blind::cache",
+            error = %err,
+            "恢复纯盲发缓存快照失败"
+        );
+    }
+
+    let mut cache_task: Option<JoinHandle<()>> =
+        cache_manager.spawn(Arc::clone(&pool_catalog), Arc::clone(&route_catalog));
+
+    let routes = PureBlindRouteBuilder::new(pure_config, rpc_client.as_ref())
         .build()
         .await
         .map_err(|err| anyhow!(err))?;
 
     let strategy_engine = StrategyEngine::new(
-        PureBlindStrategy::new(routes, pure_config, catalog, dynamic_rx)
+        PureBlindStrategy::new(routes, pure_config, pool_catalog, route_catalog, dynamic_rx)
             .map_err(|err| anyhow!(err))?,
         lander_stack.clone(),
         identity,
@@ -1269,9 +1293,13 @@ async fn run_pure_blind_engine(
         trade_profiles,
         None,
     );
-    drive_engine(strategy_engine)
-        .await
-        .map_err(|err| anyhow!(err))?;
+    let result = drive_engine(strategy_engine).await;
+
+    if let Some(handle) = cache_task.take() {
+        handle.abort();
+    }
+
+    result.map_err(|err| anyhow!(err))?;
 
     Ok(())
 }
@@ -1284,6 +1312,24 @@ async fn prepare_swap_components(
     alt_cache: AltCache,
 ) -> Result<(QuoteExecutor, SwapPreparer, (bool, bool))> {
     match backend {
+        StrategyBackend::Jupiter { api_client } => {
+            info!(target: "strategy", "使用 Jupiter 聚合器");
+            let quote_defaults = config.galileo.engine.jupiter.quote_config.clone();
+            let swap_defaults = config.galileo.engine.jupiter.swap_config.clone();
+            identity.set_skip_user_accounts_rpc_calls(swap_defaults.skip_user_accounts_rpc_calls);
+            let quote_executor =
+                QuoteExecutor::for_jupiter((*api_client).clone(), quote_defaults.clone());
+            let swap_preparer = SwapPreparer::for_jupiter(
+                (*api_client).clone(),
+                swap_defaults,
+                compute_unit_price_mode.clone(),
+            );
+            Ok((
+                quote_executor,
+                swap_preparer,
+                (quote_defaults.only_direct_routes, true),
+            ))
+        }
         StrategyBackend::Dflow { api_client } => {
             info!(target: "strategy", "使用 DFlow 聚合器");
             identity.set_skip_user_accounts_rpc_calls(false);

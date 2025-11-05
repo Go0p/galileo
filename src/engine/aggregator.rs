@@ -7,12 +7,14 @@ use solana_sdk::message::AddressLookupTableAccount;
 use solana_sdk::pubkey::Pubkey;
 
 use crate::api::dflow;
+use crate::api::jupiter;
 use crate::api::kamino;
 use crate::api::ultra::{OrderResponse, OrderResponsePayload, RoutePlanStep};
 use crate::engine::ultra::UltraFinalizedSwap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AggregatorKind {
+    Jupiter,
     Dflow,
     Ultra,
     Kamino,
@@ -20,6 +22,7 @@ pub enum AggregatorKind {
 
 #[derive(Debug, Clone)]
 pub enum QuoteResponseVariant {
+    Jupiter(jupiter::QuoteResponsePayload),
     Dflow(dflow::QuoteResponse),
     Ultra(OrderResponse),
     Kamino(KaminoQuote),
@@ -39,9 +42,15 @@ pub struct KaminoQuotePayload {
     pub time_taken_ms: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct JupiterQuotePayload {
+    pub payload: jupiter::QuoteResponsePayload,
+}
+
 impl QuoteResponseVariant {
     pub fn kind(&self) -> AggregatorKind {
         match self {
+            QuoteResponseVariant::Jupiter(_) => AggregatorKind::Jupiter,
             QuoteResponseVariant::Dflow(_) => AggregatorKind::Dflow,
             QuoteResponseVariant::Ultra(_) => AggregatorKind::Ultra,
             QuoteResponseVariant::Kamino(_) => AggregatorKind::Kamino,
@@ -50,6 +59,7 @@ impl QuoteResponseVariant {
 
     pub fn out_amount(&self) -> u64 {
         match self {
+            QuoteResponseVariant::Jupiter(resp) => resp.out_amount,
             QuoteResponseVariant::Dflow(resp) => resp.payload().out_amount,
             QuoteResponseVariant::Ultra(resp) => ultra_out_amount(&resp),
             QuoteResponseVariant::Kamino(resp) => resp.route.amount_out(),
@@ -58,6 +68,7 @@ impl QuoteResponseVariant {
 
     pub fn in_amount(&self) -> u64 {
         match self {
+            QuoteResponseVariant::Jupiter(resp) => resp.in_amount,
             QuoteResponseVariant::Dflow(resp) => resp.payload().in_amount,
             QuoteResponseVariant::Ultra(resp) => ultra_in_amount(&resp),
             QuoteResponseVariant::Kamino(resp) => resp.route.amount_in(),
@@ -66,6 +77,11 @@ impl QuoteResponseVariant {
 
     pub fn clone_payload(&self) -> QuotePayloadVariant {
         match self {
+            QuoteResponseVariant::Jupiter(resp) => {
+                QuotePayloadVariant::Jupiter(JupiterQuotePayload {
+                    payload: resp.clone(),
+                })
+            }
             QuoteResponseVariant::Dflow(resp) => QuotePayloadVariant::Dflow(resp.payload().clone()),
             QuoteResponseVariant::Ultra(resp) => {
                 let (_, payload) = resp.clone().into_parts();
@@ -91,6 +107,7 @@ impl QuoteResponseVariant {
 
 #[derive(Debug, Clone)]
 pub enum QuotePayloadVariant {
+    Jupiter(JupiterQuotePayload),
     Dflow(dflow::QuoteResponsePayload),
     Ultra(UltraQuotePayload),
     Kamino(KaminoQuotePayload),
@@ -106,6 +123,7 @@ pub struct UltraQuotePayload {
 impl QuotePayloadVariant {
     pub fn output_mint(&self) -> Pubkey {
         match self {
+            QuotePayloadVariant::Jupiter(payload) => payload.payload.output_mint,
             QuotePayloadVariant::Dflow(payload) => payload.output_mint,
             QuotePayloadVariant::Ultra(payload) => ultra_output_mint_from_payload(&payload.payload),
             QuotePayloadVariant::Kamino(payload) => payload.output_mint,
@@ -114,6 +132,10 @@ impl QuotePayloadVariant {
 
     pub fn set_out_amount(&mut self, value: u64) {
         match self {
+            QuotePayloadVariant::Jupiter(payload) => {
+                payload.payload.out_amount = value;
+                payload.payload.other_amount_threshold = value;
+            }
             QuotePayloadVariant::Dflow(payload) => {
                 payload.out_amount = value;
                 payload.other_amount_threshold = value;
@@ -135,6 +157,9 @@ impl QuotePayloadVariant {
 
     pub fn set_context_slot(&mut self, slot: u64) {
         match self {
+            QuotePayloadVariant::Jupiter(payload) => {
+                payload.payload.context_slot = Some(slot);
+            }
             QuotePayloadVariant::Dflow(payload) => payload.context_slot = slot,
             QuotePayloadVariant::Ultra(payload) => payload.context_slot = slot,
             QuotePayloadVariant::Kamino(payload) => payload.context_slot = slot,
@@ -143,6 +168,9 @@ impl QuotePayloadVariant {
 
     pub fn context_slot(&self) -> u64 {
         match self {
+            QuotePayloadVariant::Jupiter(payload) => {
+                payload.payload.context_slot.unwrap_or_default()
+            }
             QuotePayloadVariant::Dflow(payload) => payload.context_slot,
             QuotePayloadVariant::Ultra(payload) => payload.context_slot,
             QuotePayloadVariant::Kamino(payload) => payload.context_slot,
@@ -151,6 +179,7 @@ impl QuotePayloadVariant {
 
     pub fn time_taken(&self) -> f64 {
         match self {
+            QuotePayloadVariant::Jupiter(payload) => payload.payload.time_taken.unwrap_or_default(),
             QuotePayloadVariant::Dflow(_) => 0.0,
             QuotePayloadVariant::Ultra(payload) => payload.time_taken_ms,
             QuotePayloadVariant::Kamino(payload) => payload.time_taken_ms,
@@ -158,16 +187,24 @@ impl QuotePayloadVariant {
     }
 
     pub fn set_time_taken(&mut self, value: f64) {
-        if let QuotePayloadVariant::Ultra(payload) = self {
-            payload.time_taken_ms = value;
-            payload.payload.total_time = Some(value.max(0.0).round() as u64);
-        } else if let QuotePayloadVariant::Kamino(payload) = self {
-            payload.time_taken_ms = value;
+        match self {
+            QuotePayloadVariant::Ultra(payload) => {
+                payload.time_taken_ms = value;
+                payload.payload.total_time = Some(value.max(0.0).round() as u64);
+            }
+            QuotePayloadVariant::Kamino(payload) => {
+                payload.time_taken_ms = value;
+            }
+            QuotePayloadVariant::Jupiter(payload) => {
+                payload.payload.time_taken = Some(value);
+            }
+            QuotePayloadVariant::Dflow(_) => {}
         }
     }
 
     pub fn route_len(&self) -> usize {
         match self {
+            QuotePayloadVariant::Jupiter(payload) => payload.payload.route_plan.len(),
             QuotePayloadVariant::Dflow(payload) => payload.route_plan.len(),
             QuotePayloadVariant::Ultra(payload) => payload.payload.route_plan.len(),
             QuotePayloadVariant::Kamino(payload) => payload.route.instructions.swap_ixs.len(),
@@ -183,6 +220,11 @@ impl QuotePayloadVariant {
                 .payload
                 .route_plan
                 .extend(rhs.payload.route_plan.iter().cloned()),
+            (QuotePayloadVariant::Jupiter(lhs), QuotePayloadVariant::Jupiter(rhs)) => {
+                lhs.payload
+                    .route_plan
+                    .extend(rhs.payload.route_plan.iter().cloned());
+            }
             (QuotePayloadVariant::Kamino(lhs), QuotePayloadVariant::Kamino(rhs)) => {
                 lhs.route.instructions.append_from(&rhs.route.instructions);
                 for value in &rhs.route.lookup_table_accounts_bs58 {
@@ -214,6 +256,9 @@ impl QuotePayloadVariant {
 
     pub fn set_output_mint(&mut self, mint: Pubkey) {
         match self {
+            QuotePayloadVariant::Jupiter(payload) => {
+                payload.payload.output_mint = mint;
+            }
             QuotePayloadVariant::Dflow(payload) => payload.output_mint = mint,
             QuotePayloadVariant::Ultra(payload) => {
                 payload.payload.output_mint = Some(mint);
@@ -226,6 +271,9 @@ impl QuotePayloadVariant {
 
     pub fn set_price_impact_zero(&mut self) {
         match self {
+            QuotePayloadVariant::Jupiter(payload) => {
+                payload.payload.price_impact_pct = Decimal::ZERO;
+            }
             QuotePayloadVariant::Dflow(payload) => payload.price_impact_pct = Decimal::ZERO,
             QuotePayloadVariant::Ultra(payload) => {
                 payload.payload.price_impact = Decimal::ZERO;
@@ -243,6 +291,7 @@ impl QuotePayloadVariant {
 
 #[derive(Debug, Clone)]
 pub enum SwapInstructionsVariant {
+    Jupiter(jupiter::SwapInstructionsResponse),
     Dflow(dflow::SwapInstructionsResponse),
     Ultra(UltraFinalizedSwap),
     MultiLeg(MultiLegInstructions),
@@ -374,6 +423,7 @@ impl KaminoSwapBundle {
 impl SwapInstructionsVariant {
     pub fn compute_unit_limit(&self) -> u32 {
         match self {
+            SwapInstructionsVariant::Jupiter(response) => response.compute_unit_limit,
             SwapInstructionsVariant::Dflow(response) => response.compute_unit_limit,
             SwapInstructionsVariant::Ultra(bundle) => bundle.compute_unit_limit,
             SwapInstructionsVariant::MultiLeg(bundle) => bundle.compute_unit_limit,
@@ -383,6 +433,7 @@ impl SwapInstructionsVariant {
 
     pub fn prioritization_fee_lamports(&self) -> Option<u64> {
         match self {
+            SwapInstructionsVariant::Jupiter(response) => response.prioritization_fee_lamports,
             SwapInstructionsVariant::Dflow(response) => response.prioritization_fee_lamports,
             SwapInstructionsVariant::Ultra(bundle) => bundle.prioritization_fee_lamports,
             SwapInstructionsVariant::MultiLeg(bundle) => bundle.prioritization_fee_lamports,
@@ -392,6 +443,9 @@ impl SwapInstructionsVariant {
 
     pub fn compute_budget_instructions(&self) -> &[Instruction] {
         match self {
+            SwapInstructionsVariant::Jupiter(response) => {
+                response.compute_budget_instructions.as_slice()
+            }
             SwapInstructionsVariant::Dflow(response) => {
                 response.compute_budget_instructions.as_slice()
             }
@@ -407,6 +461,7 @@ impl SwapInstructionsVariant {
 
     pub fn flatten_instructions(&self) -> Vec<Instruction> {
         match self {
+            SwapInstructionsVariant::Jupiter(response) => response.flatten_instructions(),
             SwapInstructionsVariant::Dflow(response) => response.flatten_instructions(),
             SwapInstructionsVariant::Ultra(bundle) => {
                 let mut combined = Vec::with_capacity(
@@ -423,6 +478,7 @@ impl SwapInstructionsVariant {
 
     pub fn resolved_lookup_tables(&self) -> &[AddressLookupTableAccount] {
         match self {
+            SwapInstructionsVariant::Jupiter(_) => &[],
             SwapInstructionsVariant::Dflow(_) => &[],
             SwapInstructionsVariant::Ultra(bundle) => bundle.resolved_lookup_tables.as_slice(),
             SwapInstructionsVariant::MultiLeg(bundle) => bundle.resolved_lookup_tables.as_slice(),
@@ -432,6 +488,9 @@ impl SwapInstructionsVariant {
 
     pub fn address_lookup_table_addresses(&self) -> &[Pubkey] {
         match self {
+            SwapInstructionsVariant::Jupiter(response) => {
+                response.address_lookup_table_addresses.as_slice()
+            }
             SwapInstructionsVariant::Dflow(response) => {
                 response.address_lookup_table_addresses.as_slice()
             }
@@ -447,6 +506,7 @@ impl SwapInstructionsVariant {
 
     pub fn blockhash_with_metadata(&self) -> Option<&dflow::BlockhashWithMetadata> {
         match self {
+            SwapInstructionsVariant::Jupiter(_) => None,
             SwapInstructionsVariant::Dflow(response) => Some(response.blockhash_with_metadata()),
             SwapInstructionsVariant::Ultra(_) => None,
             SwapInstructionsVariant::MultiLeg(_) => None,

@@ -111,18 +111,12 @@
 > 文档维护者：`TODO(填写)`  
 > 更新记录：初稿（2025-10-21）
 
-## 9. 纯盲自动路由（2025-02 更新）
+## 9. 纯盲动态路由（2025-02 更新）
 
-- `PureBlindRouteBuilder` 已接入 `MarketCacheHandle`，启动时会解析本地 `markets.json` 快照，通过 `exclude_other_dex_program_ids`、`min_liquidity_usd` 等参数快速筛选候选池子。
-- `routing_group`：表征 Jupiter 官方的路由信赖分层（0/1 一级市场，2 次一级，3 长尾或实验池）。当前仅跳过 >3 的值，确保稳健池子优先，同时保留可选长尾。
-- `pure_blind_strategy.enable_landers` 允许为纯盲发指定独立的落地器序列，不再复用 `blind_strategy` 设置。
-- `pure_blind_strategy.market_cache.exclude_dex_program_ids` 可显式排除指定 Program ID 所属的池子，避免与竞品或不稳定池子打架。
-- `pure_blind_strategy.market_cache.proxy` 允许为市场缓存下载设置专用 HTTP 代理，不影响其他 HTTP 请求。
-- `pure_blind_strategy.cu_multiplier` 用于在各腿默认 CU 预算之和基础上统一放大/缩放，便于快速调节整体参数。
-- 当 `assets.base_mints` 中的入口资产声明 `route_type="2hop"` / `"3hop"` 时，路由构建器会结合 `assets.intermediates` 与缓存元数据自动挑选两腿或三腿闭环，并生成 `route_source=auto` 的路线；手工 `overrides` 仍然保留且优先生效。
-- 新增 Prometheus 指标：
-  - `galileo_pure_blind_routes_total{route,source}` / `galileo_pure_blind_route_legs{route,source}` —— 记录闭环构建情况。
-  - `galileo_pure_blind_orders_total{route,source,direction}` —— 记录每次 tick 下发的盲发指令数量。
-- 建议开启 `galileo.yaml` → `bot.prometheus.enable=true` 并将监听地址指向监控节点，结合 `route_source` 标签可以分别监控手工与自动路线的表现。
-- 如需刷新缓存，可使用新增 Task：`task pure_blind:cache:refresh`（详见仓库 `Taskfile.yml`），支持离线下载 `markets.json` 并校验过滤结果。
+- `PureBlindRouteBuilder` 不再依赖本地市场缓存，手工 `overrides` 仍然保留，但默认闭环全部来源于 Yellowstone 回放的真实套利交易。
+- 新增 `RouteCatalog`：监听器会将每笔成功交易解析为 `Vec<PoolProfile>`，按池子序列生成闭环画像并累计命中次数/利润，命中阈值达到后向策略层推送激活事件。
+- 动态闭环激活时会实时拉取池子账户，构造整条 `BlindStep` 序列并自动拼接 Address Lookup Table；策略端将这些路线与静态 overrides 一并打散派发。
+- `pure_blind_strategy.assets` 仍用于声明入口 mint 及黑名单；`base_min_profit` 会应用到动态闭环，需在配置中维护。
+- Prometheus 指标沿用 `galileo_pure_blind_routes_total` / `galileo_pure_blind_orders_total`，其中 `source` 标签区分 `manual` 与 `dynamic` 路线。
+- 建议开启 `galileo.yaml` → `bot.prometheus.enable=true` 并将监听地址指向监控节点，结合 `source` 标签观察动态闭环表现。
 - 纯盲模式推荐将 `engine.backend` 设置为 `none`，以跳过外部聚合器组件的初始化。

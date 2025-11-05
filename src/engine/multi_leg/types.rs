@@ -38,6 +38,7 @@ impl fmt::Display for LegSide {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AggregatorKind {
+    Jupiter,
     Ultra,
     Dflow,
     Titan,
@@ -48,6 +49,7 @@ impl fmt::Display for AggregatorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AggregatorKind::Ultra => f.write_str("ultra"),
+            AggregatorKind::Jupiter => f.write_str("jupiter"),
             AggregatorKind::Dflow => f.write_str("dflow"),
             AggregatorKind::Titan => f.write_str("titan"),
             AggregatorKind::Kamino => f.write_str("kamino"),

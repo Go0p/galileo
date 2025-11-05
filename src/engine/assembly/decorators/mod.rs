@@ -139,7 +139,22 @@ mod tests {
     }
 
     fn sample_jupiter_variant() -> SwapInstructionsVariant {
-        sample_multi_leg_variant()
+        let compute_limit = compute_unit_limit_instruction(200_000);
+        let compute_price = compute_unit_price_instruction(1_000);
+        let swap_ix = dummy_instruction();
+        let response = crate::api::jupiter::SwapInstructionsResponse {
+            raw: serde_json::Value::Null,
+            compute_budget_instructions: vec![compute_limit.clone(), compute_price.clone()],
+            setup_instructions: vec![],
+            swap_instruction: swap_ix,
+            cleanup_instructions: vec![],
+            other_instructions: vec![],
+            address_lookup_table_addresses: vec![],
+            prioritization_fee_lamports: Some(1_000),
+            compute_unit_limit: 200_000,
+            blockhash: None,
+        };
+        SwapInstructionsVariant::Jupiter(response)
     }
 
     #[tokio::test(flavor = "current_thread")]

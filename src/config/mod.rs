@@ -163,6 +163,7 @@ impl Default for cfg::EngineConfig {
             backend: cfg::EngineBackend::default(),
             time_out: cfg::EngineTimeoutConfig::default(),
             enable_console_summary: false,
+            jupiter: cfg::JupiterEngineConfig::default(),
             dflow: cfg::DflowEngineConfig::default(),
             ultra: cfg::UltraEngineConfig::default(),
             titan: cfg::TitanEngineConfig::default(),
@@ -180,6 +181,19 @@ impl Default for cfg::DflowEngineConfig {
             api_proxy: None,
             quote_config: cfg::DflowQuoteConfig::default(),
             swap_config: cfg::DflowSwapConfig::default(),
+        }
+    }
+}
+
+impl Default for cfg::JupiterEngineConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            api_quote_base: None,
+            api_swap_base: None,
+            api_proxy: None,
+            quote_config: cfg::JupiterQuoteConfig::default(),
+            swap_config: cfg::JupiterSwapConfig::default(),
         }
     }
 }

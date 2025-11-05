@@ -23,6 +23,18 @@ impl InstructionDecorator for ComputeBudgetDecorator {
 
         if let Some(variant) = context.variant.as_deref_mut() {
             match variant {
+                crate::engine::SwapInstructionsVariant::Jupiter(response) => {
+                    response.compute_unit_limit = target_limit;
+                    let preserved: Vec<_> = response
+                        .compute_budget_instructions
+                        .drain(..)
+                        .filter(is_preserved_compute_budget)
+                        .collect();
+                    let seq = compute_budget_sequence(target_price, target_limit, None);
+                    let mut rebuilt = seq.into_vec();
+                    rebuilt.extend(preserved);
+                    response.compute_budget_instructions = rebuilt;
+                }
                 crate::engine::SwapInstructionsVariant::Dflow(response) => {
                     response.compute_unit_limit = target_limit;
                     let preserved: Vec<_> = response

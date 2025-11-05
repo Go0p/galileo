@@ -220,7 +220,8 @@ fn merge_quotes(
     match (forward.kind(), reverse.kind()) {
         (AggregatorKind::Dflow, AggregatorKind::Dflow)
         | (AggregatorKind::Ultra, AggregatorKind::Ultra)
-        | (AggregatorKind::Kamino, AggregatorKind::Kamino) => {
+        | (AggregatorKind::Kamino, AggregatorKind::Kamino)
+        | (AggregatorKind::Jupiter, AggregatorKind::Jupiter) => {
             let mut merged = forward.clone_payload();
             let reverse_payload = reverse.clone_payload();
 

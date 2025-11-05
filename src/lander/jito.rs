@@ -124,6 +124,7 @@ impl JitoLander {
             TipStrategyKind::Fixed => "fixed",
             TipStrategyKind::Range => "range",
             TipStrategyKind::Stream => "stream",
+            TipStrategyKind::Api => "api",
         }
     }
 
@@ -513,9 +514,10 @@ const MIN_JITO_TIP_LAMPORTS: u64 = 1_000;
 #[derive(Clone)]
 struct TipSelector {
     strategy: TipStrategyKind,
-    fixed_tip: u64,
+    base_tip: u64,
     range_tips: Vec<u64>,
     stream: Option<TipStream>,
+    api: Option<TipApi>,
 }
 
 impl TipSelector {
@@ -529,12 +531,15 @@ impl TipSelector {
             .filter(|value| *value > 0)
             .collect();
 
-        let fixed_tip = match strategy {
+        let base_tip = match strategy {
             TipStrategyKind::Fixed | TipStrategyKind::Range => config
                 .fixed_tip
                 .filter(|value| *value > 0)
                 .unwrap_or(MIN_JITO_TIP_LAMPORTS),
-            TipStrategyKind::Stream => MIN_JITO_TIP_LAMPORTS,
+            TipStrategyKind::Stream | TipStrategyKind::Api => config
+                .fixed_tip
+                .filter(|value| *value > 0)
+                .unwrap_or(MIN_JITO_TIP_LAMPORTS),
         };
 
         let stream = if matches!(strategy, TipStrategyKind::Stream) {
@@ -547,11 +552,41 @@ impl TipSelector {
             None
         };
 
+        let api = if matches!(strategy, TipStrategyKind::Api) {
+            let url = config
+                .tip_floor_api
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string());
+            match url {
+                Some(endpoint) => {
+                    let refresh_ms = config.tip_floor_refresh_ms.unwrap_or(5_000);
+                    Some(TipApi::spawn(
+                        endpoint,
+                        Duration::from_millis(refresh_ms.max(200)),
+                        MIN_JITO_TIP_LAMPORTS,
+                    ))
+                }
+                None => {
+                    warn!(
+                        target: "lander::jito",
+                        "tip_strategy=api 但未配置 tip_floor_api，回退为 {} lamports",
+                        MIN_JITO_TIP_LAMPORTS
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Self {
             strategy,
-            fixed_tip,
+            base_tip,
             range_tips,
             stream,
+            api,
         }
     }
 
@@ -561,19 +596,19 @@ impl TipSelector {
 
     fn select_tip(&self) -> Option<u64> {
         match self.strategy {
-            TipStrategyKind::Fixed => Some(self.fixed_tip),
+            TipStrategyKind::Fixed => Some(self.base_tip),
             TipStrategyKind::Range => self.pick_range_tip().or_else(|| {
                 warn!(
                     target: "lander::jito",
                     "range 策略未配置有效的随机列表，退回 {} lamports",
-                    self.fixed_tip
+                    self.base_tip
                 );
-                Some(self.fixed_tip)
+                Some(self.base_tip)
             }),
             TipStrategyKind::Stream => {
                 if let Some(stream) = &self.stream {
                     if let Some(value) = stream.latest() {
-                        return Some(value);
+                        return Some(value.max(MIN_JITO_TIP_LAMPORTS));
                     }
                 }
                 warn!(
@@ -582,6 +617,25 @@ impl TipSelector {
                     MIN_JITO_TIP_LAMPORTS
                 );
                 Some(MIN_JITO_TIP_LAMPORTS)
+            }
+            TipStrategyKind::Api => {
+                if let Some(api) = &self.api {
+                    if let Some(value) = api.latest() {
+                        return Some(value.max(MIN_JITO_TIP_LAMPORTS));
+                    }
+                    warn!(
+                        target: "lander::jito",
+                        "tip api 尚未产出有效值，沿用最后一次拉取或回退为 {} lamports",
+                        MIN_JITO_TIP_LAMPORTS
+                    );
+                } else {
+                    warn!(
+                        target: "lander::jito",
+                        "tip api 未正确初始化，回退为 {} lamports",
+                        MIN_JITO_TIP_LAMPORTS
+                    );
+                }
+                Some(self.base_tip.max(MIN_JITO_TIP_LAMPORTS))
             }
         }
     }
@@ -598,6 +652,12 @@ impl TipSelector {
 struct TipStream {
     shared: Arc<TipStreamShared>,
     task: Arc<TipStreamTask>,
+}
+
+#[derive(Clone)]
+struct TipApi {
+    shared: Arc<TipApiShared>,
+    task: Arc<TipApiTask>,
 }
 
 impl TipStream {
@@ -640,6 +700,46 @@ impl TipStream {
     }
 }
 
+impl TipApi {
+    fn spawn(endpoint: String, refresh: Duration, min_tip: u64) -> Self {
+        let shared = Arc::new(TipApiShared::new(endpoint, refresh, min_tip));
+        let task = if let Ok(handle) = Handle::try_current() {
+            let shared_clone = shared.clone();
+            let (abort_handle, abort_registration) = AbortHandle::new_pair();
+
+            let future = async move {
+                TipApiShared::run(shared_clone).await;
+            };
+
+            let abortable = Abortable::new(future, abort_registration);
+            handle.spawn(async move {
+                if let Err(Aborted) = abortable.await {
+                    debug!(target: "lander::jito", "tip api 轮询任务被显式中止");
+                }
+            });
+
+            TipApiTask {
+                abort: Some(abort_handle),
+            }
+        } else {
+            warn!(
+                target: "lander::jito",
+                "tip api 未检测到 Tokio runtime，轮询功能未启动"
+            );
+            TipApiTask { abort: None }
+        };
+
+        Self {
+            shared,
+            task: Arc::new(task),
+        }
+    }
+
+    fn latest(&self) -> Option<u64> {
+        self.shared.latest()
+    }
+}
+
 impl Clone for TipStream {
     fn clone(&self) -> Self {
         Self {
@@ -657,6 +757,14 @@ impl Drop for TipStream {
     }
 }
 
+impl Drop for TipApi {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.task) == 1 {
+            self.task.abort();
+        }
+    }
+}
+
 struct TipStreamTask {
     abort: Option<AbortHandle>,
 }
@@ -666,6 +774,102 @@ impl TipStreamTask {
         if let Some(handle) = &self.abort {
             handle.abort();
         }
+    }
+}
+
+struct TipApiTask {
+    abort: Option<AbortHandle>,
+}
+
+impl TipApiTask {
+    fn abort(&self) {
+        if let Some(handle) = &self.abort {
+            handle.abort();
+        }
+    }
+}
+
+struct TipApiShared {
+    latest: AtomicU64,
+    client: Client,
+    endpoint: String,
+    refresh: Duration,
+    min_tip: u64,
+}
+
+impl TipApiShared {
+    fn new(endpoint: String, refresh: Duration, min_tip: u64) -> Self {
+        Self {
+            latest: AtomicU64::new(min_tip),
+            client: Client::new(),
+            endpoint,
+            refresh,
+            min_tip,
+        }
+    }
+
+    fn latest(&self) -> Option<u64> {
+        let value = self.latest.load(Ordering::Relaxed);
+        if value > 0 { Some(value) } else { None }
+    }
+
+    async fn run(self: Arc<Self>) {
+        loop {
+            match self.fetch_once().await {
+                Ok(Some(value)) => {
+                    let clamped = value.max(self.min_tip);
+                    self.latest.store(clamped, Ordering::Relaxed);
+                }
+                Ok(None) => {
+                    debug!(
+                        target: "lander::jito",
+                        endpoint = %self.endpoint,
+                        "tip api 本轮未得到有效值，将沿用上次结果"
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        target: "lander::jito",
+                        endpoint = %self.endpoint,
+                        error = %err,
+                        "tip api 拉取失败，将在 {:?} 后重试",
+                        self.refresh
+                    );
+                }
+            }
+
+            sleep(self.refresh).await;
+        }
+    }
+
+    async fn fetch_once(&self) -> Result<Option<u64>, reqwest::Error> {
+        let response = self
+            .client
+            .get(&self.endpoint)
+            .header("accept", "application/json")
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            warn!(
+                target: "lander::jito",
+                endpoint = %self.endpoint,
+                status = %response.status(),
+                "tip api 返回非成功状态码"
+            );
+            return Ok(None);
+        }
+
+        let text = response.text().await?;
+        if text.trim().is_empty() {
+            return Ok(None);
+        }
+
+        let value = match serde_json::from_str::<Value>(&text) {
+            Ok(json) => extract_tip_lamports(&json),
+            Err(_) => parse_tip_from_str(&text),
+        };
+
+        Ok(value)
     }
 }
 
@@ -789,6 +993,80 @@ impl TipStreamShared {
         }
         Ok(())
     }
+}
+
+fn extract_tip_lamports(value: &Value) -> Option<u64> {
+    match value {
+        Value::Null | Value::Bool(_) => None,
+        Value::Number(number) => {
+            if number.is_u64() {
+                number.as_u64()
+            } else if let Some(float) = number.as_f64() {
+                parse_float_tip(float)
+            } else {
+                None
+            }
+        }
+        Value::String(text) => parse_tip_from_str(text),
+        Value::Array(entries) => entries.iter().find_map(extract_tip_lamports),
+        Value::Object(map) => {
+            const CANDIDATE_KEYS: &[&str] = &[
+                "tip_floor_lamports",
+                "tip_floor",
+                "tipFloorLamports",
+                "tipFloor",
+                "tip_floor_sol",
+                "tipFloorSol",
+                "value",
+                "floor",
+                "current_tip_floor",
+                "currentTipFloor",
+            ];
+
+            for key in CANDIDATE_KEYS {
+                if let Some(entry) = map.get(*key) {
+                    if let Some(value) = extract_tip_lamports(entry) {
+                        return Some(value);
+                    }
+                }
+            }
+
+            map.values().find_map(extract_tip_lamports)
+        }
+    }
+}
+
+fn parse_tip_from_str(text: &str) -> Option<u64> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(int_value) = trimmed.parse::<u64>() {
+        return Some(int_value);
+    }
+
+    if let Ok(float_value) = trimmed.parse::<f64>() {
+        return parse_float_tip(float_value);
+    }
+
+    None
+}
+
+fn parse_float_tip(value: f64) -> Option<u64> {
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+
+    if value.fract().abs() < 1e-9 {
+        let rounded = value.round();
+        if rounded > 0.0 {
+            return Some(rounded as u64);
+        }
+        return None;
+    }
+
+    sol_to_lamports(value)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1124,6 +1402,18 @@ mod tests {
 
         let tip = selector.select_tip();
         assert_eq!(tip, Some(MIN_JITO_TIP_LAMPORTS));
+    }
+
+    #[test]
+    fn tip_selector_api_without_endpoint_falls_back() {
+        let mut config = LanderJitoConfig::default();
+        config.tip_strategy = TipStrategyKind::Api;
+        config.fixed_tip = Some(2_000);
+        config.tip_floor_api = None;
+        let selector = TipSelector::from_config(&config);
+
+        let tip = selector.select_tip();
+        assert_eq!(tip, Some(2_000));
     }
 
     #[test]
