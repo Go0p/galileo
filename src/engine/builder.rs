@@ -87,7 +87,6 @@ pub struct PreparedTransaction {
     pub transaction: VersionedTransaction,
     pub blockhash: Hash,
     pub slot: u64,
-    pub last_valid_block_height: Option<u64>,
     pub signer: Arc<Keypair>,
     pub tip_lamports: u64,
     pub prioritization_fee_lamports: u64,
@@ -261,8 +260,10 @@ impl TransactionBuilder {
             self.latest_blockhash(rpc).await?
         };
         let blockhash = snapshot.blockhash;
-        let last_valid_block_height = snapshot.last_valid_block_height;
-        let slot = snapshot.slot.or(last_valid_block_height).unwrap_or(0);
+        let slot = snapshot
+            .slot
+            .or(snapshot.last_valid_block_height)
+            .unwrap_or(0);
 
         let mut instructions = match override_sequence {
             Some(sequence) => sequence,
@@ -309,7 +310,6 @@ impl TransactionBuilder {
             transaction: tx,
             blockhash,
             slot,
-            last_valid_block_height,
             signer,
             tip_lamports,
             prioritization_fee_lamports: 0,

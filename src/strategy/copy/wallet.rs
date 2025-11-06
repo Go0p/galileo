@@ -1203,13 +1203,14 @@ impl CopyWalletRunner {
         let mut profiles = Vec::with_capacity(self.lander_stack.count());
         for variant in self.lander_stack.variants() {
             match variant {
-                LanderVariant::Jito(_) => {
-                    let label = variant.tip_strategy_label().unwrap_or("stream");
+                LanderVariant::Jito(lander) => {
+                    let label = lander.tip_strategy_label();
                     profiles.push(LandingProfile::new(
                         LanderKind::Jito,
                         TipStrategy::Jito {
                             plan: jito_tip_plan.clone(),
                             label,
+                            extra_guard_lamports: lander.multi_ips_guard_lamports(),
                         },
                         GuardBudgetKind::BasePlusTip,
                         ComputeUnitPriceStrategy::Fixed(0),

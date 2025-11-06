@@ -24,6 +24,7 @@ pub enum TipStrategy {
     Jito {
         plan: Option<JitoTipPlan>,
         label: &'static str,
+        extra_guard_lamports: u64,
     },
 }
 
@@ -102,14 +103,16 @@ impl LandingProfileBuilder {
         sampled_compute_unit_price: Option<u64>,
     ) -> LandingProfile {
         match variant {
-            LanderVariant::Jito(_) => {
-                let tip_plan = variant.draw_tip_plan();
-                let label = variant.tip_strategy_label().unwrap_or("stream");
+            LanderVariant::Jito(lander) => {
+                let tip_plan = lander.draw_tip_plan();
+                let label = lander.tip_strategy_label();
+                let extra_guard = lander.multi_ips_guard_lamports();
                 LandingProfile::new(
                     LanderKind::Jito,
                     TipStrategy::Jito {
                         plan: tip_plan,
                         label,
+                        extra_guard_lamports: extra_guard,
                     },
                     GuardBudgetKind::BasePlusTip,
                     ComputeUnitPriceStrategy::Fixed(0),

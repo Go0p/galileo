@@ -813,7 +813,6 @@ pub fn transaction_built(
     opportunity: &SwapOpportunity,
     slot: u64,
     blockhash: &str,
-    last_valid_block_height: Option<u64>,
     local_ip: Option<IpAddr>,
 ) {
     let ip_repr = local_ip.map(|value| value.to_string());
@@ -831,7 +830,6 @@ pub fn transaction_built(
         amount_in,
         slot,
         blockhash,
-        last_valid_block_height,
         local_ip = ?ip_repr,
         "transaction_built node={}",
         ip_display

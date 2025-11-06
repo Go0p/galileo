@@ -94,18 +94,18 @@ impl LanderFactory {
                 self.enable_simulation,
             ))),
             "jito" => settings.jito.as_ref().and_then(|cfg| {
-                let has_endpoint = cfg
-                    .endpoints
-                    .iter()
-                    .any(|endpoint| !endpoint.trim().is_empty());
-                if !has_endpoint {
+                let lander = JitoLander::with_ip_pool(
+                    cfg,
+                    self.http_client.clone(),
+                    self.client_pool.clone(),
+                );
+                if lander.endpoints() == 0 {
+                    warn!(
+                        target: "lander::factory",
+                        "jito lander 没有可用 endpoint，跳过构建"
+                    );
                     None
                 } else {
-                    let lander = JitoLander::with_ip_pool(
-                        cfg,
-                        self.http_client.clone(),
-                        self.client_pool.clone(),
-                    );
                     let lander = if self.dry_run_enabled {
                         lander.with_dry_run(self.rpc_client.clone(), settings)
                     } else {

@@ -199,11 +199,33 @@ pub trait Strategy {
 lander:
   sending_strategy: "AllAtOnce"   # 或 "OneByOne"
   jito:
-    uuid_config:
-      - uuid: "7dc...966"
-        rate_limit: 5
-    endpoints:
-      - https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles
+    enabled_strategys:
+      - uuid
+      - multi_ips
+      - forward
+    uuid_setting:
+      config:
+        - uuid: "7dc...966"
+          rate_limit: 5
+      endpoints:
+        - https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles
+        - https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles
+    multi_ips_setting:
+      tips_wallet:
+        init_wallet_size: 1000
+        auto_generate_interval_ms: 30000
+        auto_generate_count: 200
+      endpoints:
+        - https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles
+    forward_setting:
+      endpoints:
+        - https://jito-worker.example.com/bundles
+
+# 说明
+- `enabled_strategys` 控制同时启用的落地策略，`uuid` / `multi_ips` / `forward` 三种可并行尝试，同一变体在 `AllAtOnce` 下会全部发出，在 `OneByOne` 下按 endpoint 拆分。
+- `uuid_setting` 与旧版 `uuid_config` 行为一致，额外允许为 uuid 专属 endpoint 列表；若速率冷却中，调度器会跳过本轮发送，避免触发强制包。
+- `multi_ips_setting` 会通过钱包池管理临时钱包，主交易先向临时钱包转入 `tip + 0.001` SOL，随后由临时钱包在同一个 bundle 内向官方 Jito tip wallet 转账并归集剩余余额。
+- `forward_setting` 支持对接第三方中继，只做原样转发；若 uuid 失败可作为降级路径。
 ```
 
 ## 9. 迭代路线建议

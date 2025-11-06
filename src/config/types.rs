@@ -1955,6 +1955,14 @@ pub struct LanderJitoConfig {
     pub tip_floor_refresh_ms: Option<u64>,
     #[serde(default)]
     pub uuid_config: Vec<LanderJitoUuidConfig>,
+    #[serde(default)]
+    pub enabled_strategys: Vec<LanderJitoStrategyKind>,
+    #[serde(default)]
+    pub uuid_setting: Option<LanderJitoUuidSetting>,
+    #[serde(default)]
+    pub multi_ips_setting: Option<LanderJitoMultiIpsSetting>,
+    #[serde(default)]
+    pub forward_setting: Option<LanderJitoForwardSetting>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2084,6 +2092,89 @@ pub struct LanderJitoUuidConfig {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct LanderEndpointConfig {
+    #[serde(default)]
+    pub endpoints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LanderJitoStrategyKind {
+    Uuid,
+    MultiIps,
+    Forward,
+}
+
+impl<'de> Deserialize<'de> for LanderJitoStrategyKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct StrategyVisitor;
+
+        impl<'de> Visitor<'de> for StrategyVisitor {
+            type Value = LanderJitoStrategyKind;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("one of: uuid, multi_ips, forward")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                match value.trim().to_ascii_lowercase().as_str() {
+                    "uuid" => Ok(LanderJitoStrategyKind::Uuid),
+                    "multi_ips" | "multi-ips" | "multiips" => Ok(LanderJitoStrategyKind::MultiIps),
+                    "forward" => Ok(LanderJitoStrategyKind::Forward),
+                    other => Err(DeError::unknown_variant(
+                        other,
+                        &["uuid", "multi_ips", "forward"],
+                    )),
+                }
+            }
+        }
+
+        deserializer.deserialize_str(StrategyVisitor)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LanderJitoUuidSetting {
+    #[serde(default)]
+    pub config: Vec<LanderJitoUuidConfig>,
+    #[serde(default)]
+    pub endpoints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LanderJitoMultiIpsSetting {
+    #[serde(default)]
+    pub endpoints: Vec<String>,
+    #[serde(default)]
+    pub tips_wallet: LanderJitoTipsWalletConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LanderJitoTipsWalletConfig {
+    #[serde(default)]
+    pub init_wallet_size: u64,
+    #[serde(default)]
+    pub auto_generate_interval_ms: u64,
+    #[serde(default)]
+    pub auto_generate_count: u64,
+}
+
+impl Default for LanderJitoTipsWalletConfig {
+    fn default() -> Self {
+        Self {
+            init_wallet_size: 0,
+            auto_generate_interval_ms: 0,
+            auto_generate_count: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LanderJitoForwardSetting {
     #[serde(default)]
     pub endpoints: Vec<String>,
 }

@@ -51,7 +51,7 @@ engine:
     quote_cadence:
       default:
         max_concurrent_slots: 1
-        inter_batch_delay_ms: 20000
+        inter_batch_delay_ms: 2000
 
   jupiter:
     jupiter_buy:
@@ -59,7 +59,7 @@ engine:
       leg: "buy"
       api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
       api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
-      api_proxy: "http://192.168.3.3:9999"
+      api_proxy: "http://192.168.124.4:9999"
       quote_config:
         only_direct_routes: true
         restrict_intermediate_tokens: true
@@ -69,7 +69,7 @@ engine:
         #   cycle_cooldown_ms: 一轮所有 trade size 完成后的休息时间（大多数场景可留空或设为 0）。
         cadence:
           default:
-            max_concurrent_slots: auto
+            max_concurrent_slots: 1
             inter_batch_delay_ms: 3000
             
       swap_config:
@@ -82,13 +82,13 @@ engine:
       leg: "sell"
       api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
       api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
-      api_proxy: "http://192.168.3.3:9999"
+      api_proxy: "http://192.168.124.4:9999"
       quote_config:
         only_direct_routes: true
         restrict_intermediate_tokens: true
         cadence:
           default:
-            max_concurrent_slots: auto
+            max_concurrent_slots: 1
             inter_batch_delay_ms: 3000
             
       swap_config:
@@ -296,6 +296,7 @@ bot:
     manual_ips: []
     blacklist_ips: []
     allow_loopback: false
+    per_ip_inflight_limit: 2
     cooldown_ms:
       rate_limited_start: 500
       timeout_start: 250

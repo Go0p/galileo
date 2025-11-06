@@ -76,20 +76,6 @@ impl LanderVariant {
         }
     }
 
-    pub fn draw_tip_plan(&self) -> Option<JitoTipPlan> {
-        match self {
-            LanderVariant::Jito(lander) => lander.draw_tip_plan(),
-            _ => None,
-        }
-    }
-
-    pub fn tip_strategy_label(&self) -> Option<&'static str> {
-        match self {
-            LanderVariant::Jito(lander) => Some(lander.tip_strategy_label()),
-            _ => None,
-        }
-    }
-
     pub async fn submit_variant(
         &self,
         variant: TxVariant,

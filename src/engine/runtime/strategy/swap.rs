@@ -249,7 +249,6 @@ where
                 &execution_plan.opportunity,
                 entry.prepared.slot,
                 &entry.prepared.blockhash.to_string(),
-                entry.prepared.last_valid_block_height,
                 swap_ip,
             );
             if let Some(meta) = &entry.flashloan_metadata {

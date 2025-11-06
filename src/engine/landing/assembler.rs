@@ -134,7 +134,7 @@ impl LandingAssembler for DefaultLandingAssembler {
             variant.resolved_lookup_tables().to_vec(),
         );
 
-        let (tip_plan, tip) = match &profile.tip_strategy {
+        let (tip_plan, tip, extra_guard_lamports) = match &profile.tip_strategy {
             TipStrategy::UseOpportunity => {
                 let lamports = plan.base_tip_lamports;
                 (
@@ -143,10 +143,13 @@ impl LandingAssembler for DefaultLandingAssembler {
                         kind: TipComputationKind::Opportunity,
                         lamports,
                     },
+                    0,
                 )
             }
             TipStrategy::Jito {
-                plan: Some(plan), ..
+                plan: Some(plan),
+                extra_guard_lamports,
+                ..
             } => {
                 let lamports = plan.lamports;
                 (
@@ -155,14 +158,20 @@ impl LandingAssembler for DefaultLandingAssembler {
                         kind: TipComputationKind::JitoPlan,
                         lamports,
                     },
+                    *extra_guard_lamports,
                 )
             }
-            TipStrategy::Jito { plan: None, .. } => (
+            TipStrategy::Jito {
+                plan: None,
+                extra_guard_lamports,
+                ..
+            } => (
                 None,
                 TipComputation {
                     kind: TipComputationKind::JitoPlan,
                     lamports: 0,
                 },
+                *extra_guard_lamports,
             ),
         };
 
@@ -184,7 +193,7 @@ impl LandingAssembler for DefaultLandingAssembler {
         assembly_ctx.prioritization_fee = prioritization_fee;
         assembly_ctx.tip_lamports = tip.lamports;
         assembly_ctx.jito_tip_budget = if matches!(profile.lander_kind, LanderKind::Jito) {
-            tip.lamports
+            tip.lamports.saturating_add(extra_guard_lamports)
         } else {
             0
         };
@@ -369,6 +378,7 @@ mod tests {
             TipStrategy::Jito {
                 plan: Some(JitoTipPlan::new(15, Pubkey::new_unique())),
                 label: "stream",
+                extra_guard_lamports: 0,
             },
             GuardBudgetKind::BasePlusTip,
             ComputeUnitPriceStrategy::Fixed(0),
