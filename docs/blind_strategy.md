@@ -71,7 +71,7 @@
 - **trade size 生成**：每个 base mint 由一组 `lane` 定义（`min` / `max` / `count` / `strategy` / `weight`），系统会根据策略在区间内插值或采样，随后施加 930–999 bp 的轻量扰动。若开启 `auto_scale_to_ip`，会按 lane 的权重自动补充额外档位以压满可用 IP。  
 - **批量盲发**：每个 base mint 在一次调度 tick 内都会生成配置好的全部 trade size，并被打包成 quote 组交给调度器。  
 - **顺序随机化**：若需要进一步打散顺序，可在调度层（`StrategyEngine::handle_action` 或专用执行器）对返回的任务 `shuffle`。  
-- **节奏控制**：通过 `engine.<backend>.quote_config.cadence` 配置 quote 组的并发与节奏：`group_parallelism` 限制同批次的最大同时执行组数，`intra_group_spacing_ms` 控制组内启动间隔，`wave_cooldown_ms` 决定下一轮批次的最小冷却时间。
+- **节奏控制**：通过 `engine.<backend>.quote_config.cadence` 配置调度节奏：`max_concurrent_slots` 控制同时活跃的槽位数量（`auto` 表示按 IP 资源自动推导），`inter_batch_delay_ms` 定义同一槽位连续 trade size 之间的等待时间，`cycle_cooldown_ms` 用于一轮任务完成后的休息时间（通常可设为 0）。
 - **局部覆写**：`cadence.per_base_mint` 允许为特定 base mint 单独设定节奏；未配置时沿用 `default`。
 
 ## 5. 监控与性能

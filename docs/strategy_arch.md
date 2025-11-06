@@ -190,7 +190,7 @@ pub trait Strategy {
 | `lander.enable` / `lander.type` | `lander::*` | 选择默认 Lander 实现与启用列表。 |
 | `lander.sending_strategy` | `engine::planner` + `lander::stack` | 选择 `AllAtOnce` 或 `OneByOne` 调度策略，决定交易变体数量与分发方式。 |
 | `lander.tips` | `engine::builder` + `lander::*` | 配置 tip 账户、优先费；Builder 根据策略覆盖 CU。 |
-| `engine.<backend>.quote_config.cadence.*` | `engine::quote_dispatcher` | 配置 quote 组并发（`group_parallelism`）、组内间隔与波次冷却，可通过 `per_base_mint` 对特定 mint 覆写。 |
+| `engine.<backend>.quote_config.cadence.*` | `engine::quote_dispatcher` | 配置调度槽位与节奏：`max_concurrent_slots` 决定同时运行的槽位数量，`inter_batch_delay_ms` 为同槽位两次 quote 的间隔，`cycle_cooldown_ms` 为整轮完成后的休息时间，可通过 `per_base_mint` 覆写。 |
 | `monitoring.*` | `bot.prometheus` | Prometheus 开关与监听地址；启用后暴露 `/metrics`，指标由 `monitoring::events` 输出。 |
 
 示例：

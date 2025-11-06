@@ -314,6 +314,22 @@ pub struct EngineConfig {
     pub titan: TitanEngineConfig,
     #[serde(default)]
     pub kamino: KaminoEngineConfig,
+    #[serde(default)]
+    pub multi_leg: MultiLegEngineConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MultiLegEngineConfig {
+    #[serde(default)]
+    pub quote_cadence: QuoteCadenceConfig,
+}
+
+impl Default for MultiLegEngineConfig {
+    fn default() -> Self {
+        Self {
+            quote_cadence: QuoteCadenceConfig::default(),
+        }
+    }
 }
 
 fn deserialize_wallet_entries<'de, D>(deserializer: D) -> Result<Vec<WalletKeyEntry>, D::Error>
@@ -397,43 +413,22 @@ impl Default for EngineBackend {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuoteParallelism {
-    Auto,
-    Fixed(u16),
-}
-
-impl Default for QuoteParallelism {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
-
-impl QuoteParallelism {
-    pub fn as_option(self) -> Option<u16> {
-        match self {
-            QuoteParallelism::Auto => None,
-            QuoteParallelism::Fixed(value) => Some(value),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct QuoteCadenceTimings {
     #[serde(default)]
-    pub group_parallelism: QuoteParallelism,
+    pub max_concurrent_slots: Option<u16>,
     #[serde(default)]
-    pub intra_group_spacing_ms: Option<u64>,
+    pub inter_batch_delay_ms: Option<u64>,
     #[serde(default)]
-    pub wave_cooldown_ms: Option<u64>,
+    pub cycle_cooldown_ms: Option<u64>,
 }
 
 impl Default for QuoteCadenceTimings {
     fn default() -> Self {
         Self {
-            group_parallelism: QuoteParallelism::Auto,
-            intra_group_spacing_ms: None,
-            wave_cooldown_ms: None,
+            max_concurrent_slots: None,
+            inter_batch_delay_ms: None,
+            cycle_cooldown_ms: None,
         }
     }
 }
@@ -455,78 +450,6 @@ impl Default for QuoteCadenceConfig {
             per_base_mint: BTreeMap::new(),
             per_label: BTreeMap::new(),
         }
-    }
-}
-
-impl<'de> Deserialize<'de> for QuoteParallelism {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct QuoteParallelismVisitor;
-
-        impl<'de> Visitor<'de> for QuoteParallelismVisitor {
-            type Value = QuoteParallelism;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("正整数或字符串 \"auto\"")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: DeError,
-            {
-                if value.eq_ignore_ascii_case("auto") {
-                    Ok(QuoteParallelism::Auto)
-                } else {
-                    let parsed = value
-                        .parse::<u16>()
-                        .map_err(|_| DeError::invalid_value(Unexpected::Str(value), &self))?;
-                    if parsed == 0 {
-                        Err(DeError::invalid_value(Unexpected::Unsigned(0), &"正整数"))
-                    } else {
-                        Ok(QuoteParallelism::Fixed(parsed))
-                    }
-                }
-            }
-
-            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-            where
-                E: DeError,
-            {
-                if value == 0 {
-                    return Err(DeError::invalid_value(Unexpected::Unsigned(0), &"正整数"));
-                }
-                if value > u16::MAX as u64 {
-                    return Err(DeError::invalid_value(
-                        Unexpected::Unsigned(value),
-                        &"不大于 u16::MAX 的正整数",
-                    ));
-                }
-                Ok(QuoteParallelism::Fixed(value as u16))
-            }
-
-            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
-            where
-                E: DeError,
-            {
-                if value <= 0 {
-                    return Err(DeError::invalid_value(
-                        Unexpected::Signed(value),
-                        &"大于 0 的整数",
-                    ));
-                }
-                if value > u16::MAX as i64 {
-                    return Err(DeError::invalid_value(
-                        Unexpected::Signed(value),
-                        &"不大于 u16::MAX 的正整数",
-                    ));
-                }
-                Ok(QuoteParallelism::Fixed(value as u16))
-            }
-        }
-
-        deserializer.deserialize_any(QuoteParallelismVisitor)
     }
 }
 

@@ -168,6 +168,7 @@ impl Default for cfg::EngineConfig {
             ultra: cfg::UltraEngineConfig::default(),
             titan: cfg::TitanEngineConfig::default(),
             kamino: cfg::KaminoEngineConfig::default(),
+            multi_leg: cfg::MultiLegEngineConfig::default(),
         }
     }
 }

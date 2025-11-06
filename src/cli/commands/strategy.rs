@@ -1178,7 +1178,13 @@ fn resolve_quote_cadence(
         StrategyBackend::Ultra { .. } => {
             QuoteCadence::from_config(&engine.ultra.quote_config.cadence)
         }
-        StrategyBackend::None => QuoteCadence::default(),
+        StrategyBackend::None => {
+            if matches!(engine.backend, config::EngineBackend::MultiLegs) {
+                QuoteCadence::from_config(&engine.multi_leg.quote_cadence)
+            } else {
+                QuoteCadence::default()
+            }
+        }
     }
 }
 

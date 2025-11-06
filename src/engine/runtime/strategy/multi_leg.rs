@@ -1,11 +1,13 @@
 use std::time::Instant;
 
+use crate::engine::context::QuoteBatchPlan;
 use crate::engine::landing::ExecutionPlan;
 use crate::engine::multi_leg::orchestrator::{LegPairDescriptor, LegPairPlan};
 use crate::engine::multi_leg::runtime::{PairPlanBatchResult, PairPlanEvaluation, PairPlanRequest};
 use crate::engine::multi_leg::types::{
     LegPlan, LegSide as MultiLegSide, QuoteIntent as MultiLegQuoteIntent,
 };
+use crate::engine::quote_dispatcher::DispatchTaskHandler;
 use crate::engine::{
     EngineError, EngineResult, MultiLegInstructions, QuoteTask, SwapInstructionsVariant,
     SwapOpportunity,
@@ -16,7 +18,8 @@ use crate::instructions::compute_budget::{
 use crate::monitoring::events;
 use crate::strategy::types::TradePair;
 use crate::strategy::{Strategy, StrategyEvent};
-use solana_sdk::instruction::Instruction;
+use async_trait::async_trait;
+use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 use tracing::{debug, warn};
 
 use super::{BASE_TX_FEE_LAMPORTS, MultiLegEngineContext, StrategyEngine};
@@ -38,77 +41,81 @@ impl MultiLegExecution {
     }
 }
 
-impl<S> StrategyEngine<S>
-where
-    S: Strategy<Event = StrategyEvent>,
-{
-    #[cfg_attr(feature = "hotpath", hotpath::measure)]
-    pub(super) async fn process_multi_leg_task(
-        &mut self,
-        ctx: &mut MultiLegEngineContext,
-        task: QuoteTask,
-    ) -> EngineResult<()> {
-        if task.amount == 0 {
-            return Ok(());
-        }
+pub(super) struct MultiLegDispatchResult {
+    pub batch: QuoteBatchPlan,
+    pub result: PairPlanBatchResult,
+}
 
-        let combinations = ctx.combinations();
+pub(super) struct MultiLegBatchHandler {
+    context: MultiLegEngineContext,
+    payer: Pubkey,
+    compute_unit_price: Option<u64>,
+}
+
+impl MultiLegBatchHandler {
+    pub(super) fn new(
+        context: MultiLegEngineContext,
+        payer: Pubkey,
+        compute_unit_price: Option<u64>,
+    ) -> Self {
+        Self {
+            context,
+            payer,
+            compute_unit_price,
+        }
+    }
+}
+
+#[async_trait]
+impl DispatchTaskHandler<MultiLegDispatchResult> for MultiLegBatchHandler {
+    async fn run(&self, batch: QuoteBatchPlan) -> EngineResult<MultiLegDispatchResult> {
+        let combinations = self.context.combinations();
         if combinations.is_empty() {
-            debug!(
-                target: "engine::multi_leg",
-                input_mint = %task.pair.input_mint,
-                output_mint = %task.pair.output_mint,
-                "无可用的腿组合，跳过本次任务"
-            );
-            return Ok(());
+            return Ok(MultiLegDispatchResult {
+                batch,
+                result: PairPlanBatchResult::default(),
+            });
         }
 
-        let compute_unit_price = if self.landers.has_jito() && !self.landers.has_non_jito() {
-            None
-        } else {
-            self.settings.sample_compute_unit_price()
-        };
         let buy_intent_template = MultiLegQuoteIntent::new(
-            task.pair.input_pubkey,
-            task.pair.output_pubkey,
-            task.amount,
+            batch.pair.input_pubkey,
+            batch.pair.output_pubkey,
+            batch.amount,
             0,
         );
         let sell_intent_template = MultiLegQuoteIntent::new(
-            task.pair.output_pubkey,
-            task.pair.input_pubkey,
-            task.amount,
+            batch.pair.output_pubkey,
+            batch.pair.input_pubkey,
+            batch.amount,
             0,
         );
         let tag_value = format!(
             "{}->{}/{}",
-            task.pair.input_mint, task.pair.output_mint, task.amount
+            batch.pair.input_mint, batch.pair.output_mint, batch.amount
         );
 
-        let runtime = ctx.runtime();
+        let orchestrator = self.context.runtime().orchestrator();
         let mut requests = Vec::with_capacity(combinations.len());
         for combo in combinations {
-            let buy_descriptor = match runtime
-                .orchestrator()
+            let Some(buy_descriptor) = orchestrator
                 .descriptor(MultiLegSide::Buy, combo.buy_index)
                 .cloned()
-            {
-                Some(descriptor) => descriptor,
-                None => continue,
+            else {
+                continue;
             };
-            let sell_descriptor = match runtime
-                .orchestrator()
+            let Some(sell_descriptor) = orchestrator
                 .descriptor(MultiLegSide::Sell, combo.sell_index)
                 .cloned()
-            {
-                Some(descriptor) => descriptor,
-                None => continue,
+            else {
+                continue;
             };
 
             let buy_context =
-                ctx.build_context(&buy_descriptor, self.identity.pubkey, compute_unit_price);
+                self.context
+                    .build_context(&buy_descriptor, self.payer, self.compute_unit_price);
             let sell_context =
-                ctx.build_context(&sell_descriptor, self.identity.pubkey, compute_unit_price);
+                self.context
+                    .build_context(&sell_descriptor, self.payer, self.compute_unit_price);
 
             requests.push(PairPlanRequest {
                 buy_index: combo.buy_index,
@@ -122,10 +129,33 @@ where
         }
 
         if requests.is_empty() {
-            return Ok(());
+            return Ok(MultiLegDispatchResult {
+                batch,
+                result: PairPlanBatchResult::default(),
+            });
         }
 
-        let batch = ctx.runtime().plan_pair_batch_with_profit(requests).await;
+        let result = self
+            .context
+            .runtime()
+            .plan_pair_batch_with_profit(requests)
+            .await;
+
+        Ok(MultiLegDispatchResult { batch, result })
+    }
+}
+
+impl<S> StrategyEngine<S>
+where
+    S: Strategy<Event = StrategyEvent>,
+{
+    pub(super) async fn handle_multi_leg_batch(
+        &mut self,
+        ctx: &MultiLegEngineContext,
+        task: QuoteTask,
+        batch: PairPlanBatchResult,
+    ) -> EngineResult<()> {
+        let runtime = ctx.runtime();
         let best_profit = batch.best().map(|evaluation| evaluation.profit_lamports);
 
         let PairPlanBatchResult {

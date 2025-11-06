@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use async_trait::async_trait;
 
-use super::types::{LegBuildContext, LegDescriptor, QuoteIntent};
+use super::types::{LegBuildContext, LegDescriptor, LegQuote, QuoteIntent};
 use crate::network::IpLeaseHandle;
 
 /// 套利腿提供方需要实现的通用接口。
@@ -17,6 +17,9 @@ pub trait LegProvider: Send + Sync + Debug {
 
     /// 返回当前腿的描述信息。
     fn descriptor(&self) -> LegDescriptor;
+
+    /// 将报价结果提炼为通用的 `LegQuote` 摘要，供 orchestrator 做收益评估。
+    fn summarize_quote(&self, quote: &Self::QuoteResponse) -> LegQuote;
 
     /// 发起报价请求。
     async fn quote(

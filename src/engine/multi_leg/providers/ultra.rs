@@ -104,23 +104,6 @@ impl UltraLegProvider {
         quote: &OrderResponse,
         context: &LegBuildContext,
     ) -> Result<LegPlan, UltraLegError> {
-        let in_amount = quote
-            .in_amount
-            .or_else(|| extract_u64(&quote.raw, "inAmount"))
-            .or_else(|| sum_route_plan_amount(&quote.route_plan, |step| step.swap_info.in_amount))
-            .ok_or(UltraLegError::MissingField { field: "inAmount" })?;
-        let out_amount = quote
-            .out_amount
-            .or_else(|| extract_u64(&quote.raw, "outAmount"))
-            .or_else(|| sum_route_plan_amount(&quote.route_plan, |step| step.swap_info.out_amount))
-            .ok_or(UltraLegError::MissingField { field: "outAmount" })?;
-        let other_amount_threshold = quote
-            .other_amount_threshold
-            .or_else(|| extract_u64(&quote.raw, "otherAmountThreshold"))
-            .or_else(|| sum_route_plan_amount(&quote.route_plan, |step| step.swap_info.out_amount))
-            .ok_or(UltraLegError::MissingField {
-                field: "otherAmountThreshold",
-            })?;
         let payload = &**quote;
         let params = UltraPreparationParams::new(payload)
             .with_compute_unit_price_hint(context.compute_unit_price_micro_lamports)
@@ -135,19 +118,18 @@ impl UltraLegProvider {
         let transaction = prepared.transaction().clone();
         let blockhash = Some(*transaction.message.recent_blockhash());
         let lookup_state = prepared.lookup_state();
-        let mut quote_meta = LegQuote::new(
-            in_amount,
-            out_amount,
-            quote.slippage_bps.unwrap_or_default(),
-        );
-        quote_meta.min_out_amount = Some(other_amount_threshold);
-        quote_meta.request_id = quote.request_id.clone();
-        quote_meta.quote_id = quote.quote_id.clone();
-        quote_meta.provider = quote.router.clone();
-        quote_meta.expires_at_ms = quote
-            .expire_at
-            .as_ref()
-            .and_then(|value| value.parse::<u64>().ok());
+        let quote_meta = self.summarize_quote(quote);
+        if quote_meta.amount_in == 0 {
+            return Err(UltraLegError::MissingField { field: "inAmount" });
+        }
+        if quote_meta.amount_out == 0 {
+            return Err(UltraLegError::MissingField { field: "outAmount" });
+        }
+        if quote_meta.min_out_amount.is_none() {
+            return Err(UltraLegError::MissingField {
+                field: "otherAmountThreshold",
+            });
+        }
 
         Ok(LegPlan {
             descriptor: self.descriptor.clone(),
@@ -204,6 +186,48 @@ impl LegProvider for UltraLegProvider {
 
     fn descriptor(&self) -> LegDescriptor {
         self.descriptor.clone()
+    }
+
+    fn summarize_quote(&self, quote: &Self::QuoteResponse) -> LegQuote {
+        let in_amount = quote
+            .in_amount
+            .or_else(|| extract_u64(&quote.raw, "inAmount"))
+            .or_else(|| sum_route_plan_amount(&quote.route_plan, |step| step.swap_info.in_amount))
+            .unwrap_or_default();
+        let out_amount = quote
+            .out_amount
+            .or_else(|| extract_u64(&quote.raw, "outAmount"))
+            .or_else(|| sum_route_plan_amount(&quote.route_plan, |step| step.swap_info.out_amount))
+            .unwrap_or_default();
+        let other_amount_threshold = quote
+            .other_amount_threshold
+            .or_else(|| extract_u64(&quote.raw, "otherAmountThreshold"))
+            .or_else(|| sum_route_plan_amount(&quote.route_plan, |step| step.swap_info.out_amount))
+            .unwrap_or(out_amount);
+
+        if in_amount == 0 || out_amount == 0 {
+            debug!(
+                target: "multi_leg::ultra",
+                in_amount,
+                out_amount,
+                "Ultra 报价缺失 in/out 数量，使用默认值"
+            );
+        }
+
+        let mut quote_meta = LegQuote::new(
+            in_amount,
+            out_amount,
+            quote.slippage_bps.unwrap_or_default(),
+        );
+        quote_meta.min_out_amount = Some(other_amount_threshold);
+        quote_meta.request_id = quote.request_id.clone();
+        quote_meta.quote_id = quote.quote_id.clone();
+        quote_meta.provider = quote.router.clone();
+        quote_meta.expires_at_ms = quote
+            .expire_at
+            .as_ref()
+            .and_then(|value| value.parse::<u64>().ok());
+        quote_meta
     }
 
     async fn quote(

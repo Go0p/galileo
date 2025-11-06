@@ -11,7 +11,7 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::orchestrator::{LegPairDescriptor, LegPairPlan, MultiLegOrchestrator};
 use super::transaction::instructions::{InstructionExtractionError, extract_instructions};
@@ -70,50 +70,74 @@ impl MultiLegRuntime {
         &self.orchestrator
     }
 
-    async fn plan_pair_raw(
-        &self,
-        buy_index: usize,
-        sell_index: usize,
-        buy_intent: &QuoteIntent,
-        sell_intent: &QuoteIntent,
-        buy_context: &LegBuildContext,
-        sell_context: &LegBuildContext,
-    ) -> Result<LegPairPlan> {
+    async fn plan_pair_raw(&self, request: &PairPlanRequest) -> Result<Option<LegPairPlan>> {
         let buy_descriptor = self
             .orchestrator
-            .descriptor(LegSide::Buy, buy_index)
+            .descriptor(LegSide::Buy, request.buy_index)
             .cloned()
-            .ok_or_else(|| anyhow!("买腿索引 {buy_index} 超出范围"))?;
+            .ok_or_else(|| anyhow!("买腿索引 {} 超出范围", request.buy_index))?;
         let sell_descriptor = self
             .orchestrator
-            .descriptor(LegSide::Sell, sell_index)
+            .descriptor(LegSide::Sell, request.sell_index)
             .cloned()
-            .ok_or_else(|| anyhow!("卖腿索引 {sell_index} 超出范围"))?;
-
-        let buy_handle = self.acquire_leg_handle(&buy_descriptor).await?;
-        let sell_handle = self.acquire_leg_handle(&sell_descriptor).await?;
+            .ok_or_else(|| anyhow!("卖腿索引 {} 超出范围", request.sell_index))?;
 
         let _buy_guard = self.concurrency.acquire(&buy_descriptor).await;
         let _sell_guard = self.concurrency.acquire(&sell_descriptor).await;
 
-        let result = self
+        let buy_quote_handle = self.acquire_leg_handle(&buy_descriptor).await?;
+        let sell_quote_handle = self.acquire_leg_handle(&sell_descriptor).await?;
+
+        let pair_quote = self
             .orchestrator
-            .plan_pair(
-                buy_index,
-                sell_index,
-                buy_intent,
-                sell_intent,
-                buy_context,
-                sell_context,
-                Some(&buy_handle),
-                Some(&sell_handle),
+            .quote_pair(
+                request.buy_index,
+                request.sell_index,
+                &request.buy_intent,
+                &request.sell_intent,
+                Some(&buy_quote_handle),
+                Some(&sell_quote_handle),
             )
             .await;
 
-        drop(buy_handle);
-        drop(sell_handle);
+        drop(buy_quote_handle);
+        drop(sell_quote_handle);
 
-        result
+        let pair_quote = pair_quote?;
+
+        let estimated_profit = pair_quote.estimated_gross_profit();
+        if estimated_profit <= 0 {
+            debug!(
+                target: "multi_leg::runtime",
+                buy_index = request.buy_index,
+                sell_index = request.sell_index,
+                trade_size = request.trade_size(),
+                buy_kind = %pair_quote.buy.descriptor().kind,
+                sell_kind = %pair_quote.sell.descriptor().kind,
+                profit = estimated_profit,
+                "报价阶段收益不足，跳过 build_plan"
+            );
+            return Ok(None);
+        }
+
+        let buy_plan_handle = self.acquire_leg_handle(&buy_descriptor).await?;
+        let sell_plan_handle = self.acquire_leg_handle(&sell_descriptor).await?;
+
+        let plan = self
+            .orchestrator
+            .build_pair_plan(
+                &pair_quote,
+                &request.buy_context,
+                &request.sell_context,
+                Some(&buy_plan_handle),
+                Some(&sell_plan_handle),
+            )
+            .await;
+
+        drop(buy_plan_handle);
+        drop(sell_plan_handle);
+
+        plan.map(Some)
     }
 
     async fn acquire_leg_handle(&self, descriptor: &LegDescriptor) -> Result<IpLeaseHandle> {
@@ -159,23 +183,14 @@ impl MultiLegRuntime {
         for request in requests {
             let runtime = self;
             stream.push(async move {
-                let result = runtime
-                    .plan_pair_raw(
-                        request.buy_index,
-                        request.sell_index,
-                        &request.buy_intent,
-                        &request.sell_intent,
-                        &request.buy_context,
-                        &request.sell_context,
-                    )
-                    .await;
+                let result = runtime.plan_pair_raw(&request).await;
                 (request, result)
             });
         }
 
         while let Some((request, outcome)) = stream.next().await {
             match outcome {
-                Ok(mut plan) => match self.populate_pair_plan(&mut plan).await {
+                Ok(Some(mut plan)) => match self.populate_pair_plan(&mut plan).await {
                     Ok(()) => successes.push(PairPlanSuccess { request, plan }),
                     Err(error) => {
                         warn!(
@@ -194,6 +209,9 @@ impl MultiLegRuntime {
                         });
                     }
                 },
+                Ok(None) => {
+                    // Already logged at quote stage; nothing else to do.
+                }
                 Err(error) => {
                     warn!(
                         target = "multi_leg::runtime",

@@ -173,7 +173,7 @@ where
     trade_profiles: BTreeMap<Pubkey, MintSchedule>,
     variant_planner: TxVariantPlanner,
     next_batch_id: u64,
-    multi_leg: Option<MultiLegEngineContext>,
+    multi_leg: Option<Arc<MultiLegEngineContext>>,
     lighthouse: LighthouseRuntime,
 }
 
@@ -229,7 +229,7 @@ where
             trade_profiles,
             variant_planner: TxVariantPlanner::new(),
             next_batch_id: 1,
-            multi_leg,
+            multi_leg: multi_leg.map(Arc::new),
             lighthouse: lighthouse_runtime,
         }
     }

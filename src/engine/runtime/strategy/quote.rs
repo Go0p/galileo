@@ -4,17 +4,16 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, trace};
 
+use crate::engine::EngineResult;
 use crate::engine::context::QuoteBatchPlan;
-use crate::engine::quote::{aggregator_kinds_match, second_leg_amount};
 use crate::engine::quote_dispatcher;
-use crate::engine::types::{DoubleQuote, SwapOpportunity};
-use crate::engine::{EngineError, EngineResult};
+use crate::engine::types::{DoubleQuote, QuoteTask, SwapOpportunity};
 use crate::monitoring::events;
 use crate::monitoring::format::short_mint_str;
-use crate::network::{IpLeaseMode, IpTaskKind};
 use crate::strategy::{Strategy, StrategyEvent};
 
 use super::StrategyEngine;
+use super::multi_leg::{MultiLegBatchHandler, MultiLegDispatchResult};
 
 #[derive(Default)]
 struct BatchStats {
@@ -200,14 +199,14 @@ where
 
         let planned_batches = self.quote_dispatcher.plan(batches);
         let total_groups = planned_batches.len() as u64;
-        let mut max_wave_cooldown = Duration::ZERO;
+        let mut max_cycle_cooldown = Duration::ZERO;
         for batch in &planned_batches {
             let timings = self
                 .settings
                 .quote_cadence
                 .timings_for_base_mint(&batch.pair.input_mint);
-            if timings.wave_cooldown > max_wave_cooldown {
-                max_wave_cooldown = timings.wave_cooldown;
+            if timings.cycle_cooldown > max_cycle_cooldown {
+                max_cycle_cooldown = timings.cycle_cooldown;
             }
         }
 
@@ -218,11 +217,27 @@ where
             None
         };
 
-        if self.multi_leg.is_some() {
-            for batch in planned_batches {
-                self.process_quote_batch_legacy(batch).await?;
+        if let Some(context) = self.multi_leg.clone() {
+            let compute_unit_price = if self.landers.has_jito() && !self.landers.has_non_jito() {
+                None
+            } else {
+                self.settings.sample_compute_unit_price()
+            };
+            let handler = Arc::new(MultiLegBatchHandler::new(
+                (*context.as_ref()).clone(),
+                self.identity.pubkey,
+                compute_unit_price,
+            ));
+            let outcomes: Vec<MultiLegDispatchResult> = self
+                .quote_dispatcher
+                .dispatch_custom(planned_batches, handler)
+                .await?;
+            for outcome in outcomes {
+                let task = QuoteTask::new(outcome.batch.pair.clone(), outcome.batch.amount);
+                self.handle_multi_leg_batch(context.as_ref(), task, outcome.result)
+                    .await?;
             }
-            return Ok(max_wave_cooldown);
+            return Ok(max_cycle_cooldown);
         }
 
         let strategy_label = Arc::new(self.strategy.name().to_string());
@@ -279,227 +294,7 @@ where
             info!(target: "engine::summary", "{line}");
         }
 
-        Ok(max_wave_cooldown)
-    }
-
-    pub(super) async fn process_quote_batch_legacy(
-        &mut self,
-        batch: QuoteBatchPlan,
-    ) -> EngineResult<()> {
-        let QuoteBatchPlan {
-            batch_id,
-            pair,
-            amount,
-        } = batch;
-
-        trace!(
-            target: "engine::quote",
-            batch_id,
-            amount,
-            "处理报价批次（legacy）"
-        );
-
-        let task = crate::engine::types::QuoteTask::new(pair, amount);
-        self.process_task(task, Some(batch_id)).await
-    }
-
-    pub(super) async fn process_task(
-        &mut self,
-        task: crate::engine::types::QuoteTask,
-        batch_id: Option<u64>,
-    ) -> EngineResult<()> {
-        if let Some(mut context) = self.multi_leg.take() {
-            let result = self.process_multi_leg_task(&mut context, task).await;
-            self.multi_leg = Some(context);
-            return result;
-        }
-
-        let (forward_handle_raw, forward_ip_addr) = self
-            .ip_allocator
-            .acquire_handle_excluding(IpTaskKind::QuoteBuy, IpLeaseMode::Ephemeral, None)
-            .await
-            .map_err(EngineError::NetworkResource)?;
-        let forward_ip = Some(forward_ip_addr);
-        let mut forward_handle = Some(forward_handle_raw);
-        let strategy_name = self.strategy.name();
-        events::quote_start(strategy_name, &task, batch_id, forward_ip);
-        let quote_started = Instant::now();
-        let forward_start = Instant::now();
-        let forward_result = self
-            .quote_executor
-            .quote_once(
-                &task.pair,
-                task.amount,
-                &self.settings.quote,
-                forward_handle
-                    .as_ref()
-                    .expect("forward handle available for first quote"),
-            )
-            .await;
-        let forward_duration = forward_start.elapsed();
-
-        let forward_quote = match forward_result {
-            Err(err) => {
-                events::quote_end(
-                    strategy_name,
-                    &task,
-                    false,
-                    quote_started.elapsed(),
-                    batch_id,
-                    forward_ip,
-                );
-                if let Some(handle) = forward_handle.take() {
-                    if let Some(outcome) = quote_dispatcher::classify_ip_outcome(&err) {
-                        handle.mark_outcome(outcome);
-                    }
-                }
-                return Err(err);
-            }
-            Ok(None) => {
-                events::quote_end(
-                    strategy_name,
-                    &task,
-                    false,
-                    quote_started.elapsed(),
-                    batch_id,
-                    forward_ip,
-                );
-                let _ = forward_handle.take();
-                return Ok(());
-            }
-            Ok(Some(value)) => value,
-        };
-
-        let Some(second_amount) = second_leg_amount(&task, &forward_quote) else {
-            events::quote_end(
-                strategy_name,
-                &task,
-                false,
-                quote_started.elapsed(),
-                batch_id,
-                forward_ip,
-            );
-            let _ = forward_handle.take();
-            return Ok(());
-        };
-
-        let _ = forward_handle.take();
-
-        let (reverse_handle_raw, reverse_ip_addr) = match self
-            .ip_allocator
-            .acquire_handle_excluding(IpTaskKind::QuoteSell, IpLeaseMode::Ephemeral, forward_ip)
-            .await
-        {
-            Ok(value) => value,
-            Err(err) => {
-                events::quote_end(
-                    strategy_name,
-                    &task,
-                    false,
-                    quote_started.elapsed(),
-                    batch_id,
-                    forward_ip,
-                );
-                return Err(EngineError::NetworkResource(err));
-            }
-        };
-        let mut reverse_handle = Some(reverse_handle_raw);
-        let reverse_ip = Some(reverse_ip_addr);
-
-        let reverse_pair = task.pair.reversed();
-        let reverse_start = Instant::now();
-        let reverse_result = self
-            .quote_executor
-            .quote_once(
-                &reverse_pair,
-                second_amount,
-                &self.settings.quote,
-                reverse_handle
-                    .as_ref()
-                    .expect("reverse handle available for second quote"),
-            )
-            .await;
-        let reverse_duration = Some(reverse_start.elapsed());
-
-        let reverse_quote = match reverse_result {
-            Err(err) => {
-                events::quote_end(
-                    strategy_name,
-                    &task,
-                    false,
-                    quote_started.elapsed(),
-                    batch_id,
-                    forward_ip,
-                );
-                if let Some(handle) = reverse_handle.take() {
-                    if let Some(outcome) = quote_dispatcher::classify_ip_outcome(&err) {
-                        handle.mark_outcome(outcome);
-                    }
-                }
-                return Err(err);
-            }
-            Ok(None) => {
-                events::quote_end(
-                    strategy_name,
-                    &task,
-                    false,
-                    quote_started.elapsed(),
-                    batch_id,
-                    forward_ip,
-                );
-                let _ = reverse_handle.take();
-                return Ok(());
-            }
-            Ok(Some(value)) => value,
-        };
-
-        let _ = reverse_handle.take();
-
-        if !aggregator_kinds_match(&task, &forward_quote, &reverse_quote) {
-            events::quote_end(
-                strategy_name,
-                &task,
-                false,
-                quote_started.elapsed(),
-                batch_id,
-                forward_ip,
-            );
-            return Ok(());
-        }
-
-        let double_quote = DoubleQuote {
-            forward: forward_quote,
-            reverse: reverse_quote,
-            forward_latency: Some(forward_duration),
-            reverse_latency: reverse_duration,
-            forward_ip,
-            reverse_ip,
-        };
-        events::quote_end(
-            strategy_name,
-            &task,
-            true,
-            quote_started.elapsed(),
-            batch_id,
-            forward_ip,
-        );
-
-        let _ = self
-            .process_quote_outcome(
-                QuoteBatchPlan {
-                    batch_id: batch_id.unwrap_or_else(|| self.next_batch_id.wrapping_sub(1)),
-                    pair: task.pair.clone(),
-                    amount: task.amount,
-                },
-                Some(double_quote),
-                forward_ip,
-                reverse_ip,
-                Some(forward_duration),
-                reverse_duration,
-            )
-            .await?;
-
-        Ok(())
+        Ok(max_cycle_cooldown)
     }
 
     pub(super) async fn process_quote_outcome(

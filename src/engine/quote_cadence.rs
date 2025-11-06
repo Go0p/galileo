@@ -1,21 +1,21 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use crate::config::{QuoteCadenceConfig, QuoteCadenceTimings, QuoteParallelism};
+use crate::config::{QuoteCadenceConfig, QuoteCadenceTimings};
 
 #[derive(Debug, Clone, Copy)]
 pub struct CadenceTimings {
-    pub group_parallelism: QuoteParallelism,
-    pub intra_group_spacing: Duration,
-    pub wave_cooldown: Duration,
+    pub max_concurrent_slots: Option<u16>,
+    pub inter_batch_delay: Duration,
+    pub cycle_cooldown: Duration,
 }
 
 impl CadenceTimings {
     fn from_config(config: &QuoteCadenceTimings) -> Self {
         Self {
-            group_parallelism: config.group_parallelism,
-            intra_group_spacing: duration_from_ms(config.intra_group_spacing_ms),
-            wave_cooldown: duration_from_ms(config.wave_cooldown_ms),
+            max_concurrent_slots: config.max_concurrent_slots,
+            inter_batch_delay: duration_from_ms(config.inter_batch_delay_ms),
+            cycle_cooldown: duration_from_ms(config.cycle_cooldown_ms),
         }
     }
 }

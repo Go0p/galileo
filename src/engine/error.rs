@@ -40,6 +40,8 @@ pub enum EngineError {
     Transaction(#[from] Error),
     #[error("落地失败: {0}")]
     Landing(String),
+    #[error("内部错误: {0}")]
+    Internal(String),
 }
 
 pub type EngineResult<T> = Result<T, EngineError>;

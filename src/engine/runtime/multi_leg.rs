@@ -15,13 +15,14 @@ pub(crate) struct LegCombination {
     pub(crate) sell_index: usize,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct LegContextDefaults {
     wrap_and_unwrap_sol: Option<bool>,
     dynamic_compute_unit_limit: Option<bool>,
     compute_unit_limit_multiplier: Option<f64>,
 }
 
+#[derive(Clone)]
 pub struct MultiLegEngineContext {
     runtime: Arc<MultiLegRuntime>,
     combinations: Vec<LegCombination>,

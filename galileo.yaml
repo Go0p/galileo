@@ -47,6 +47,11 @@ engine:
     quote_ms: 5000
     swap_ms: 10000
     landing_ms: 5000
+  multi_leg:
+    quote_cadence:
+      default:
+        max_concurrent_slots: 1
+        inter_batch_delay_ms: 20000
 
   jupiter:
     jupiter_buy:
@@ -54,15 +59,19 @@ engine:
       leg: "buy"
       api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
       api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
-      api_proxy: "http://192.168.124.4:9999"
+      api_proxy: "http://192.168.3.3:9999"
       quote_config:
         only_direct_routes: true
         restrict_intermediate_tokens: true
+        # cadence 控制 trade size 的调度节奏：
+        #   max_concurrent_slots: 槽位数量，auto 表示根据可用 IP 自动推导（多 IP 时可调整为固定值）。
+        #   inter_batch_delay_ms: 单个槽位两次 quote 之间的等待时间；设置为 0 表示立即轮询下一个 trade size。
+        #   cycle_cooldown_ms: 一轮所有 trade size 完成后的休息时间（大多数场景可留空或设为 0）。
         cadence:
           default:
-            group_parallelism: auto
-            intra_group_spacing_ms: 3000
-            wave_cooldown_ms: 0
+            max_concurrent_slots: auto
+            inter_batch_delay_ms: 3000
+            
       swap_config:
         use_shared_accounts: true
         skip_user_accounts_rpc_calls: false
@@ -73,15 +82,15 @@ engine:
       leg: "sell"
       api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
       api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
-      api_proxy: "http://192.168.124.4:9999"
+      api_proxy: "http://192.168.3.3:9999"
       quote_config:
         only_direct_routes: true
         restrict_intermediate_tokens: true
         cadence:
           default:
-            group_parallelism: auto
-            intra_group_spacing_ms: 3000
-            wave_cooldown_ms: 0
+            max_concurrent_slots: auto
+            inter_batch_delay_ms: 3000
+            
       swap_config:
         use_shared_accounts: true
         skip_user_accounts_rpc_calls: false
@@ -102,21 +111,17 @@ engine:
   #     cadence:
   #       # default: 默认的 quote 节奏配置，适用于所有 base mint
   #       default:
-  #         # group_parallelism: 同一波次内允许同时运行的 quote 组数量；
-  #         #   - auto: 以 IP 池容量和 per_ip_inflight_limit 为上限自动推导
-  #         #   - 正整数: 显式限制最大并发度
-  #         group_parallelism: 10
-  #         # intra_group_spacing_ms: 当前波次内，相邻 quote 组启动之间的最小间隔（毫秒）；
-  #         #   设置为 0 表示同一波次的组可以无缝并发。
-  #         intra_group_spacing_ms: 0
-  #         # wave_cooldown_ms: 一波所有 quote 组执行完毕后等待的时间（毫秒），
-  #         #   冷却期内不会开始下一波，适合给对端接口一个稳定的恢复窗口。
-  #         wave_cooldown_ms: 0
+  #         # max_concurrent_slots: 槽位数量；auto 表示按 IP 自动推导，正整数可显式指定并发槽位。
+  #         max_concurrent_slots: auto
+  #         # inter_batch_delay_ms: 同一槽位连续 quote 之间的等待时间（毫秒），0 表示立即轮询。
+  #         inter_batch_delay_ms: 0
+  #         # cycle_cooldown_ms: 一轮所有 trade size 完成后的休息时间（毫秒），大多数情况下可设为 0。
+  #         cycle_cooldown_ms: 0
   #       # per_base_mint: 针对特定 base mint 覆盖默认节奏（可选）；未开启时沿用 default
   #       #   So11111111111111111111111111111111111111112:
-  #       #     group_parallelism: 1
-  #       #     intra_group_spacing_ms: 200
-  #       #     wave_cooldown_ms: 1000
+  #       #     # max_concurrent_slots: 1
+  #       #     inter_batch_delay_ms: 200
+  #       #     cycle_cooldown_ms: 1000
   #   swap_config:
   #     cu_limit_multiplier: 0.92
   # dflow:
@@ -138,17 +143,17 @@ engine:
   #     cadence:
   #       # default: 默认的 quote 节奏配置
   #       default:
-  #         # group_parallelism: 同时运行的 quote 组数量上限
-  #         group_parallelism: auto
-  #         # intra_group_spacing_ms: 同一波次内组与组之间的最小启动间隔（毫秒）
-  #         intra_group_spacing_ms: 3000
-  #         # wave_cooldown_ms: 一波结束后等待下一波的时间（毫秒）
-  #         wave_cooldown_ms: 0
+  #         # # group_parallelism: 同时运行的 quote 组数量上限
+  #         max_concurrent_slots: auto
+  #         # inter_batch_delay_ms: 同一波次内组与组之间的最小启动间隔（毫秒）
+  #         inter_batch_delay_ms: 3000
+  #         # cycle_cooldown_ms: 一波结束后等待下一波的时间（毫秒）
+  #         
   #       # per_base_mint: 可选，覆盖指定 base mint 的默认节奏
   #       #   So11111111111111111111111111111111111111112:
-  #       #     group_parallelism: 1
-  #       #     intra_group_spacing_ms: 200
-  #       #     wave_cooldown_ms: 1000
+  #       #     # group_parallelism: 1
+  #       #     inter_batch_delay_ms: 200
+  #       #     cycle_cooldown_ms: 1000
   #   swap_config:
   #     dynamic_compute_unit_limit: true
   #     wrap_and_unwrap_sol: false
@@ -182,41 +187,41 @@ engine:
   #   # 每次更新最多返回的报价数量。
   #   num_quotes: 2
   # kamino:
-    # 腿方向：可选 buy / sell，用于套利腿角色匹配
-    leg: "sell"
-    api_quote_base: "https://api.kamino.finance"
-    api_swap_base: "https://api.kamino.finance"
-    api_proxy: "http://192.168.124.4:9999"
-    quote_config:
-      cu_limit_multiplier: 2.1
-      cadence:
-        default:
-          group_parallelism: auto
-          intra_group_spacing_ms: 0
-          wave_cooldown_ms: 0
-      max_slippage_bps: 0
-      executor: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
-      referrer_pda: ""
-      # 是否改为通过 RPC 批量拉取 Address Lookup Table：
-      # true 表示 Kamino 仅返回 lookup table key，落地前由我们主动走 RPC 拉取；
-      # false 表示沿用现状，使用 Kamino 返回的完整地址列表。
-      resolve_lookup_tables_via_rpc: true
-      include_setup_ixs: true
-      wrap_and_unwrap_sol: false
-      routes:
-        # - "dflow"
-        # - "per"
-        # - "fluxbeam"
-        # - "raydium"
-        - "hashflow"
-        # - "jupiterEuropa"
-        # - "jupiterSelfHosted"
-        # - "jupiter"
-        # - "okx"
-        # - "clover"
-        # - "zeroEx"
-        # - "spur"
-        # - "lifi"
+  #   # 腿方向：可选 buy / sell，用于套利腿角色匹配
+  #   leg: "sell"
+  #   api_quote_base: "https://api.kamino.finance"
+  #   api_swap_base: "https://api.kamino.finance"
+  #   api_proxy: "http://192.168.124.4:9999"
+  #   quote_config:
+  #     cu_limit_multiplier: 2.1
+  #     cadence:
+  #       default:
+  #         max_concurrent_slots: auto
+  #         inter_batch_delay_ms: 0
+  #         
+  #     max_slippage_bps: 0
+  #     executor: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
+  #     referrer_pda: ""
+  #     # 是否改为通过 RPC 批量拉取 Address Lookup Table：
+  #     # true 表示 Kamino 仅返回 lookup table key，落地前由我们主动走 RPC 拉取；
+  #     # false 表示沿用现状，使用 Kamino 返回的完整地址列表。
+  #     resolve_lookup_tables_via_rpc: true
+  #     include_setup_ixs: true
+  #     wrap_and_unwrap_sol: false
+  #     routes:
+  #       # - "dflow"
+  #       # - "per"
+  #       # - "fluxbeam"
+  #       # - "raydium"
+  #       - "hashflow"
+  #       # - "jupiterEuropa"
+  #       # - "jupiterSelfHosted"
+  #       # - "jupiter"
+  #       # - "okx"
+  #       # - "clover"
+  #       # - "zeroEx"
+  #       # - "spur"
+  #       # - "lifi"
       
 # 机器人会尝试找到盈利路线，具体方法是：获取给定交易规模的 base_mint 到 intermediate_mints 的报价，
 # 然后再获取 intermediate_mints 到 base_mint 的另一个报价，
@@ -291,7 +296,6 @@ bot:
     manual_ips: []
     blacklist_ips: []
     allow_loopback: false
-    per_ip_inflight_limit: null
     cooldown_ms:
       rate_limited_start: 500
       timeout_start: 250

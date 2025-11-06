@@ -77,9 +77,10 @@ impl IpAllocator {
     ) -> Self {
         let source = inventory.source();
         let slots = inventory.into_slots();
+        let per_ip_limit = per_ip_inflight_limit.unwrap_or(1).max(1);
         let slot_states = slots
             .into_iter()
-            .map(|slot| Arc::new(SlotState::new(slot, per_ip_inflight_limit)))
+            .map(|slot| Arc::new(SlotState::new(slot, Some(per_ip_limit))))
             .collect::<Vec<_>>();
 
         for slot in &slot_states {
@@ -91,7 +92,7 @@ impl IpAllocator {
                 slots: slot_states,
                 rotation: AtomicUsize::new(0),
                 cooldown,
-                per_ip_inflight_limit,
+                per_ip_inflight_limit: Some(per_ip_limit),
                 source,
                 lease_counter: AtomicU64::new(1),
             }),

@@ -105,12 +105,7 @@ impl DflowLegProvider {
         quote: &DflowQuoteResponse,
         swap: DflowSwapInstructionsResponse,
     ) -> LegPlan {
-        let payload = quote.payload();
-        let mut quote_meta =
-            LegQuote::new(payload.in_amount, payload.out_amount, payload.slippage_bps);
-        quote_meta.min_out_amount = Some(payload.other_amount_threshold);
-        quote_meta.request_id = payload.request_id.clone();
-        quote_meta.context_slot = Some(payload.context_slot);
+        let quote_meta = self.summarize_quote(quote);
         let mut instructions = Vec::new();
         instructions.extend(swap.setup_instructions.clone());
         instructions.push(swap.swap_instruction.clone());
@@ -144,6 +139,16 @@ impl LegProvider for DflowLegProvider {
 
     fn descriptor(&self) -> LegDescriptor {
         self.descriptor.clone()
+    }
+
+    fn summarize_quote(&self, quote: &Self::QuoteResponse) -> LegQuote {
+        let payload = quote.payload();
+        let mut quote_meta =
+            LegQuote::new(payload.in_amount, payload.out_amount, payload.slippage_bps);
+        quote_meta.min_out_amount = Some(payload.other_amount_threshold);
+        quote_meta.request_id = payload.request_id.clone();
+        quote_meta.context_slot = Some(payload.context_slot);
+        quote_meta
     }
 
     async fn quote(

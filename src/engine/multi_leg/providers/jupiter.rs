@@ -87,18 +87,13 @@ impl JupiterLegProvider {
         multiplier: Option<f64>,
         context: &LegBuildContext,
     ) -> LegPlan {
-        let payload = quote.payload();
         let adjusted_limit = apply_cu_limit_multiplier(swap.compute_unit_limit, multiplier);
         if adjusted_limit != swap.compute_unit_limit {
             rewrite_limit_instructions(&mut swap.compute_budget_instructions, adjusted_limit);
             swap.compute_unit_limit = adjusted_limit;
         }
 
-        let mut quote_meta =
-            LegQuote::new(payload.in_amount, payload.out_amount, payload.slippage_bps);
-        quote_meta.min_out_amount = Some(payload.other_amount_threshold);
-        quote_meta.context_slot = payload.context_slot;
-        quote_meta.provider = Some("jupiter".to_string());
+        let quote_meta = self.summarize_quote(quote);
 
         let mut instructions = Vec::new();
         instructions.extend(swap.setup_instructions.clone());
@@ -133,6 +128,16 @@ impl LegProvider for JupiterLegProvider {
 
     fn descriptor(&self) -> LegDescriptor {
         self.descriptor.clone()
+    }
+
+    fn summarize_quote(&self, quote: &Self::QuoteResponse) -> LegQuote {
+        let payload = quote.payload();
+        let mut quote_meta =
+            LegQuote::new(payload.in_amount, payload.out_amount, payload.slippage_bps);
+        quote_meta.min_out_amount = Some(payload.other_amount_threshold);
+        quote_meta.context_slot = payload.context_slot;
+        quote_meta.provider = Some("jupiter".to_string());
+        quote_meta
     }
 
     async fn quote(

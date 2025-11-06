@@ -21,7 +21,7 @@ Galileo 已移除历史 Jupiter 依赖，所有聚合器配置均通过 `galileo
 - `[engine.dflow]`
   - `api_quote_base` / `api_swap_base`：DFlow Quote 与 Swap API 基址。
   - `api_proxy`：可选，覆盖全局代理。
-  - `quote_config.cadence.default.group_parallelism`：`"auto"`（按 IP 资源动态并发）或正整数；`intra_group_spacing_ms` 控制同批次 quote 组的启动间隔，`wave_cooldown_ms` 定义下一轮批次的最小冷却时间。
+- `quote_config.cadence.default.max_concurrent_slots`：`"auto"`（按 IP 资源自动推导槽位数）或正整数（显式限制同时运行的槽位数）；`inter_batch_delay_ms` 控制同一槽位连续 trade size 之间的固定等待时间，`cycle_cooldown_ms` 定义一轮任务全部完成后的休息时间。
   - `quote_config.cadence.per_base_mint`：可选，针对特定 base mint 覆盖默认节奏（同字段含义）；未配置时沿用 `default`。
   - `swap_config.cu_limit_multiplier`：对 `/swap-instructions` 返回的 compute unit limit 乘以系数重写。
 

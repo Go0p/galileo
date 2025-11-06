@@ -296,6 +296,20 @@ where
         self.descriptor.clone()
     }
 
+    fn summarize_quote(&self, quote: &Self::QuoteResponse) -> LegQuote {
+        let mut summary = LegQuote::new(
+            quote.route.in_amount,
+            quote.route.out_amount,
+            quote.route.slippage_bps,
+        );
+        summary.provider = Some(quote.provider.clone());
+        summary.quote_id = quote.quote_id.clone();
+        summary.context_slot = quote.route.context_slot;
+        summary.expires_at_ms = quote.route.expires_at_ms;
+        summary.expires_after_slot = quote.route.expires_after_slot;
+        summary
+    }
+
     async fn quote(
         &self,
         intent: &QuoteIntent,
@@ -346,20 +360,10 @@ where
         let (compute_budget_instructions, other_instructions): (Vec<_>, Vec<_>) = instructions
             .into_iter()
             .partition(|ix| ix.program_id == compute_budget::id());
-        let mut quote_meta = LegQuote::new(
-            quote.route.in_amount,
-            quote.route.out_amount,
-            quote.route.slippage_bps,
-        );
-        quote_meta.provider = Some(quote.provider.clone());
-        quote_meta.quote_id = quote.quote_id.clone();
-        quote_meta.context_slot = quote.route.context_slot;
-        quote_meta.expires_at_ms = quote.route.expires_at_ms;
-        quote_meta.expires_after_slot = quote.route.expires_after_slot;
 
         let mut plan = LegPlan {
             descriptor: self.descriptor.clone(),
-            quote: quote_meta,
+            quote: self.summarize_quote(quote),
             instructions: other_instructions,
             compute_budget_instructions,
             address_lookup_table_addresses: quote.route.address_lookup_tables.clone(),

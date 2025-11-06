@@ -82,7 +82,7 @@ impl KaminoLegProvider {
     fn into_plan(
         &self,
         route: &Route,
-        slippage_bps: u16,
+        mut quote: LegQuote,
         context: &LegBuildContext,
         resolved_map: Option<&HashMap<Pubkey, AddressLookupTableAccount>>,
     ) -> LegPlan {
@@ -234,9 +234,18 @@ impl KaminoLegProvider {
             fee.min(u64::MAX as u128) as u64
         });
 
-        let mut quote = LegQuote::new(route.amount_in(), route.amount_out(), slippage_bps);
-        quote.min_out_amount = Some(route.amounts_exact_in.amount_out_guaranteed);
-        quote.provider = Some(route.router_type.clone());
+        if quote.amount_in == 0 {
+            quote.amount_in = route.amount_in();
+        }
+        if quote.amount_out == 0 {
+            quote.amount_out = route.amount_out();
+        }
+        if quote.min_out_amount.is_none() {
+            quote.min_out_amount = Some(route.amounts_exact_in.amount_out_guaranteed);
+        }
+        if quote.provider.is_none() {
+            quote.provider = Some(route.router_type.clone());
+        }
 
         LegPlan {
             descriptor: self.descriptor.clone(),
@@ -303,6 +312,25 @@ impl LegProvider for KaminoLegProvider {
 
     fn descriptor(&self) -> LegDescriptor {
         self.descriptor.clone()
+    }
+
+    fn summarize_quote(&self, quote: &Self::QuoteResponse) -> LegQuote {
+        match quote.best_route() {
+            Some(route) => {
+                let mut summary =
+                    LegQuote::new(route.amount_in(), route.amount_out(), quote.slippage_bps);
+                summary.min_out_amount = Some(route.amounts_exact_in.amount_out_guaranteed);
+                summary.provider = Some(route.router_type.clone());
+                summary
+            }
+            None => {
+                debug!(
+                    target: "multi_leg::kamino",
+                    "Kamino 报价缺少有效路线，返回空摘要"
+                );
+                LegQuote::new(0, 0, quote.slippage_bps)
+            }
+        }
     }
 
     async fn quote(
@@ -376,7 +404,12 @@ impl LegProvider for KaminoLegProvider {
         } else {
             None
         };
-        Ok(self.into_plan(route, quote.slippage_bps, context, resolved_map.as_ref()))
+        Ok(self.into_plan(
+            route,
+            self.summarize_quote(quote),
+            context,
+            resolved_map.as_ref(),
+        ))
     }
 }
 
