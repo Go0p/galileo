@@ -30,7 +30,7 @@ use super::bundle::{
 use super::dry_run::DryRunFallback;
 use super::multi_ips::{MultiIpsBundle, MultiIpsStrategy};
 use super::tip::TipSelector;
-use super::types::{BundleSubmission, MULTI_IPS_GUARD_LAMPORTS, StrategyEndpoint, endpoint_label};
+use super::types::{BundleSubmission, StrategyEndpoint, endpoint_label};
 use super::uuid::{UuidPool, UuidTicket, UuidTicketOutcome};
 
 const STRATEGY_METRIC_LABEL: &str = "lander::jito";
@@ -45,7 +45,6 @@ pub struct JitoLander {
     uuid_pool: Option<Arc<Mutex<UuidPool>>>,
     multi_ips: Option<MultiIpsStrategy>,
     dry_run: Option<DryRunFallback>,
-    multi_ips_guard_lamports: u64,
 }
 
 impl JitoLander {
@@ -65,7 +64,6 @@ impl JitoLander {
         let mut endpoints = Vec::new();
         let mut uuid_pool = None;
         let mut multi_ips = None;
-        let mut multi_ips_guard_lamports = 0u64;
 
         for kind in enabled {
             match kind {
@@ -126,7 +124,6 @@ impl JitoLander {
                                     });
                                 }
                                 multi_ips = Some(strategy);
-                                multi_ips_guard_lamports = MULTI_IPS_GUARD_LAMPORTS;
                             } else {
                                 warn!(
                                     target: STRATEGY_METRIC_LABEL,
@@ -183,7 +180,6 @@ impl JitoLander {
             uuid_pool,
             multi_ips,
             dry_run: None,
-            multi_ips_guard_lamports,
         }
     }
 
@@ -201,10 +197,6 @@ impl JitoLander {
             .iter()
             .map(|endpoint| endpoint.label.clone())
             .collect()
-    }
-
-    pub fn multi_ips_guard_lamports(&self) -> u64 {
-        self.multi_ips_guard_lamports
     }
 
     pub fn tip_strategy_label(&self) -> &'static str {

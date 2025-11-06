@@ -3,8 +3,6 @@ use serde_json::Value;
 use solana_sdk::transaction::VersionedTransaction;
 use url::Url;
 
-pub(crate) const MULTI_IPS_GUARD_LAMPORTS: u64 = 5_000;
-
 #[derive(Clone, Debug)]
 pub(crate) struct StrategyEndpoint {
     pub label: String,

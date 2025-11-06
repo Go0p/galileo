@@ -1210,7 +1210,6 @@ impl CopyWalletRunner {
                         TipStrategy::Jito {
                             plan: jito_tip_plan.clone(),
                             label,
-                            extra_guard_lamports: lander.multi_ips_guard_lamports(),
                         },
                         GuardBudgetKind::BasePlusTip,
                         ComputeUnitPriceStrategy::Fixed(0),

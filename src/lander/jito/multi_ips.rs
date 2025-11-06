@@ -21,9 +21,10 @@ use crate::lander::error::LanderError;
 
 use super::bundle::{encode_transaction, random_tip_wallet, strip_tip_transfer};
 use super::tip::MIN_JITO_TIP_LAMPORTS;
-use super::types::MULTI_IPS_GUARD_LAMPORTS;
+use crate::instructions::guards::lighthouse::program::LIGHTHOUSE_PROGRAM_ID;
 
 const SURCHARGE_LAMPORTS: u64 = 1_000_000; // 0.001 SOL
+const GUARD_BUFFER_LAMPORTS: u64 = 5_000;
 
 #[derive(Clone)]
 pub(crate) struct MultiIpsStrategy {
@@ -66,7 +67,7 @@ impl MultiIpsStrategy {
         }
 
         let wallet = self.wallet_pool.acquire().await;
-        let guard_buffer = MULTI_IPS_GUARD_LAMPORTS;
+        let guard_buffer = GUARD_BUFFER_LAMPORTS;
         let deposit = adjusted_tip
             .saturating_add(guard_buffer)
             .saturating_add(SURCHARGE_LAMPORTS);
@@ -80,6 +81,7 @@ impl MultiIpsStrategy {
             insert_at,
             system_instruction::transfer(&payer, &wallet.pubkey(), deposit),
         );
+        bump_profit_guard_threshold(&mut base_instructions, guard_buffer);
         let main_tx = assemble_main_transaction(variant, base_instructions)?;
 
         let reclaim_instruction = if reclaim > 0 {
@@ -170,6 +172,37 @@ fn adjust_tip(base_tip: u64, offset: i64) -> u64 {
     } else {
         adjusted as u64
     }
+}
+
+fn bump_profit_guard_threshold(instructions: &mut [Instruction], extra: u64) {
+    if extra == 0 {
+        return;
+    }
+    for instruction in instructions.iter_mut() {
+        if instruction.program_id != LIGHTHOUSE_PROGRAM_ID {
+            continue;
+        }
+        if adjust_guard_delta(&mut instruction.data, extra) {
+            break;
+        }
+    }
+}
+
+fn adjust_guard_delta(data: &mut Vec<u8>, extra: u64) -> bool {
+    if data.first() != Some(&4) {
+        return false;
+    }
+    // layout: [4, log_level, 1, snapshot_offset..., account_data_offset..., 6, expected_delta (i128 LE), operator]
+    let expected_start = 6;
+    if data.len() < expected_start + 16 {
+        return false;
+    }
+    let mut buf = [0u8; 16];
+    buf.copy_from_slice(&data[expected_start..expected_start + 16]);
+    let mut value = i128::from_le_bytes(buf);
+    value = value.saturating_add(extra as i128);
+    data[expected_start..expected_start + 16].copy_from_slice(&value.to_le_bytes());
+    true
 }
 
 #[derive(Clone)]
