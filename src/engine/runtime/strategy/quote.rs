@@ -227,6 +227,8 @@ where
                 (*context.as_ref()).clone(),
                 self.identity.pubkey,
                 compute_unit_price,
+                self.settings.quote.dex_whitelist.clone(),
+                self.settings.quote.dex_blacklist.clone(),
             ));
             let outcomes: Vec<MultiLegDispatchResult> = self
                 .quote_dispatcher

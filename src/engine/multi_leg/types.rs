@@ -77,6 +77,8 @@ pub struct QuoteIntent {
     pub output_mint: Pubkey,
     pub amount: u64,
     pub slippage_bps: u16,
+    pub dex_whitelist: Vec<String>,
+    pub dex_blacklist: Vec<String>,
 }
 
 impl QuoteIntent {
@@ -86,6 +88,8 @@ impl QuoteIntent {
             output_mint,
             amount,
             slippage_bps,
+            dex_whitelist: Vec::new(),
+            dex_blacklist: Vec::new(),
         }
     }
 }
@@ -97,6 +101,7 @@ pub struct LegQuote {
     pub amount_out: u64,
     pub min_out_amount: Option<u64>,
     pub slippage_bps: u16,
+    pub latency_ms: Option<f64>,
     pub request_id: Option<String>,
     pub quote_id: Option<String>,
     pub provider: Option<String>,
@@ -112,6 +117,7 @@ impl LegQuote {
             amount_out,
             min_out_amount: None,
             slippage_bps,
+            latency_ms: None,
             request_id: None,
             quote_id: None,
             provider: None,

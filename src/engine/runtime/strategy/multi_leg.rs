@@ -50,6 +50,8 @@ pub(super) struct MultiLegBatchHandler {
     context: MultiLegEngineContext,
     payer: Pubkey,
     compute_unit_price: Option<u64>,
+    dex_whitelist: Vec<String>,
+    dex_blacklist: Vec<String>,
 }
 
 impl MultiLegBatchHandler {
@@ -57,11 +59,15 @@ impl MultiLegBatchHandler {
         context: MultiLegEngineContext,
         payer: Pubkey,
         compute_unit_price: Option<u64>,
+        dex_whitelist: Vec<String>,
+        dex_blacklist: Vec<String>,
     ) -> Self {
         Self {
             context,
             payer,
             compute_unit_price,
+            dex_whitelist,
+            dex_blacklist,
         }
     }
 }
@@ -77,18 +83,26 @@ impl DispatchTaskHandler<MultiLegDispatchResult> for MultiLegBatchHandler {
             });
         }
 
-        let buy_intent_template = MultiLegQuoteIntent::new(
+        let mut buy_intent_template = MultiLegQuoteIntent::new(
             batch.pair.input_pubkey,
             batch.pair.output_pubkey,
             batch.amount,
             0,
         );
-        let sell_intent_template = MultiLegQuoteIntent::new(
+        let mut sell_intent_template = MultiLegQuoteIntent::new(
             batch.pair.output_pubkey,
             batch.pair.input_pubkey,
             batch.amount,
             0,
         );
+        if !self.dex_whitelist.is_empty() {
+            buy_intent_template.dex_whitelist = self.dex_whitelist.clone();
+            sell_intent_template.dex_whitelist = self.dex_whitelist.clone();
+        }
+        if !self.dex_blacklist.is_empty() {
+            buy_intent_template.dex_blacklist = self.dex_blacklist.clone();
+            sell_intent_template.dex_blacklist = self.dex_blacklist.clone();
+        }
         let tag_value = format!(
             "{}->{}/{}",
             batch.pair.input_mint, batch.pair.output_mint, batch.amount
@@ -217,6 +231,14 @@ where
             );
             let forward_quote = plan.buy.quote.clone();
             let reverse_quote = plan.sell.quote.clone();
+            let forward_latency_ms = forward_quote.latency_ms;
+            let reverse_latency_ms = reverse_quote.latency_ms;
+            let total_latency_ms = match (forward_latency_ms, reverse_latency_ms) {
+                (Some(forward), Some(reverse)) => Some(forward + reverse),
+                (Some(forward), None) => Some(forward),
+                (None, Some(reverse)) => Some(reverse),
+                (None, None) => None,
+            };
             let combined_slippage_bps =
                 u32::from(forward_quote.slippage_bps) + u32::from(reverse_quote.slippage_bps);
             let estimated_profit = profit_lamports.min(i128::from(u64::MAX)) as u64;
@@ -235,10 +257,10 @@ where
                     aggregator_label.as_str(),
                     forward_quote.amount_in,
                     forward_quote.amount_out,
-                    None,
+                    forward_latency_ms,
                     reverse_quote.amount_in,
                     reverse_quote.amount_out,
-                    None,
+                    reverse_latency_ms,
                     estimated_profit,
                     threshold,
                 );
@@ -301,17 +323,17 @@ where
                 aggregator_label.as_str(),
                 forward_quote.amount_in,
                 forward_quote.amount_out,
-                None,
+                forward_latency_ms,
                 reverse_quote.amount_in,
                 reverse_quote.amount_out,
-                None,
+                reverse_latency_ms,
                 profit.gross_profit_lamports,
                 candidate.net_profit(),
                 threshold,
                 false,
                 None,
                 None,
-                None,
+                total_latency_ms,
             );
 
             candidates.push(candidate);

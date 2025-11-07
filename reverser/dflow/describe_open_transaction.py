@@ -15,7 +15,7 @@ import json
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import Any, Iterable, List, Sequence
 
 
 # Alphabet used for Solana's base58 public keys.
@@ -58,6 +58,13 @@ class Instruction:
     program_index: int
     account_indices: List[int]
     data: bytes
+
+
+@dataclass
+class AddressLookupInfo:
+    table_address: str
+    writable_indexes: List[int]
+    readonly_indexes: List[int]
 
 
 def base58_encode(data: bytes) -> str:
@@ -103,8 +110,8 @@ def read_shortvec(data: bytes, offset: int) -> tuple[int, int]:
     return result, offset
 
 
-def decode_transaction(raw: bytes) -> tuple[List[AccountMeta], str, List[Instruction], List[bytes]]:
-    """Decode a legacy Solana transaction message into accounts and instructions."""
+def decode_transaction(raw: bytes) -> tuple[List[AccountMeta], str, List[Instruction], List[bytes], dict[str, Any]]:
+    """Decode a Solana transaction (legacy or v0) into accounts and instructions."""
     offset = 0
     sig_count = raw[offset]
     offset += 1
@@ -112,6 +119,11 @@ def decode_transaction(raw: bytes) -> tuple[List[AccountMeta], str, List[Instruc
     for _ in range(sig_count):
         signatures.append(raw[offset : offset + 64])
         offset += 64
+
+    message_version: int | None = None
+    if offset < len(raw) and raw[offset] & 0x80:
+        message_version = raw[offset] & 0x7F
+        offset += 1
 
     header = raw[offset : offset + 3]
     if len(header) != 3:
@@ -155,7 +167,40 @@ def decode_transaction(raw: bytes) -> tuple[List[AccountMeta], str, List[Instruc
         offset += data_len
         instructions.append(Instruction(program_index, account_indices, data))
 
-    return metas, recent_blockhash, instructions, signatures
+    lookup_infos: List[AddressLookupInfo] = []
+    if message_version is not None:
+        lookup_count, offset = read_shortvec(raw, offset)
+        for _ in range(lookup_count):
+            table_address = base58_encode(raw[offset : offset + 32])
+            offset += 32
+            writable_len, offset = read_shortvec(raw, offset)
+            writable_indexes = list(raw[offset : offset + writable_len])
+            offset += writable_len
+            readonly_len, offset = read_shortvec(raw, offset)
+            readonly_indexes = list(raw[offset : offset + readonly_len])
+            offset += readonly_len
+            lookup_infos.append(
+                AddressLookupInfo(
+                    table_address=table_address,
+                    writable_indexes=writable_indexes,
+                    readonly_indexes=readonly_indexes,
+                )
+            )
+
+        # Append placeholder metas for looked-up accounts to keep indexing intact.
+        for lookup in lookup_infos:
+            for idx in lookup.writable_indexes:
+                label = f"lookup[{lookup.table_address}].w[{idx}]"
+                metas.append(AccountMeta(index=len(metas), address=label, is_signer=False, is_writable=True))
+            for idx in lookup.readonly_indexes:
+                label = f"lookup[{lookup.table_address}].r[{idx}]"
+                metas.append(AccountMeta(index=len(metas), address=label, is_signer=False, is_writable=False))
+
+    context = {
+        "message_version": message_version,
+        "address_table_lookups": lookup_infos,
+    }
+    return metas, recent_blockhash, instructions, signatures, context
 
 
 def lamports_to_sol(lamports: int) -> float:
@@ -321,7 +366,11 @@ def print_summary(
     instructions: Sequence[Instruction],
     signatures: Sequence[bytes],
     mint_info: dict[str, str],
+    context: dict[str, Any] | None = None,
 ) -> None:
+    context = context or {}
+    message_version = context.get("message_version")
+    lookup_infos: Sequence[AddressLookupInfo] = context.get("address_table_lookups", [])
     print("=== Signatures ===")
     if not signatures:
         print("  (none)")
@@ -333,6 +382,8 @@ def print_summary(
             print(f"  [{idx}] {readable}")
 
     print("\n=== Recent Blockhash ===")
+    if message_version is not None:
+        print(f"  Message version: v{message_version}")
     print(f"  {blockhash}\n")
 
     print("=== Accounts ===")
@@ -343,6 +394,15 @@ def print_summary(
         flags.append("writable" if meta.is_writable else "readonly")
         alias = f" ({meta.alias})" if meta.alias else ""
         print(f"  [{meta.index}] {meta.address}{alias}  ({', '.join(flags)})")
+
+    if lookup_infos:
+        print("\n=== Address Table Lookups ===")
+        for idx, lookup in enumerate(lookup_infos):
+            print(f"  Lookup {idx}: table={lookup.table_address}")
+            if lookup.writable_indexes:
+                print(f"    writable indexes: {lookup.writable_indexes}")
+            if lookup.readonly_indexes:
+                print(f"    readonly indexes: {lookup.readonly_indexes}")
 
     print("\n=== Instructions ===")
     for inst_index, inst in enumerate(instructions):
@@ -370,7 +430,7 @@ def main() -> None:
     except KeyError as exc:
         raise SystemExit("openTransaction field is missing") from exc
 
-    account_metas, blockhash, instructions, signatures = decode_transaction(raw_tx)
+    account_metas, blockhash, instructions, signatures, context = decode_transaction(raw_tx)
 
     # Pass mint metadata down for program-specific decoding.
     mint_info = {
@@ -378,7 +438,7 @@ def main() -> None:
         "output_mint": intent.get("outputMint", ""),
     }
 
-    print_summary(account_metas, blockhash, instructions, signatures, mint_info)
+    print_summary(account_metas, blockhash, instructions, signatures, mint_info, context)
 
     # Provide a quick summary of the high-level routing amounts if available.
     input_mint = mint_info.get("input_mint", "")

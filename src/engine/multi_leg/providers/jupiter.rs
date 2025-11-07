@@ -48,6 +48,12 @@ impl JupiterLegProvider {
         if self.quote_config.restrict_intermediate_tokens {
             request.restrict_intermediate_tokens = Some(true);
         }
+        if !intent.dex_whitelist.is_empty() {
+            request.dexes = Some(intent.dex_whitelist.join(","));
+        }
+        if !intent.dex_blacklist.is_empty() {
+            request.exclude_dexes = Some(intent.dex_blacklist.join(","));
+        }
         request
     }
 

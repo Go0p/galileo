@@ -59,10 +59,14 @@ impl DflowLegProvider {
         if let Some(max_route_length) = self.quote_defaults.max_route_length {
             request.max_route_length = Some(max_route_length);
         }
-        if !self.dex_whitelist.is_empty() {
+        if !intent.dex_whitelist.is_empty() {
+            request.dexes = Some(intent.dex_whitelist.join(","));
+        } else if !self.dex_whitelist.is_empty() {
             request.dexes = Some(self.dex_whitelist.join(","));
         }
-        if !self.dex_blacklist.is_empty() {
+        if !intent.dex_blacklist.is_empty() {
+            request.exclude_dexes = Some(intent.dex_blacklist.join(","));
+        } else if !self.dex_blacklist.is_empty() {
             request.exclude_dexes = Some(self.dex_blacklist.join(","));
         }
         request

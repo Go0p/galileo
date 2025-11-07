@@ -49,7 +49,7 @@ pub struct SwapInfo {
 #[serde(rename_all = "camelCase")]
 pub struct RoutePlanStep {
     pub swap_info: SwapInfo,
-    pub percent: u8,
+    pub percent: Decimal,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bps: Option<u16>,
 }

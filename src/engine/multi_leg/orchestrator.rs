@@ -1,5 +1,6 @@
 use std::fmt;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -58,12 +59,17 @@ where
         intent: &QuoteIntent,
         lease: Option<&IpLeaseHandle>,
     ) -> Result<LegQuoteHandle> {
+        let started = Instant::now();
         let raw_quote = self
             .inner
             .quote(intent, lease)
             .await
             .map_err(anyhow::Error::new)?;
-        let summary = self.inner.summarize_quote(&raw_quote);
+        let elapsed = started.elapsed().as_secs_f64() * 1_000.0;
+        let mut summary = self.inner.summarize_quote(&raw_quote);
+        if summary.latency_ms.is_none() {
+            summary.latency_ms = Some(elapsed);
+        }
         let descriptor = self.inner.descriptor();
         let state: Arc<dyn DynQuoteState> = Arc::new(ProviderQuoteState {
             provider: Arc::clone(&self.inner),
@@ -138,7 +144,11 @@ impl LegQuoteHandle {
         context: &LegBuildContext,
         lease: Option<&IpLeaseHandle>,
     ) -> Result<LegPlan> {
-        self.state.build_plan(context, lease).await
+        let mut plan = self.state.build_plan(context, lease).await?;
+        if plan.quote.latency_ms.is_none() {
+            plan.quote.latency_ms = self.quote.latency_ms;
+        }
+        Ok(plan)
     }
 }
 

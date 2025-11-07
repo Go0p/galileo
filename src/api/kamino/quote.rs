@@ -39,6 +39,8 @@ pub struct QuoteRequest {
     pub include_setup_ixs: bool,
     pub wrap_and_unwrap_sol: bool,
     pub routes: Vec<String>,
+    pub with_simulation: bool,
+    pub filter_failed_simulations: bool,
 }
 
 impl QuoteRequest {
@@ -54,6 +56,8 @@ impl QuoteRequest {
             include_setup_ixs: true,
             wrap_and_unwrap_sol: false,
             routes: Vec::new(),
+            with_simulation: DEFAULT_WITH_SIMULATION,
+            filter_failed_simulations: DEFAULT_FILTER_FAILED_SIMULATIONS,
         }
     }
 
@@ -112,11 +116,11 @@ impl QuoteRequest {
             ),
             (
                 "withSimulation".to_string(),
-                DEFAULT_WITH_SIMULATION.to_string(),
+                self.with_simulation.to_string(),
             ),
             (
                 "filterFailedSimulations".to_string(),
-                DEFAULT_FILTER_FAILED_SIMULATIONS.to_string(),
+                self.filter_failed_simulations.to_string(),
             ),
             (
                 "requestPriceImpact".to_string(),

@@ -503,7 +503,7 @@ pub fn quote_end(
     let output_display = short_mint_str(output_mint);
     let result_label = if success { "success" } else { "empty" };
     if success {
-        debug!(
+        info!(
             target: "monitoring::quote",
             strategy,
             result = result_label,

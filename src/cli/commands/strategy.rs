@@ -1154,6 +1154,7 @@ fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
         LegSide::Buy,
         user_pubkey,
         titan_cfg.tx_config.use_wsol,
+        titan_cfg.tx_config.filter_other_instructions,
     );
     orchestrator.register_owned_provider(provider);
     Ok(())

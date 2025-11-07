@@ -37,6 +37,7 @@ engine:
   # 可选值：jupiter / dflow / ultra / multi-legs / kamino / none
   backend: "multi-legs"
   # backend: "kamino"
+  # backend: "kamino"
   # backend: "none"
   # backend: "multi-legs"
   # backend: "dflow"
@@ -53,175 +54,176 @@ engine:
         max_concurrent_slots: 1
         inter_batch_delay_ms: 2000
 
-  jupiter:
-    jupiter_buy:
-      enable: true
-      leg: "buy"
-      api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
-      api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
-      api_proxy: "http://192.168.124.4:9999"
-      quote_config:
-        only_direct_routes: true
-        restrict_intermediate_tokens: true
-        # cadence 控制 trade size 的调度节奏：
-        #   max_concurrent_slots: 槽位数量，auto 表示根据可用 IP 自动推导（多 IP 时可调整为固定值）。
-        #   inter_batch_delay_ms: 单个槽位两次 quote 之间的等待时间；设置为 0 表示立即轮询下一个 trade size。
-        #   cycle_cooldown_ms: 一轮所有 trade size 完成后的休息时间（大多数场景可留空或设为 0）。
-        cadence:
-          default:
-            max_concurrent_slots: 1
-            inter_batch_delay_ms: 3000
+  # jupiter:
+  #   jupiter_buy:
+  #     enable: true
+  #     leg: "buy"
+  #     api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
+  #     api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
+  #     api_proxy: "http://192.168.3.3:9999"
+  #     quote_config:
+  #       only_direct_routes: true
+  #       restrict_intermediate_tokens: true
+  #       # cadence 控制 trade size 的调度节奏：
+  #       #   max_concurrent_slots: 槽位数量，auto 表示根据可用 IP 自动推导（多 IP 时可调整为固定值）。
+  #       #   inter_batch_delay_ms: 单个槽位两次 quote 之间的等待时间；设置为 0 表示立即轮询下一个 trade size。
+  #       #   cycle_cooldown_ms: 一轮所有 trade size 完成后的休息时间（大多数场景可留空或设为 0）。
+  #       cadence:
+  #         default:
+  #           max_concurrent_slots: 1
+  #           inter_batch_delay_ms: 3000
             
-      swap_config:
-        use_shared_accounts: true
-        skip_user_accounts_rpc_calls: false
-        dynamic_compute_unit_limit: true
-        wrap_and_unwrap_sol: false
-    jupiter_sell:
-      enable: true
-      leg: "sell"
-      api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
-      api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
-      api_proxy: "http://192.168.124.4:9999"
-      quote_config:
-        only_direct_routes: true
-        restrict_intermediate_tokens: true
-        cadence:
-          default:
-            max_concurrent_slots: 1
-            inter_batch_delay_ms: 3000
+  #     swap_config:
+  #       use_shared_accounts: true
+  #       skip_user_accounts_rpc_calls: false
+  #       dynamic_compute_unit_limit: true
+  #       wrap_and_unwrap_sol: false
+  #   jupiter_sell:
+  #     enable: true
+  #     leg: "sell"
+  #     api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
+  #     api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
+  #     api_proxy: "http://192.168.3.3:9999"
+  #     quote_config:
+  #       only_direct_routes: true
+  #       restrict_intermediate_tokens: true
+  #       cadence:
+  #         default:
+  #           max_concurrent_slots: 1
+  #           inter_batch_delay_ms: 3000
             
-      swap_config:
-        use_shared_accounts: true
-        skip_user_accounts_rpc_calls: false
-        dynamic_compute_unit_limit: true
-        wrap_and_unwrap_sol: false
-  # ultra:
-  #   # 腿方向：可选 buy / sell，用于套利腿角色匹配
-  #   leg: "sell"
-  #   api_quote_base: "https://ultra-api.jup.ag"
-  #   api_swap_base: "https://ultra-api.jup.ag"
-  #   # api_proxy: "http://192.168.124.4:9999"
-  #   quote_config:
-  #     use_wsol: true
-  #     # taker: "k1bWgJv1fdVMCqgDM2jkEfhEzKW7XgGpj8vGGKjgSnJ"
-  #     taker: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
-  #     exclude_routers: []
-  #     priority_fee_lamports: 10
-  #     cadence:
-  #       # default: 默认的 quote 节奏配置，适用于所有 base mint
-  #       default:
-  #         # max_concurrent_slots: 槽位数量；auto 表示按 IP 自动推导，正整数可显式指定并发槽位。
-  #         max_concurrent_slots: auto
-  #         # inter_batch_delay_ms: 同一槽位连续 quote 之间的等待时间（毫秒），0 表示立即轮询。
-  #         inter_batch_delay_ms: 0
-  #         # cycle_cooldown_ms: 一轮所有 trade size 完成后的休息时间（毫秒），大多数情况下可设为 0。
-  #         cycle_cooldown_ms: 0
-  #       # per_base_mint: 针对特定 base mint 覆盖默认节奏（可选）；未开启时沿用 default
-  #       #   So11111111111111111111111111111111111111112:
-  #       #     # max_concurrent_slots: 1
-  #       #     inter_batch_delay_ms: 200
-  #       #     cycle_cooldown_ms: 1000
-  #   swap_config:
-  #     cu_limit_multiplier: 0.92
-  # dflow:
-  #   # 腿方向：可选 buy / sell，用于套利腿角色匹配
-  #   leg: "sell"
-  #   # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
-  #   # api_quote_base: "https://quote-api.dflow.net"
-  #   # api_swap_base: "https://quote-api.dflow.net"
-  #   # api_quote_base: "http://109.94.98.33:9800"
-  #   # api_swap_base: "http://109.94.98.33:9800"
-  #   api_quote_base: "http://109.94.98.33:9999"
-  #   api_swap_base: "http://109.94.98.33:9999"
-  #   api_proxy: "http://192.168.3.3:9999"
-  #   # api_proxy: "http://192.168.124.4:9999"
-  #   quote_config:
-  #     use_auto_slippage: false
-  #     only_direct_routes: false
-  #     max_route_length: 3
-  #     cadence:
-  #       # default: 默认的 quote 节奏配置
-  #       default:
-  #         # # group_parallelism: 同时运行的 quote 组数量上限
-  #         max_concurrent_slots: auto
-  #         # inter_batch_delay_ms: 同一波次内组与组之间的最小启动间隔（毫秒）
-  #         inter_batch_delay_ms: 3000
-  #         # cycle_cooldown_ms: 一波结束后等待下一波的时间（毫秒）
-  #         
-  #       # per_base_mint: 可选，覆盖指定 base mint 的默认节奏
-  #       #   So11111111111111111111111111111111111111112:
-  #       #     # group_parallelism: 1
-  #       #     inter_batch_delay_ms: 200
-  #       #     cycle_cooldown_ms: 1000
-  #   swap_config:
-  #     dynamic_compute_unit_limit: true
-  #     wrap_and_unwrap_sol: false
-  #     cu_limit_multiplier: 0.92
-  # titan:
-  #   # 腿方向：Titan 仅支持 buy 腿
-  #   leg: "buy"
-  #   # Titan 推流首条报价超时时间（毫秒），超过后视为异常并重新调度
-  #   first_quote_timeout_ms: 2000
-  #   # 开启 loopback 后仅订阅 base→base 的单条 Titan 流，根据 out>in 判断套利
-  #   ws_url: "wss://api.titan.exchange/api/v1/ws"
-  #   # 可选：通过 WebSocket 代理抓包/调试 Titan 数据
-  #   # ws_proxy: "ws://192.168.124.4:9999"
-  #   ws_proxy: ""
-  #   jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjE5ODM2NDIsImV4cCI6MTc2MTk4NDU0Miwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.Vez2ne5CsMKT0bXSlF4RNt_VOiz5bBg1bDbIjtKDIJE"
-  #   # Titan , Okx , Metis , Pyth
-  #   swap_config:
-  #     # dexes: 
-  #     # exclude_dexes:
-  #     only_direct_routes: false
-  #     providers:
-  #       - "Titan"
-  #       # - "Metis"
-  #   tx_config:
-  #     user_public_key: "Titan11111111111111111111111111111111111111"
-  #     # user_public_key: "goopNoaJhhrzxi6oq2j4chcyHKGucAeVZSk4QBA7Gu1"
-  #     create_output_token_account: false
-  #     use_wsol: true
-  #   # 服务端推送报价更新的间隔，单位毫秒。
-  #   interval_ms: 800
-  #   # 每次更新最多返回的报价数量。
-  #   num_quotes: 2
-  # kamino:
-  #   # 腿方向：可选 buy / sell，用于套利腿角色匹配
-  #   leg: "sell"
-  #   api_quote_base: "https://api.kamino.finance"
-  #   api_swap_base: "https://api.kamino.finance"
-  #   api_proxy: "http://192.168.124.4:9999"
-  #   quote_config:
-  #     cu_limit_multiplier: 2.1
-  #     cadence:
-  #       default:
-  #         max_concurrent_slots: auto
-  #         inter_batch_delay_ms: 0
-  #         
-  #     max_slippage_bps: 0
-  #     executor: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
-  #     referrer_pda: ""
-  #     # 是否改为通过 RPC 批量拉取 Address Lookup Table：
-  #     # true 表示 Kamino 仅返回 lookup table key，落地前由我们主动走 RPC 拉取；
-  #     # false 表示沿用现状，使用 Kamino 返回的完整地址列表。
-  #     resolve_lookup_tables_via_rpc: true
-  #     include_setup_ixs: true
-  #     wrap_and_unwrap_sol: false
-  #     routes:
-  #       # - "dflow"
-  #       # - "per"
-  #       # - "fluxbeam"
-  #       # - "raydium"
-  #       - "hashflow"
-  #       # - "jupiterEuropa"
-  #       # - "jupiterSelfHosted"
-  #       # - "jupiter"
-  #       # - "okx"
-  #       # - "clover"
-  #       # - "zeroEx"
-  #       # - "spur"
-  #       # - "lifi"
+  #     swap_config:
+  #       use_shared_accounts: true
+  #       skip_user_accounts_rpc_calls: false
+  #       dynamic_compute_unit_limit: true
+  #       wrap_and_unwrap_sol: false
+  ultra:
+    # 腿方向：可选 buy / sell，用于套利腿角色匹配
+    leg: "sell"
+    api_quote_base: "https://ultra-api.jup.ag"
+    api_swap_base: "https://ultra-api.jup.ag"
+    api_proxy: "http://192.168.3.3:9999"
+    quote_config:
+      use_wsol: true
+      # taker: "k1bWgJv1fdVMCqgDM2jkEfhEzKW7XgGpj8vGGKjgSnJ"
+      taker: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
+      exclude_routers: []
+      priority_fee_lamports: 10
+      cadence:
+        # default: 默认的 quote 节奏配置，适用于所有 base mint
+        default:
+          # max_concurrent_slots: 槽位数量；auto 表示按 IP 自动推导，正整数可显式指定并发槽位。
+          max_concurrent_slots: 1
+          # inter_batch_delay_ms: 同一槽位连续 quote 之间的等待时间（毫秒），0 表示立即轮询。
+          inter_batch_delay_ms: 2000
+          # cycle_cooldown_ms: 一轮所有 trade size 完成后的休息时间（毫秒），大多数情况下可设为 0。
+          cycle_cooldown_ms: 0
+        # per_base_mint: 针对特定 base mint 覆盖默认节奏（可选）；未开启时沿用 default
+        #   So11111111111111111111111111111111111111112:
+        #     # max_concurrent_slots: 1
+        #     inter_batch_delay_ms: 200
+        #     cycle_cooldown_ms: 1000
+    swap_config:
+      cu_limit_multiplier: 0.92
+  dflow:
+    # 腿方向：可选 buy / sell，用于套利腿角色匹配
+    leg: "sell"
+    # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
+    api_quote_base: "https://quote-api.dflow.net"
+    api_swap_base: "https://quote-api.dflow.net"
+    api_quote_base: "http://109.94.98.33:9800"
+    api_swap_base: "http://109.94.98.33:9800"
+    # api_quote_base: "http://109.94.98.33:9999"
+    # api_swap_base: "http://109.94.98.33:9999"
+    api_proxy: "http://192.168.3.3:9999"
+    # api_proxy: "http://192.168.124.4:9999"
+    quote_config:
+      use_auto_slippage: false
+      only_direct_routes: false
+      max_route_length: 3
+      cadence:
+        # default: 默认的 quote 节奏配置
+        default:
+          # # group_parallelism: 同时运行的 quote 组数量上限
+          max_concurrent_slots: 1
+          # inter_batch_delay_ms: 同一波次内组与组之间的最小启动间隔（毫秒）
+          inter_batch_delay_ms: 3000
+          # cycle_cooldown_ms: 一波结束后等待下一波的时间（毫秒）
+          
+        # per_base_mint: 可选，覆盖指定 base mint 的默认节奏
+        #   So11111111111111111111111111111111111111112:
+        #     # group_parallelism: 1
+        #     inter_batch_delay_ms: 200
+        #     cycle_cooldown_ms: 1000
+    swap_config:
+      dynamic_compute_unit_limit: true
+      wrap_and_unwrap_sol: false
+      cu_limit_multiplier: 0.92
+  titan:
+    # 腿方向：Titan 仅支持 buy 腿
+    leg: "buy"
+    # Titan 推流首条报价超时时间（毫秒），超过后视为异常并重新调度
+    first_quote_timeout_ms: 2000
+    # 开启 loopback 后仅订阅 base→base 的单条 Titan 流，根据 out>in 判断套利
+    ws_url: "wss://api.titan.exchange/api/v1/ws"
+    # 可选：通过 WebSocket 代理抓包/调试 Titan 数据
+    # ws_proxy: "ws://192.168.124.4:9999"
+    ws_proxy: ""
+    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjI1MDcxMDYsImV4cCI6MTc2MjUwODAwNiwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.10HYakyid4jFQpzCCB_Nfq3UCmWAVFvM1s4wZ15lzII"
+    # Titan , Okx , Metis , Pyth
+    swap_config:
+      # dexes: 
+      # exclude_dexes:
+      only_direct_routes: false
+      providers:
+        - "Titan"
+        # - "Metis"
+    tx_config:
+      user_public_key: "Titan11111111111111111111111111111111111111"
+      # user_public_key: "goopNoaJhhrzxi6oq2j4chcyHKGucAeVZSk4QBA7Gu1"
+      create_output_token_account: false
+      filter_other_instructions: true
+    # 服务端推送报价更新的间隔，单位毫秒。
+    interval_ms: 800
+    # 每次更新最多返回的报价数量。
+    num_quotes: 2
+  kamino:
+    # 腿方向：可选 buy / sell，用于套利腿角色匹配
+    leg: "sell"
+    api_quote_base: "https://api.kamino.finance"
+    api_swap_base: "https://api.kamino.finance"
+    api_proxy: "http://192.168.3.3:9999"
+    quote_config:
+      cu_limit_multiplier: 2.1
+      cadence:
+        default:
+          max_concurrent_slots: 1
+          inter_batch_delay_ms: 2000
+          
+      max_slippage_bps: 1
+      with_simulation: true
+      executor: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
+      referrer_pda: ""
+      # 是否改为通过 RPC 批量拉取 Address Lookup Table：
+      # true 表示 Kamino 仅返回 lookup table key，落地前由我们主动走 RPC 拉取；
+      # false 表示沿用现状，使用 Kamino 返回的完整地址列表。
+      resolve_lookup_tables_via_rpc: true
+      include_setup_ixs: true
+      wrap_and_unwrap_sol: false
+      routes:
+        # - "dflow"
+        # - "per"
+        # - "fluxbeam"
+        # - "raydium"
+        # - "hashflow"
+        - "jupiterEuropa"
+        - "jupiterSelfHosted"
+        - "jupiter"
+        # - "okx"
+        # - "clover"
+        # - "zeroEx"
+        # - "spur"
+        # - "lifi"
       
 # 机器人会尝试找到盈利路线，具体方法是：获取给定交易规模的 base_mint 到 intermediate_mints 的报价，
 # 然后再获取 intermediate_mints 到 base_mint 的另一个报价，
@@ -270,8 +272,8 @@ bot:
     config_dir: "strategies"
   engines:
     pairs:
-      - buy_leg: jupiter
-        sell_leg: jupiter
+      - buy_leg: titan
+        sell_leg: dflow
   flashloan:
     products:
       - marginfi

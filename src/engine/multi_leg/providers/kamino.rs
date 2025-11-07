@@ -75,6 +75,13 @@ impl KaminoLegProvider {
         if !self.quote_config.routes.is_empty() {
             request.routes = self.quote_config.routes.clone();
         }
+        if self.quote_config.with_simulation {
+            request.with_simulation = true;
+            request.filter_failed_simulations = true;
+        } else {
+            request.with_simulation = false;
+            request.filter_failed_simulations = false;
+        }
 
         (request, slippage_bps)
     }

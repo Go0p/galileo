@@ -8,11 +8,12 @@ use std::time::Duration;
 use async_trait::async_trait;
 use solana_compute_budget_interface as compute_budget;
 use solana_sdk::instruction::{AccountMeta, Instruction};
+use solana_sdk::pubkey;
 use solana_sdk::pubkey::Pubkey;
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
 use tokio::time::timeout;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::api::titan::{
     Instruction as TitanInstruction, SwapRoute, TitanError,
@@ -53,15 +54,23 @@ pub struct TitanLegProvider<S> {
     source: Arc<S>,
     placeholder_signer: Pubkey,
     use_wsol: bool,
+    filter_other_instructions: bool,
 }
 
 impl<S> TitanLegProvider<S> {
-    pub fn new(source: S, side: LegSide, placeholder_signer: Pubkey, use_wsol: bool) -> Self {
+    pub fn new(
+        source: S,
+        side: LegSide,
+        placeholder_signer: Pubkey,
+        use_wsol: bool,
+        filter_other_instructions: bool,
+    ) -> Self {
         Self {
             descriptor: LegDescriptor::new(AggregatorKind::Titan, side),
             source: Arc::new(source),
             placeholder_signer,
             use_wsol,
+            filter_other_instructions,
         }
     }
 
@@ -323,13 +332,10 @@ where
             side = %self.descriptor.side,
             "请求 Titan 报价"
         );
+        let local_ip = lease.map(|handle| handle.ip());
         let result = self
             .source
-            .quote(
-                intent,
-                self.descriptor.side,
-                lease.map(|handle| handle.ip()),
-            )
+            .quote(intent, self.descriptor.side, local_ip)
             .await;
         if let Err(err) = &result {
             if let Some(handle) = lease {
@@ -340,6 +346,16 @@ where
                 );
                 handle.mark_outcome(IpLeaseOutcome::NetworkError);
             }
+        } else if let Ok(quote) = &result {
+            info!(
+                target: "multi_leg::titan",
+                provider = quote.provider,
+                quote_id = quote.quote_id.as_deref().unwrap_or("-"),
+                amount_in = quote.route.in_amount,
+                amount_out = quote.route.out_amount,
+                slippage_bps = quote.route.slippage_bps,
+                "Titan 报价就绪"
+            );
         }
         result
     }
@@ -350,16 +366,31 @@ where
         context: &LegBuildContext,
         _lease: Option<&IpLeaseHandle>,
     ) -> Result<Self::Plan, Self::BuildError> {
-        let instructions = quote
-            .route
-            .instructions
-            .iter()
-            .map(convert_instruction)
-            .collect::<Vec<_>>();
+        let mut requested_limit = None;
+        let mut requested_price = None;
+        let mut compute_budget_instructions = Vec::new();
+        let mut other_instructions = Vec::new();
 
-        let (compute_budget_instructions, other_instructions): (Vec<_>, Vec<_>) = instructions
-            .into_iter()
-            .partition(|ix| ix.program_id == compute_budget::id());
+        for ix in quote.route.instructions.iter().map(convert_instruction) {
+            if ix.program_id == compute_budget::id() {
+                if let Some(value) = parse_compute_unit_limit(&ix) {
+                    requested_limit = Some(value);
+                }
+                if let Some(price) = parse_compute_unit_price(&ix) {
+                    requested_price = Some(price);
+                }
+                if !self.filter_other_instructions {
+                    compute_budget_instructions.push(ix);
+                }
+                continue;
+            }
+
+            if self.filter_other_instructions && ix.program_id != TITAN_PROGRAM_ID {
+                continue;
+            }
+
+            other_instructions.push(ix);
+        }
 
         let mut plan = LegPlan {
             descriptor: self.descriptor.clone(),
@@ -377,6 +408,13 @@ where
             requested_compute_unit_price_micro_lamports: None,
             requested_tip_lamports: None,
         };
+
+        if let Some(limit) = requested_limit {
+            plan.requested_compute_unit_limit = Some(limit);
+        }
+        if let Some(price) = requested_price {
+            plan.requested_compute_unit_price_micro_lamports = Some(price);
+        }
 
         self.rewrite_placeholder_accounts(&mut plan, context.payer, &quote.route);
         strip_redundant_ata_creations(&mut plan, context.payer);
@@ -403,6 +441,32 @@ fn convert_instruction(ix: &TitanInstruction) -> Instruction {
         accounts,
         data: ix.data.clone(),
     }
+}
+
+fn parse_compute_unit_limit(ix: &Instruction) -> Option<u32> {
+    if ix.program_id != compute_budget::id() {
+        return None;
+    }
+    let data = ix.data.as_slice();
+    if data.first().copied()? == 2 && data.len() >= 5 {
+        let mut buf = [0u8; 4];
+        buf.copy_from_slice(&data[1..5]);
+        return Some(u32::from_le_bytes(buf));
+    }
+    None
+}
+
+fn parse_compute_unit_price(ix: &Instruction) -> Option<u64> {
+    if ix.program_id != compute_budget::id() {
+        return None;
+    }
+    let data = ix.data.as_slice();
+    if data.first().copied()? == 3 && data.len() >= 9 {
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&data[1..9]);
+        return Some(u64::from_le_bytes(buf));
+    }
+    None
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -653,6 +717,7 @@ mod tests {
             LegSide::Buy,
             placeholder,
             false,
+            false,
         );
 
         let quote = provider.quote(&intent, None).await.expect("quote");
@@ -672,3 +737,4 @@ mod tests {
         assert_eq!(rewrite.replacement, context.payer);
     }
 }
+const TITAN_PROGRAM_ID: Pubkey = pubkey!("T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT");

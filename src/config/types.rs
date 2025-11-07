@@ -658,6 +658,8 @@ pub struct TitanTxConfig {
     pub create_output_token_account: Option<bool>,
     #[serde(default)]
     pub use_wsol: bool,
+    #[serde(default)]
+    pub filter_other_instructions: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -693,6 +695,8 @@ pub struct KaminoQuoteConfig {
     #[serde(default)]
     pub resolve_lookup_tables_via_rpc: bool,
     #[serde(default)]
+    pub with_simulation: bool,
+    #[serde(default)]
     pub cadence: QuoteCadenceConfig,
 }
 
@@ -707,6 +711,7 @@ impl Default for KaminoQuoteConfig {
             routes: Vec::new(),
             cu_limit_multiplier: default_cu_limit_multiplier(),
             resolve_lookup_tables_via_rpc: false,
+            with_simulation: false,
             cadence: QuoteCadenceConfig::default(),
         }
     }

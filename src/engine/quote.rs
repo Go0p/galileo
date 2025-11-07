@@ -270,6 +270,13 @@ impl QuoteExecutor {
                 if !defaults.routes.is_empty() {
                     request.routes = defaults.routes.clone();
                 }
+                if defaults.with_simulation {
+                    request.with_simulation = true;
+                    request.filter_failed_simulations = true;
+                } else {
+                    request.with_simulation = false;
+                    request.filter_failed_simulations = false;
+                }
 
                 match client.quote_with_ip(&request, local_ip).await {
                     Ok(response) => {

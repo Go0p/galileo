@@ -4,9 +4,10 @@ memo: ""
 # 只允许交易这些 dex
 enable_dexs: [
     # "HumidiFi",
-    # "SolFi",
+    # # "SolFi",
     # "SolFi V2",
-    # "Tessera V",
+    # "GoonFi",
+    # "TesseraV",
     # "ZeroFi",
     # "Whirlpools",
     # "Obric V2",
@@ -16,10 +17,11 @@ enable_dexs: [
   ]
 
 exclude_dexes: [
-    # 通过 exclude_dexes 会在 DFlow /quote 请求中拼接为 excludeDexes 参数
-    # "DFlow JIT Router",
-  ]
+  "DFlow JIT Router"
+]
 
+# 通过 exclude_dexes 会在 DFlow /quote 请求中拼接为 excludeDexes 参数
+# "DFlow JIT Router",
 enable_landers: [
     # "staked"
     "jito",
