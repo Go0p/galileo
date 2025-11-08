@@ -50,53 +50,54 @@ engine:
     landing_ms: 5000
   multi_leg:
     quote_cadence:
+      titan_push_stride: 1
       default:
         max_concurrent_slots: 1
         inter_batch_delay_ms: 2000
 
-  # jupiter:
-  #   jupiter_buy:
-  #     enable: true
-  #     leg: "buy"
-  #     api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
-  #     api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
-  #     api_proxy: "http://192.168.3.3:9999"
-  #     quote_config:
-  #       only_direct_routes: true
-  #       restrict_intermediate_tokens: true
-  #       # cadence 控制 trade size 的调度节奏：
-  #       #   max_concurrent_slots: 槽位数量，auto 表示根据可用 IP 自动推导（多 IP 时可调整为固定值）。
-  #       #   inter_batch_delay_ms: 单个槽位两次 quote 之间的等待时间；设置为 0 表示立即轮询下一个 trade size。
-  #       #   cycle_cooldown_ms: 一轮所有 trade size 完成后的休息时间（大多数场景可留空或设为 0）。
-  #       cadence:
-  #         default:
-  #           max_concurrent_slots: 1
-  #           inter_batch_delay_ms: 3000
+  jupiter:
+    # jupiter_buy:
+    #   enable: true
+    #   leg: "buy"
+    #   api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
+    #   api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
+    #   api_proxy: "http://192.168.3.3:9999"
+    #   quote_config:
+    #     only_direct_routes: true
+    #     restrict_intermediate_tokens: true
+    #     # cadence 控制 trade size 的调度节奏：
+    #     #   max_concurrent_slots: 槽位数量，auto 表示根据可用 IP 自动推导（多 IP 时可调整为固定值）。
+    #     #   inter_batch_delay_ms: 单个槽位两次 quote 之间的等待时间；设置为 0 表示立即轮询下一个 trade size。
+    #     #   cycle_cooldown_ms: 一轮所有 trade size 完成后的休息时间（大多数场景可留空或设为 0）。
+    #     cadence:
+    #       default:
+    #         max_concurrent_slots: 1
+    #         inter_batch_delay_ms: 3000
             
-  #     swap_config:
-  #       use_shared_accounts: true
-  #       skip_user_accounts_rpc_calls: false
-  #       dynamic_compute_unit_limit: true
-  #       wrap_and_unwrap_sol: false
-  #   jupiter_sell:
-  #     enable: true
-  #     leg: "sell"
-  #     api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
-  #     api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
-  #     api_proxy: "http://192.168.3.3:9999"
-  #     quote_config:
-  #       only_direct_routes: true
-  #       restrict_intermediate_tokens: true
-  #       cadence:
-  #         default:
-  #           max_concurrent_slots: 1
-  #           inter_batch_delay_ms: 3000
+    #   swap_config:
+    #     use_shared_accounts: true
+    #     skip_user_accounts_rpc_calls: false
+    #     dynamic_compute_unit_limit: true
+    #     wrap_and_unwrap_sol: false
+    jupiter_sell:
+      enable: true
+      leg: "sell"
+      api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
+      api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
+      api_proxy: "http://192.168.124.4:9999"
+      quote_config:
+        only_direct_routes: true
+        restrict_intermediate_tokens: true
+        cadence:
+          default:
+            max_concurrent_slots: 1
+            inter_batch_delay_ms: 3000
             
-  #     swap_config:
-  #       use_shared_accounts: true
-  #       skip_user_accounts_rpc_calls: false
-  #       dynamic_compute_unit_limit: true
-  #       wrap_and_unwrap_sol: false
+      swap_config:
+        use_shared_accounts: true
+        skip_user_accounts_rpc_calls: false
+        dynamic_compute_unit_limit: true
+        wrap_and_unwrap_sol: false
   ultra:
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
     leg: "sell"
@@ -131,12 +132,12 @@ engine:
     # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
     api_quote_base: "https://quote-api.dflow.net"
     api_swap_base: "https://quote-api.dflow.net"
-    api_quote_base: "http://109.94.98.33:9800"
-    api_swap_base: "http://109.94.98.33:9800"
+    # api_quote_base: "http://109.94.98.33:9800"
+    # api_swap_base: "http://109.94.98.33:9800"
     # api_quote_base: "http://109.94.98.33:9999"
     # api_swap_base: "http://109.94.98.33:9999"
-    api_proxy: "http://192.168.3.3:9999"
-    # api_proxy: "http://192.168.124.4:9999"
+    # api_proxy: "http://192.168.3.3:9999"
+    api_proxy: "http://192.168.124.4:9999"
     quote_config:
       use_auto_slippage: false
       only_direct_routes: false
@@ -169,7 +170,7 @@ engine:
     # 可选：通过 WebSocket 代理抓包/调试 Titan 数据
     # ws_proxy: "ws://192.168.124.4:9999"
     ws_proxy: ""
-    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjI1MDcxMDYsImV4cCI6MTc2MjUwODAwNiwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.10HYakyid4jFQpzCCB_Nfq3UCmWAVFvM1s4wZ15lzII"
+    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjI1MjM1NTksImV4cCI6MTc2MjUyNDQ1OSwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.6HscBZuRtYgv1SsuV6bN2an9S4uOOrbFPPkLxqRJJjs"
     # Titan , Okx , Metis , Pyth
     swap_config:
       # dexes: 
@@ -273,7 +274,7 @@ bot:
   engines:
     pairs:
       - buy_leg: titan
-        sell_leg: dflow
+        sell_leg: jupiter
   flashloan:
     products:
       - marginfi

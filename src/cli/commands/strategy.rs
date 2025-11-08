@@ -1148,7 +1148,21 @@ fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
         .first_quote_timeout_ms
         .and_then(|ms| (ms > 0).then_some(Duration::from_millis(ms)));
 
-    let quote_source = TitanWsQuoteSource::new(subscription_cfg, first_quote_timeout);
+    let cadence_cfg = &config.galileo.engine.multi_leg.quote_cadence;
+    let cadence = QuoteCadence::from_config(cadence_cfg);
+    let titan_push_stride = cadence.titan_push_stride();
+    let stride_wait_timeout = cadence_cfg
+        .default
+        .inter_batch_delay_ms
+        .filter(|ms| *ms > 0)
+        .map(Duration::from_millis);
+
+    let quote_source = TitanWsQuoteSource::new(
+        subscription_cfg,
+        first_quote_timeout,
+        titan_push_stride,
+        stride_wait_timeout,
+    );
     let provider = TitanLegProvider::new(
         quote_source,
         LegSide::Buy,

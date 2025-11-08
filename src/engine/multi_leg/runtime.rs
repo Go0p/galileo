@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -85,8 +86,12 @@ impl MultiLegRuntime {
         let _buy_guard = self.concurrency.acquire(&buy_descriptor).await;
         let _sell_guard = self.concurrency.acquire(&sell_descriptor).await;
 
-        let buy_quote_handle = self.acquire_leg_handle(&buy_descriptor).await?;
-        let sell_quote_handle = self.acquire_leg_handle(&sell_descriptor).await?;
+        let buy_quote_handle = self
+            .acquire_leg_handle(&buy_descriptor, request.preferred_buy_ip)
+            .await?;
+        let sell_quote_handle = self
+            .acquire_leg_handle(&sell_descriptor, request.preferred_sell_ip)
+            .await?;
 
         let pair_quote = self
             .orchestrator
@@ -120,8 +125,8 @@ impl MultiLegRuntime {
             return Ok(None);
         }
 
-        let buy_plan_handle = self.acquire_leg_handle(&buy_descriptor).await?;
-        let sell_plan_handle = self.acquire_leg_handle(&sell_descriptor).await?;
+        let buy_plan_handle = self.acquire_leg_handle(&buy_descriptor, None).await?;
+        let sell_plan_handle = self.acquire_leg_handle(&sell_descriptor, None).await?;
 
         let plan = self
             .orchestrator
@@ -140,8 +145,31 @@ impl MultiLegRuntime {
         plan.map(Some)
     }
 
-    async fn acquire_leg_handle(&self, descriptor: &LegDescriptor) -> Result<IpLeaseHandle> {
+    async fn acquire_leg_handle(
+        &self,
+        descriptor: &LegDescriptor,
+        preferred_ip: Option<IpAddr>,
+    ) -> Result<IpLeaseHandle> {
         let task_kind = to_ip_task_kind(descriptor);
+        if let Some(ip) = preferred_ip {
+            match self
+                .ip_allocator
+                .acquire_handle_specific(task_kind, IpLeaseMode::Ephemeral, ip)
+                .await
+            {
+                Ok(handle) => return Ok(handle),
+                Err(err) => {
+                    debug!(
+                        target: "multi_leg::runtime",
+                        preferred_ip = %ip,
+                        aggregator = ?descriptor.kind,
+                        side = ?descriptor.side,
+                        error = %err,
+                        "指定 IP 不可用，降级为自动分配"
+                    );
+                }
+            }
+        }
         let lease = self
             .ip_allocator
             .acquire(task_kind, IpLeaseMode::Ephemeral)
@@ -353,6 +381,8 @@ pub struct PairPlanRequest {
     pub buy_context: LegBuildContext,
     pub sell_context: LegBuildContext,
     pub tag: Option<String>,
+    pub preferred_buy_ip: Option<IpAddr>,
+    pub preferred_sell_ip: Option<IpAddr>,
 }
 
 impl PairPlanRequest {

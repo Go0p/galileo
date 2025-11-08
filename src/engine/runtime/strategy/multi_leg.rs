@@ -5,7 +5,8 @@ use crate::engine::landing::ExecutionPlan;
 use crate::engine::multi_leg::orchestrator::{LegPairDescriptor, LegPairPlan};
 use crate::engine::multi_leg::runtime::{PairPlanBatchResult, PairPlanEvaluation, PairPlanRequest};
 use crate::engine::multi_leg::types::{
-    LegPlan, LegSide as MultiLegSide, QuoteIntent as MultiLegQuoteIntent,
+    AggregatorKind as MultiLegAggregatorKind, LegPlan, LegSide as MultiLegSide,
+    QuoteIntent as MultiLegQuoteIntent,
 };
 use crate::engine::quote_dispatcher::DispatchTaskHandler;
 use crate::engine::{
@@ -130,6 +131,16 @@ impl DispatchTaskHandler<MultiLegDispatchResult> for MultiLegBatchHandler {
             let sell_context =
                 self.context
                     .build_context(&sell_descriptor, self.payer, self.compute_unit_price);
+            let preferred_buy_ip = if buy_descriptor.kind == MultiLegAggregatorKind::Titan {
+                batch.preferred_ip
+            } else {
+                None
+            };
+            let preferred_sell_ip = if sell_descriptor.kind == MultiLegAggregatorKind::Titan {
+                batch.preferred_ip
+            } else {
+                None
+            };
 
             requests.push(PairPlanRequest {
                 buy_index: combo.buy_index,
@@ -139,6 +150,8 @@ impl DispatchTaskHandler<MultiLegDispatchResult> for MultiLegBatchHandler {
                 buy_context,
                 sell_context,
                 tag: Some(tag_value.clone()),
+                preferred_buy_ip,
+                preferred_sell_ip,
             });
         }
 

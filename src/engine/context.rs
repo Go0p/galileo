@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::time::Duration;
 
 use solana_sdk::pubkey::Pubkey;
@@ -7,12 +8,14 @@ use tracing::debug;
 use crate::strategy::types::TradePair;
 
 use super::MintSchedule;
+use super::titan::subscription::TitanSubscriptionPlan;
 
 #[derive(Debug, Clone)]
 pub struct QuoteBatchPlan {
     pub batch_id: u64,
     pub pair: TradePair,
     pub amount: u64,
+    pub preferred_ip: Option<IpAddr>,
 }
 
 #[derive(Debug, Clone)]
@@ -26,6 +29,7 @@ pub struct StrategyResources<'a> {
     pub pairs: &'a [TradePair],
     pub trade_profiles: &'a mut BTreeMap<Pubkey, MintSchedule>,
     pub next_batch_id: &'a mut u64,
+    pub titan_plan: Option<&'a TitanSubscriptionPlan>,
 }
 
 pub struct StrategyContext<'a> {
@@ -33,6 +37,7 @@ pub struct StrategyContext<'a> {
     trade_profiles: &'a mut BTreeMap<Pubkey, MintSchedule>,
     next_batch_id: &'a mut u64,
     pending: Vec<QuoteBatchPlan>,
+    titan_plan: Option<&'a TitanSubscriptionPlan>,
 }
 
 impl<'a> StrategyContext<'a> {
@@ -41,12 +46,14 @@ impl<'a> StrategyContext<'a> {
             pairs,
             trade_profiles,
             next_batch_id,
+            titan_plan,
         } = resources;
         Self {
             pairs,
             trade_profiles,
             next_batch_id,
             pending: Vec::new(),
+            titan_plan,
         }
     }
 
@@ -83,10 +90,14 @@ impl<'a> StrategyContext<'a> {
         for amount in amounts {
             let batch_id = *self.next_batch_id;
             *self.next_batch_id = self.next_batch_id.wrapping_add(1).max(1);
+            let preferred_ip = self
+                .titan_plan
+                .and_then(|plan| plan.preferred_ip(pair, amount));
             self.pending.push(QuoteBatchPlan {
                 batch_id,
                 pair: pair.clone(),
                 amount,
+                preferred_ip,
             });
         }
     }

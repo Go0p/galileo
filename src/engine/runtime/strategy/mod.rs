@@ -14,6 +14,7 @@ use crate::engine::context::{Action, StrategyContext, StrategyDecision, Strategy
 use crate::engine::planner::{DispatchStrategy, TxVariantPlanner};
 use crate::engine::plugins::flashloan::MarginfiFlashloanManager;
 use crate::engine::runtime::{LighthouseRuntime, multi_leg::MultiLegEngineContext};
+use crate::engine::titan::subscription::{TitanSubscriptionPlan, TitanSubscriptionPlanner};
 use crate::engine::{
     ComputeUnitPriceMode, EngineError, EngineIdentity, EngineResult, ProfitEvaluator, QuoteCadence,
     QuoteConfig, QuoteDispatcher, QuoteExecutor, Scheduler, StrategyTick, SwapPreparer,
@@ -175,6 +176,7 @@ where
     next_batch_id: u64,
     multi_leg: Option<Arc<MultiLegEngineContext>>,
     lighthouse: LighthouseRuntime,
+    titan_plan: Option<TitanSubscriptionPlan>,
 }
 
 impl<S> StrategyEngine<S>
@@ -206,10 +208,28 @@ where
             .total_slots
             .max(1)
             .saturating_mul(per_ip_capacity);
-        let trade_profiles = trade_profiles
+        let trade_profiles: BTreeMap<Pubkey, MintSchedule> = trade_profiles
             .into_iter()
             .map(|(mint, profile)| (mint, MintSchedule::from_profile(profile)))
             .collect();
+        let titan_plan = multi_leg.as_ref().and_then(|_| {
+            let ips = ip_allocator.slot_ips();
+            if ips.is_empty() {
+                return None;
+            }
+            let plan = TitanSubscriptionPlanner::build_plan(&trade_pairs, &trade_profiles, &ips);
+            if plan.is_empty() {
+                None
+            } else {
+                debug!(
+                    target: "engine::titan",
+                    ip_slots = ips.len(),
+                    assignments = plan.len(),
+                    "Titan 订阅计划已生成"
+                );
+                Some(plan)
+            }
+        });
         let lighthouse_runtime = LighthouseRuntime::new(&settings.lighthouse, ip_capacity_hint);
 
         Self {
@@ -231,6 +251,7 @@ where
             next_batch_id: 1,
             multi_leg: multi_leg.map(Arc::new),
             lighthouse: lighthouse_runtime,
+            titan_plan,
         }
     }
 
@@ -283,6 +304,7 @@ where
             pairs: &self.trade_pairs,
             trade_profiles: &mut self.trade_profiles,
             next_batch_id: &mut self.next_batch_id,
+            titan_plan: self.titan_plan.as_ref(),
         };
         let ctx = StrategyContext::new(resources);
         let StrategyDecision {

@@ -19,6 +19,7 @@ use crate::monitoring::events;
 use super::{IpInventory, IpSlot, IpSlotKind, IpSlotState, IpSource, NetworkError, NetworkResult};
 
 const DEFAULT_UNBOUNDED_PERMITS: usize = usize::MAX >> 8;
+const SPECIFIC_ACQUIRE_MAX_ATTEMPTS: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpTaskKind {
@@ -129,6 +130,76 @@ impl IpAllocator {
             .iter()
             .map(|slot| slot.ip())
             .collect::<Vec<_>>()
+    }
+
+    pub async fn acquire_specific(
+        &self,
+        kind: IpTaskKind,
+        mode: IpLeaseMode,
+        ip: std::net::IpAddr,
+    ) -> NetworkResult<IpLease> {
+        let slot = self
+            .inner
+            .slots
+            .iter()
+            .find(|slot| slot.ip() == ip)
+            .cloned()
+            .ok_or(NetworkError::InvalidManualIp {
+                ip,
+                reason: "ip_not_in_inventory",
+            })?;
+
+        let mut attempts = 0usize;
+        loop {
+            let now = Instant::now();
+            if let Some(delay) = slot.cooldown_delay(now) {
+                let now = Instant::now();
+                if delay > now {
+                    sleep_until(TokioInstant::from_std(delay)).await;
+                }
+                continue;
+            }
+
+            match slot.try_acquire(mode) {
+                Ok(permit) => {
+                    slot.record_request();
+                    let lease_id = self.inner.next_lease_id();
+                    return Ok(IpLease::new(
+                        Arc::clone(&self.inner),
+                        Arc::clone(&slot),
+                        permit,
+                        kind,
+                        mode,
+                        lease_id,
+                    ));
+                }
+                Err(TryAcquireError::NoPermits) => {
+                    attempts = attempts.saturating_add(1);
+                    if attempts >= SPECIFIC_ACQUIRE_MAX_ATTEMPTS {
+                        return Err(NetworkError::NoEligibleIp);
+                    }
+                    tokio::task::yield_now().await;
+                }
+                Err(TryAcquireError::Closed) => {
+                    return Err(NetworkError::InvalidManualIp {
+                        ip,
+                        reason: "ip_slot_closed",
+                    });
+                }
+            }
+        }
+    }
+
+    pub async fn acquire_handle_specific(
+        &self,
+        kind: IpTaskKind,
+        mode: IpLeaseMode,
+        ip: std::net::IpAddr,
+    ) -> NetworkResult<IpLeaseHandle> {
+        let lease = self.acquire_specific(kind, mode, ip).await?;
+        let handle = lease.handle();
+        drop(lease);
+        Ok(handle)
     }
 
     pub async fn acquire_excluding(

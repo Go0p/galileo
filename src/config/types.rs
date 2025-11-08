@@ -441,6 +441,8 @@ pub struct QuoteCadenceConfig {
     pub per_base_mint: BTreeMap<String, QuoteCadenceTimings>,
     #[serde(default)]
     pub per_label: BTreeMap<String, QuoteCadenceTimings>,
+    #[serde(default = "default_titan_push_stride")]
+    pub titan_push_stride: u64,
 }
 
 impl Default for QuoteCadenceConfig {
@@ -449,8 +451,13 @@ impl Default for QuoteCadenceConfig {
             default: QuoteCadenceTimings::default(),
             per_base_mint: BTreeMap::new(),
             per_label: BTreeMap::new(),
+            titan_push_stride: default_titan_push_stride(),
         }
     }
+}
+
+const fn default_titan_push_stride() -> u64 {
+    1
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -266,11 +266,36 @@ impl QuoteDispatcher {
         quote_config: QuoteConfig,
         strategy_label: Arc<String>,
     ) -> EngineResult<QuoteDispatchOutcome> {
-        let (forward_handle_raw, forward_ip_addr) = self
-            .ip_allocator
-            .acquire_handle_excluding(IpTaskKind::QuoteBuy, IpLeaseMode::Ephemeral, None)
-            .await
-            .map_err(EngineError::NetworkResource)?;
+        let (forward_handle_raw, forward_ip_addr) = match batch.preferred_ip {
+            Some(ip) => match self
+                .ip_allocator
+                .acquire_handle_specific(IpTaskKind::QuoteBuy, IpLeaseMode::Ephemeral, ip)
+                .await
+            {
+                Ok(handle) => (handle, ip),
+                Err(err) => {
+                    trace!(
+                        target: "engine::dispatcher",
+                        preferred_ip = %ip,
+                        error = %err,
+                        "preferred IP unavailable, falling back"
+                    );
+                    self.ip_allocator
+                        .acquire_handle_excluding(
+                            IpTaskKind::QuoteBuy,
+                            IpLeaseMode::Ephemeral,
+                            Some(ip),
+                        )
+                        .await
+                        .map_err(EngineError::NetworkResource)?
+                }
+            },
+            None => self
+                .ip_allocator
+                .acquire_handle_excluding(IpTaskKind::QuoteBuy, IpLeaseMode::Ephemeral, None)
+                .await
+                .map_err(EngineError::NetworkResource)?,
+        };
         let forward_ip = Some(forward_ip_addr);
         let mut forward_handle = Some(forward_handle_raw);
 

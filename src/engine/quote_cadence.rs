@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 use crate::config::{QuoteCadenceConfig, QuoteCadenceTimings};
@@ -25,6 +26,7 @@ pub struct QuoteCadence {
     default: CadenceTimings,
     per_base_mint: BTreeMap<String, CadenceTimings>,
     per_label: BTreeMap<String, CadenceTimings>,
+    titan_push_stride: NonZeroU64,
 }
 
 impl QuoteCadence {
@@ -40,11 +42,15 @@ impl QuoteCadence {
             .iter()
             .map(|(label, timings)| (normalize_key(label), CadenceTimings::from_config(timings)))
             .collect();
+        let titan_push_stride_value = config.titan_push_stride.max(1);
+        let titan_push_stride = NonZeroU64::new(titan_push_stride_value)
+            .unwrap_or_else(|| NonZeroU64::new(1).expect("1 is non-zero"));
 
         Self {
             default,
             per_base_mint,
             per_label,
+            titan_push_stride,
         }
     }
 
@@ -64,6 +70,10 @@ impl QuoteCadence {
     pub fn timings_for_label(&self, label: &str) -> Option<CadenceTimings> {
         let key = normalize_key(label);
         self.per_label.get(&key).copied()
+    }
+
+    pub fn titan_push_stride(&self) -> NonZeroU64 {
+        self.titan_push_stride
     }
 }
 

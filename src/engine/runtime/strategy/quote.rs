@@ -312,6 +312,7 @@ where
             batch_id,
             pair,
             amount,
+            preferred_ip: _,
         } = batch;
 
         trace!(

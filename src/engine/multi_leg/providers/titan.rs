@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::net::IpAddr;
+use std::num::NonZeroU64;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,7 +14,7 @@ use solana_sdk::pubkey::Pubkey;
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
 use tokio::time::timeout;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::api::titan::{
     Instruction as TitanInstruction, SwapRoute, TitanError,
@@ -106,14 +107,23 @@ pub struct TitanWsQuoteSource {
     config: Arc<TitanSubscriptionConfig>,
     streams: Arc<Mutex<HashMap<StreamKey, Arc<TitanStreamState>>>>,
     first_quote_timeout: Option<Duration>,
+    push_stride: NonZeroU64,
+    stride_wait_timeout: Option<Duration>,
 }
 
 impl TitanWsQuoteSource {
-    pub fn new(config: TitanSubscriptionConfig, first_quote_timeout: Option<Duration>) -> Self {
+    pub fn new(
+        config: TitanSubscriptionConfig,
+        first_quote_timeout: Option<Duration>,
+        push_stride: NonZeroU64,
+        stride_wait_timeout: Option<Duration>,
+    ) -> Self {
         Self {
             config: Arc::new(config),
             streams: Arc::new(Mutex::new(HashMap::new())),
             first_quote_timeout,
+            push_stride,
+            stride_wait_timeout,
         }
     }
 
@@ -130,18 +140,14 @@ impl TitanWsQuoteSource {
         &self,
         pair: TradePair,
         amount: u64,
-        local_ip: Option<IpAddr>,
+        local_ip: IpAddr,
     ) -> Result<Arc<TitanStreamState>, TitanLegError> {
-        let key = StreamKey::new(pair, amount);
+        let key = StreamKey::new(pair, amount, local_ip);
 
         if let Some(existing) = self.streams.lock().await.get(&key) {
             return Ok(existing.clone());
         }
-
-        let local_ip = local_ip.ok_or_else(|| {
-            TitanLegError::Source("Titan 推流未建立且缺少 IP 资源，无法初始化".to_string())
-        })?;
-        let (sender, receiver) = watch::channel(None);
+        let (sender, receiver) = watch::channel(StreamSnapshot::empty());
         let state = Arc::new(TitanStreamState::new(receiver));
 
         {
@@ -159,6 +165,7 @@ impl TitanWsQuoteSource {
                     amount = key.amount,
                     input = %key.pair.input_pubkey,
                     output = %key.pair.output_pubkey,
+                    ip = %key.ip,
                     "Titan 推流处理失败，即将移除缓存"
                 );
             }
@@ -169,11 +176,44 @@ impl TitanWsQuoteSource {
         Ok(state)
     }
 
+    async fn accept_snapshot(
+        &self,
+        cursor: &TitanStreamCursor,
+        snapshot: &StreamSnapshot,
+    ) -> Option<TitanQuote> {
+        let (Some(seq), Some(quote)) = (snapshot.seq, snapshot.quote.clone()) else {
+            return None;
+        };
+
+        if self.push_stride.get() == 1 {
+            cursor.force_consume(seq).await;
+            return Some(quote);
+        }
+
+        if cursor.try_consume_with_stride(seq, self.push_stride).await {
+            Some(quote)
+        } else {
+            None
+        }
+    }
+
+    async fn force_accept_snapshot(
+        &self,
+        cursor: &TitanStreamCursor,
+        snapshot: &StreamSnapshot,
+    ) -> Option<TitanQuote> {
+        let (Some(seq), Some(quote)) = (snapshot.seq, snapshot.quote.clone()) else {
+            return None;
+        };
+        cursor.force_consume(seq).await;
+        Some(quote)
+    }
+
     async fn run_stream(
         config: Arc<TitanSubscriptionConfig>,
         key: StreamKey,
         local_ip: IpAddr,
-        sender: watch::Sender<Option<TitanQuote>>,
+        sender: watch::Sender<StreamSnapshot>,
     ) -> Result<(), TitanLegError> {
         let mut stream = subscribe_quote_stream(
             (*config).clone(),
@@ -190,6 +230,7 @@ impl TitanWsQuoteSource {
             amount = key.amount,
             base_mint = %short_mint_str(key.pair.input_mint.as_str()),
             quote_mint = %short_mint_str(key.pair.output_mint.as_str()),
+            ip = %key.ip,
             "已建立 Titan 报价流"
         );
 
@@ -208,13 +249,14 @@ impl TitanWsQuoteSource {
                     provider,
                     quote_id: Some(update.quotes.id.clone()),
                 };
-                if sender.send(Some(quote)).is_err() {
+                let snapshot = StreamSnapshot::with_quote(update.seq, quote);
+                if sender.send(snapshot).is_err() {
                     break;
                 }
             }
         }
 
-        let _ = sender.send(None);
+        let _ = sender.send(StreamSnapshot::empty());
         Ok(())
     }
 }
@@ -233,46 +275,62 @@ impl TitanQuoteSource for TitanWsQuoteSource {
 
         let trade_pair = TradePair::from_pubkeys(intent.input_mint, intent.output_mint);
         let amount = intent.amount;
-        let key = StreamKey::new(trade_pair.clone(), amount);
+        let local_ip = local_ip.ok_or_else(|| {
+            TitanLegError::Source("Titan 推流未建立且缺少 IP 资源，无法初始化".to_string())
+        })?;
+        let key = StreamKey::new(trade_pair.clone(), amount, local_ip);
         let state = self.stream_state(trade_pair, amount, local_ip).await?;
-        let mut receiver = state.subscribe();
-        if let Some(quote) = receiver.borrow().clone() {
+        let mut cursor = state.cursor();
+
+        if let Some(quote) = self.accept_snapshot(&cursor, &cursor.snapshot()).await {
             return Ok(quote);
         }
 
         loop {
-            if let Some(wait) = self.first_quote_timeout {
-                match timeout(wait, receiver.changed()).await {
-                    Ok(Ok(())) => {
-                        if let Some(quote) = receiver.borrow().clone() {
+            let snapshot = cursor.snapshot();
+            if let Some(quote) = self.accept_snapshot(&cursor, &snapshot).await {
+                return Ok(quote);
+            }
+
+            let wait_duration = if snapshot.seq.is_none() {
+                self.first_quote_timeout
+            } else {
+                self.stride_wait_timeout
+            };
+
+            let wait_future = cursor.wait_for_change();
+            match wait_duration {
+                Some(wait) if wait > Duration::ZERO => match timeout(wait, wait_future).await {
+                    Ok(Ok(())) => continue,
+                    Ok(Err(_)) => break,
+                    Err(_) => {
+                        if snapshot.seq.is_none() {
+                            let timeout_ms = wait.as_millis() as u64;
+                            warn!(
+                                target: "multi_leg::titan",
+                                amount,
+                                input = %intent.input_mint,
+                                output = %intent.output_mint,
+                                timeout_ms,
+                                "Titan 首次报价超时"
+                            );
+                            self.streams.lock().await.remove(&key);
+                            return Err(TitanLegError::Source(format!(
+                                "Titan 推流首次报价超时 {}ms",
+                                timeout_ms
+                            )));
+                        }
+
+                        if let Some(quote) = self.force_accept_snapshot(&cursor, &snapshot).await {
                             return Ok(quote);
                         }
                         continue;
                     }
-                    Ok(Err(_)) => break,
-                    Err(_) => {
-                        let timeout_ms = wait.as_millis() as u64;
-                        warn!(
-                            target: "multi_leg::titan",
-                            amount,
-                            input = %intent.input_mint,
-                            output = %intent.output_mint,
-                            timeout_ms,
-                            "Titan 首次报价超时"
-                        );
-                        self.streams.lock().await.remove(&key);
-                        return Err(TitanLegError::Source(format!(
-                            "Titan 推流首次报价超时 {}ms",
-                            timeout_ms
-                        )));
+                },
+                _ => {
+                    if wait_future.await.is_err() {
+                        break;
                     }
-                }
-            } else {
-                if receiver.changed().await.is_err() {
-                    break;
-                }
-                if let Some(quote) = receiver.borrow().clone() {
-                    return Ok(quote);
                 }
             }
         }
@@ -347,7 +405,7 @@ where
                 handle.mark_outcome(IpLeaseOutcome::NetworkError);
             }
         } else if let Ok(quote) = &result {
-            info!(
+            debug!(
                 target: "multi_leg::titan",
                 provider = quote.provider,
                 quote_id = quote.quote_id.as_deref().unwrap_or("-"),
@@ -366,7 +424,10 @@ where
         context: &LegBuildContext,
         _lease: Option<&IpLeaseHandle>,
     ) -> Result<Self::Plan, Self::BuildError> {
-        let mut requested_limit = None;
+        let mut requested_limit = quote.route.compute_units_safe.map(|value| value as u32);
+        if requested_limit.is_none() {
+            requested_limit = quote.route.compute_units.map(|value| value as u32);
+        }
         let mut requested_price = None;
         let mut compute_budget_instructions = Vec::new();
         let mut other_instructions = Vec::new();
@@ -473,26 +534,91 @@ fn parse_compute_unit_price(ix: &Instruction) -> Option<u64> {
 struct StreamKey {
     pair: TradePair,
     amount: u64,
+    ip: IpAddr,
 }
 
 impl StreamKey {
-    fn new(pair: TradePair, amount: u64) -> Self {
-        Self { pair, amount }
+    fn new(pair: TradePair, amount: u64, ip: IpAddr) -> Self {
+        Self { pair, amount, ip }
     }
 }
 
 #[derive(Debug)]
 struct TitanStreamState {
-    receiver: watch::Receiver<Option<TitanQuote>>,
+    receiver: watch::Receiver<StreamSnapshot>,
+    last_consumed: Arc<Mutex<Option<u64>>>,
 }
 
 impl TitanStreamState {
-    fn new(receiver: watch::Receiver<Option<TitanQuote>>) -> Self {
-        Self { receiver }
+    fn new(receiver: watch::Receiver<StreamSnapshot>) -> Self {
+        Self {
+            receiver,
+            last_consumed: Arc::new(Mutex::new(None)),
+        }
     }
 
-    fn subscribe(&self) -> watch::Receiver<Option<TitanQuote>> {
-        self.receiver.clone()
+    fn cursor(&self) -> TitanStreamCursor {
+        TitanStreamCursor {
+            receiver: self.receiver.clone(),
+            last_consumed: Arc::clone(&self.last_consumed),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StreamSnapshot {
+    seq: Option<u64>,
+    quote: Option<TitanQuote>,
+}
+
+impl StreamSnapshot {
+    fn empty() -> Self {
+        Self {
+            seq: None,
+            quote: None,
+        }
+    }
+
+    fn with_quote(seq: u64, quote: TitanQuote) -> Self {
+        Self {
+            seq: Some(seq),
+            quote: Some(quote),
+        }
+    }
+}
+
+struct TitanStreamCursor {
+    receiver: watch::Receiver<StreamSnapshot>,
+    last_consumed: Arc<Mutex<Option<u64>>>,
+}
+
+impl TitanStreamCursor {
+    fn snapshot(&self) -> StreamSnapshot {
+        self.receiver.borrow().clone()
+    }
+
+    async fn wait_for_change(&mut self) -> Result<(), watch::error::RecvError> {
+        self.receiver.changed().await
+    }
+
+    async fn try_consume_with_stride(&self, seq: u64, stride: NonZeroU64) -> bool {
+        let mut guard = self.last_consumed.lock().await;
+        match *guard {
+            None => {
+                *guard = Some(seq);
+                true
+            }
+            Some(prev) if seq.saturating_sub(prev) >= stride.get() => {
+                *guard = Some(seq);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    async fn force_consume(&self, seq: u64) {
+        let mut guard = self.last_consumed.lock().await;
+        *guard = Some(seq);
     }
 }
 

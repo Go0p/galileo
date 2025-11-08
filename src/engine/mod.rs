@@ -16,6 +16,7 @@ mod quote_dispatcher;
 mod runtime;
 mod scheduler;
 mod swap_preparer;
+pub mod titan;
 mod types;
 pub mod ultra;
 
