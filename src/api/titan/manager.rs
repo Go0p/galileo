@@ -2,7 +2,6 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json;
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
@@ -28,7 +27,6 @@ pub enum TitanLeg {
 pub struct TitanSubscriptionConfig {
     pub ws_url: Url,
     pub ws_proxy: Option<Url>,
-    pub jwt: String,
     pub user_pubkey: Pubkey,
     pub providers: Vec<String>,
     pub dexes: Vec<String>,
@@ -67,6 +65,7 @@ pub async fn subscribe_quote_stream(
     leg: TitanLeg,
     amount: u64,
     local_ip: Option<IpAddr>,
+    jwt: &str,
 ) -> Result<TitanQuoteStream, TitanError> {
     if amount == 0 {
         return Err(TitanError::Protocol(
@@ -74,30 +73,12 @@ pub async fn subscribe_quote_stream(
         ));
     }
 
-    let endpoint = build_authenticated_endpoint(&config)?;
+    let endpoint = build_authenticated_endpoint(&config, jwt)?;
     let client = Arc::new(
         TitanWsClient::connect_with_options(endpoint, config.ws_proxy.clone(), local_ip).await?,
     );
 
     let request = build_subscription_request(&config, pair, leg, amount);
-    if tracing::enabled!(tracing::Level::DEBUG) {
-        match serde_json::to_string(&request) {
-            Ok(payload) => {
-                debug!(
-                    target: "titan::manager",
-                    request = payload,
-                    "Titan subscription request"
-                );
-            }
-            Err(err) => {
-                debug!(
-                    target: "titan::manager",
-                    error = %err,
-                    "Titan subscription request serialization failed"
-                );
-            }
-        }
-    }
     let session = client.subscribe_swap_quotes(request).await.map_err(|err| {
         error!(
             target: "titan::manager",
@@ -183,16 +164,17 @@ pub async fn subscribe_quote_stream(
     })
 }
 
-fn build_authenticated_endpoint(config: &TitanSubscriptionConfig) -> Result<Url, TitanError> {
-    if config.jwt.trim().is_empty() {
+fn build_authenticated_endpoint(
+    config: &TitanSubscriptionConfig,
+    jwt: &str,
+) -> Result<Url, TitanError> {
+    if jwt.trim().is_empty() {
         return Err(TitanError::MissingAuthToken);
     }
 
     let mut endpoint = config.ws_url.clone();
     endpoint.set_query(None);
-    endpoint
-        .query_pairs_mut()
-        .append_pair("auth", config.jwt.as_str());
+    endpoint.query_pairs_mut().append_pair("auth", jwt);
     Ok(endpoint)
 }
 

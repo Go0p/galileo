@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 use crate::api::dflow::DflowApiClient;
 use crate::api::jupiter::JupiterApiClient;
 use crate::api::kamino::KaminoApiClient;
-use crate::api::titan::TitanSubscriptionConfig;
+use crate::api::titan::{TitanJwtManager, TitanSubscriptionConfig};
 use crate::api::ultra::UltraApiClient;
 use crate::cache::AltCache;
 use crate::cli::context::{
@@ -31,7 +31,10 @@ use crate::engine::multi_leg::{
         dflow::DflowLegProvider,
         jupiter::JupiterLegProvider,
         kamino::KaminoLegProvider,
-        titan::{TitanLegProvider, TitanWsQuoteSource, METIS_PROGRAM_ID, OKX_PROGRAM_ID, TITAN_PROGRAM_ID},
+        titan::{
+            METIS_PROGRAM_ID, OKX_PROGRAM_ID, TITAN_PROGRAM_ID, TitanLegProvider,
+            TitanWsQuoteSource,
+        },
         ultra::UltraLegProvider,
     },
     runtime::{MultiLegRuntime, MultiLegRuntimeConfig},
@@ -1092,27 +1095,31 @@ fn register_titan_leg(
         None => None,
     };
 
-    let jwt = titan_cfg
+    let jwt_cfg = titan_cfg
         .jwt
         .as_ref()
-        .ok_or_else(|| anyhow!("titan.jwt 未配置"))?
-        .trim()
-        .to_string();
-    if jwt.is_empty() {
-        return Err(anyhow!("titan.jwt 不能为空"));
-    }
-
-    let tx_user_pubkey = titan_cfg
-        .tx_config
-        .user_public_key
+        .ok_or_else(|| anyhow!("titan.jwt 未配置"))?;
+    let jwt_api = jwt_cfg
+        .api_url
         .as_deref()
-        .ok_or_else(|| anyhow!("titan.tx_config.user_public_key 未配置"))?
+        .ok_or_else(|| anyhow!("titan.jwt.api_url 未配置"))?
         .trim();
-    if tx_user_pubkey.is_empty() {
-        return Err(anyhow!("titan.tx_config.user_public_key 不能为空字符串"));
+    if jwt_api.is_empty() {
+        return Err(anyhow!("titan.jwt.api_url 不能为空"));
     }
-    let user_pubkey = solana_sdk::pubkey::Pubkey::from_str(tx_user_pubkey)
-        .map_err(|err| anyhow!("Titan user public key 无效: {err}"))?;
+    let jwt_address = jwt_cfg
+        .address
+        .as_deref()
+        .ok_or_else(|| anyhow!("titan.jwt.address 未配置"))?
+        .trim();
+    if jwt_address.is_empty() {
+        return Err(anyhow!("titan.jwt.address 不能为空"));
+    }
+    let jwt_api_url =
+        Url::parse(jwt_api).map_err(|err| anyhow!("titan.jwt.api_url 无效: {err}"))?;
+    let user_pubkey = solana_sdk::pubkey::Pubkey::from_str(jwt_address)
+        .map_err(|err| anyhow!("titan.jwt.address 无效: {err}"))?;
+    let jwt_manager = Arc::new(TitanJwtManager::new(jwt_api_url, jwt_address.to_string()));
 
     let sanitize_list = |values: &[String]| -> Vec<String> {
         values
@@ -1138,7 +1145,6 @@ fn register_titan_leg(
     let subscription_cfg = TitanSubscriptionConfig {
         ws_url,
         ws_proxy,
-        jwt,
         user_pubkey,
         providers: swap_providers,
         dexes,
@@ -1168,6 +1174,7 @@ fn register_titan_leg(
 
     let quote_source = Arc::new(TitanWsQuoteSource::new(
         subscription_cfg,
+        jwt_manager,
         first_quote_timeout,
         titan_push_stride,
         stride_wait_timeout,
@@ -1176,7 +1183,6 @@ fn register_titan_leg(
         (*quote_source).clone(),
         LegSide::Buy,
         user_pubkey,
-        titan_cfg.tx_config.use_wsol,
         allowed_programs,
         titan_cfg.tx_config.filter_other_instructions,
     );

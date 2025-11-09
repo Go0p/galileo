@@ -5,7 +5,7 @@ use tracing::{debug, warn};
 
 use super::aggregator::{KaminoQuote, QuoteResponseVariant};
 use crate::api::dflow::{
-    DflowApiClient, DflowError, QuoteRequest as DflowQuoteRequest, SlippageBps, SlippagePreset,
+    DflowApiClient, DflowError, QuoteRequest as DflowQuoteRequest, SlippageBps,
 };
 use crate::api::jupiter::{JupiterApiClient, JupiterError, QuoteRequest as JupiterQuoteRequest};
 use crate::api::kamino::{KaminoApiClient, KaminoError, QuoteRequest as KaminoQuoteRequest};
@@ -212,14 +212,15 @@ impl QuoteExecutor {
                 if let Some(max_route_length) = defaults.max_route_length {
                     request.max_route_length = Some(max_route_length);
                 }
-                if defaults.use_auto_slippage {
-                    request.slippage_bps = Some(SlippageBps::Preset(SlippagePreset::Auto));
-                } else {
-                    request.slippage_bps = Some(SlippageBps::Fixed(config.slippage_bps));
-                }
+                let effective_slippage = defaults.slippage_bps.unwrap_or(config.slippage_bps);
+                request.slippage_bps = Some(SlippageBps::Fixed(effective_slippage));
 
+                let slippage_bps = defaults.slippage_bps.unwrap_or(config.slippage_bps);
                 match client.quote_with_ip(&request, local_ip).await {
-                    Ok(response) => Ok(Some(QuoteResponseVariant::Dflow(response))),
+                    Ok(mut response) => {
+                        response.payload_mut().apply_slippage_bps(slippage_bps);
+                        Ok(Some(QuoteResponseVariant::Dflow(response)))
+                    }
                     Err(DflowError::RateLimited { status, body, .. }) => {
                         lease.mark_outcome(IpLeaseOutcome::RateLimited);
                         warn!(

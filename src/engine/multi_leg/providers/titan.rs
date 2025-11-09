@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::net::IpAddr;
 use std::num::NonZeroU64;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::{StreamExt, stream::FuturesUnordered};
+use serde_json::json;
 use solana_compute_budget_interface as compute_budget;
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::pubkey;
@@ -18,7 +18,7 @@ use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 use crate::api::titan::{
-    Instruction as TitanInstruction, SwapRoute, TitanError,
+    Instruction as TitanInstruction, SwapRoute, TitanError, TitanJwtError, TitanJwtManager,
     manager::{TitanLeg, TitanQuoteUpdate, TitanSubscriptionConfig, subscribe_quote_stream},
 };
 use crate::cache::cached_associated_token_address;
@@ -56,7 +56,6 @@ pub struct TitanLegProvider<S> {
     descriptor: LegDescriptor,
     source: Arc<S>,
     placeholder_signer: Pubkey,
-    use_wsol: bool,
     allowed_programs: Arc<HashSet<Pubkey>>,
     filter_other_instructions: bool,
 }
@@ -66,7 +65,6 @@ impl<S> TitanLegProvider<S> {
         source: S,
         side: LegSide,
         placeholder_signer: Pubkey,
-        use_wsol: bool,
         allowed_programs: HashSet<Pubkey>,
         filter_other_instructions: bool,
     ) -> Self {
@@ -74,7 +72,6 @@ impl<S> TitanLegProvider<S> {
             descriptor: LegDescriptor::new(AggregatorKind::Titan, side),
             source: Arc::new(source),
             placeholder_signer,
-            use_wsol,
             allowed_programs: Arc::new(allowed_programs),
             filter_other_instructions,
         }
@@ -110,6 +107,7 @@ impl<S> TitanLegProvider<S> {
 #[derive(Clone, Debug)]
 pub struct TitanWsQuoteSource {
     config: Arc<TitanSubscriptionConfig>,
+    jwt_manager: Arc<TitanJwtManager>,
     streams: Arc<Mutex<HashMap<StreamKey, Arc<TitanStreamState>>>>,
     first_quote_timeout: Option<Duration>,
     push_stride: NonZeroU64,
@@ -119,12 +117,14 @@ pub struct TitanWsQuoteSource {
 impl TitanWsQuoteSource {
     pub fn new(
         config: TitanSubscriptionConfig,
+        jwt_manager: Arc<TitanJwtManager>,
         first_quote_timeout: Option<Duration>,
         push_stride: NonZeroU64,
         stride_wait_timeout: Option<Duration>,
     ) -> Self {
         Self {
             config: Arc::new(config),
+            jwt_manager,
             streams: Arc::new(Mutex::new(HashMap::new())),
             first_quote_timeout,
             push_stride,
@@ -161,9 +161,12 @@ impl TitanWsQuoteSource {
         }
 
         let config = Arc::clone(&self.config);
+        let jwt_manager = Arc::clone(&self.jwt_manager);
         let streams = Arc::clone(&self.streams);
         tokio::spawn(async move {
-            if let Err(err) = Self::run_stream(config, key.clone(), local_ip, sender).await {
+            if let Err(err) =
+                Self::run_stream(config, jwt_manager, key.clone(), local_ip, sender).await
+            {
                 debug!(
                     target: "multi_leg::titan",
                     error = %err,
@@ -216,6 +219,7 @@ impl TitanWsQuoteSource {
 
     async fn run_stream(
         config: Arc<TitanSubscriptionConfig>,
+        jwt_manager: Arc<TitanJwtManager>,
         key: StreamKey,
         local_ip: IpAddr,
         sender: watch::Sender<StreamSnapshot>,
@@ -224,15 +228,44 @@ impl TitanWsQuoteSource {
         let base_display = short_mint_str(key.pair.input_mint.as_str());
         let quote_display = short_mint_str(key.pair.output_mint.as_str());
         loop {
+            let jwt = jwt_manager
+                .token_for(local_ip, &key.pair)
+                .await
+                .map_err(TitanLegError::from)?;
             let mut stream = subscribe_quote_stream(
                 (*config).clone(),
                 &key.pair,
                 TitanLeg::Forward,
                 key.amount,
                 Some(local_ip),
+                &jwt,
             )
             .await
             .map_err(TitanLegError::from)?;
+
+            let interval_ms = stream.info.interval_ms;
+            let providers = config.providers.clone();
+            let providers_for_log = providers.clone();
+            let request_log = json!({
+                "swap": {
+                    "amount": key.amount,
+                    "input_mint": key.pair.input_mint,
+                    "output_mint": key.pair.output_mint,
+                    "swap_mode": "ExactIn",
+                    "slippage_bps": 0,
+                    "only_direct_routes": config.only_direct_routes.unwrap_or(false),
+                    "providers": providers,
+                },
+                "transaction": {
+                    "user_public_key": config.user_pubkey.to_string(),
+                    "close_input_token_account": config.close_input_token_account,
+                    "create_output_token_account": config.create_output_token_account.unwrap_or(false),
+                },
+                "update": {
+                    "intervalMs": interval_ms,
+                    "numQuotes": config.update_num_quotes,
+                }
+            });
 
             debug!(
                 target: "multi_leg::titan",
@@ -240,6 +273,9 @@ impl TitanWsQuoteSource {
                 base_mint = %base_display,
                 quote_mint = %quote_display,
                 ip = %key.ip,
+                interval_ms = interval_ms,
+                providers = ?providers_for_log,
+                request = %request_log,
                 "已建立 Titan 报价流"
             );
 
@@ -269,10 +305,12 @@ impl TitanWsQuoteSource {
                 if let Some((provider, route)) = Self::select_best_route(&update) {
                     debug!(
                         target: "multi_leg::titan",
-                        provider = provider,
-                        out_amount = route.out_amount,
-                        in_amount = route.in_amount,
+                        base_mint = %base_display,
+                        quote_mint = %quote_display,
+                        amount_in = route.in_amount,
+                        amount_out = route.out_amount,
                         slippage_bps = route.slippage_bps,
+                        provider = provider,
                         ip = %key.ip,
                         "Titan 报价更新"
                     );
@@ -416,8 +454,16 @@ impl TitanQuoteSource for TitanWsQuoteSource {
 pub enum TitanLegError {
     #[error("Titan 报价源错误: {0}")]
     Source(String),
+    #[error("Titan 授权错误: {0}")]
+    Auth(String),
     #[error("Titan API 错误: {0}")]
     Api(#[from] TitanError),
+}
+
+impl From<TitanJwtError> for TitanLegError {
+    fn from(err: TitanJwtError) -> Self {
+        Self::Auth(err.to_string())
+    }
 }
 
 #[async_trait]
@@ -474,16 +520,6 @@ where
                 );
                 handle.mark_outcome(IpLeaseOutcome::NetworkError);
             }
-        } else if let Ok(quote) = &result {
-            debug!(
-                target: "multi_leg::titan",
-                provider = quote.provider,
-                quote_id = quote.quote_id.as_deref().unwrap_or("-"),
-                amount_in = quote.route.in_amount,
-                amount_out = quote.route.out_amount,
-                slippage_bps = quote.route.slippage_bps,
-                "Titan 报价就绪"
-            );
         }
         result
     }
@@ -549,9 +585,6 @@ where
 
         self.rewrite_placeholder_accounts(&mut plan, context.payer, &quote.route);
         strip_redundant_ata_creations(&mut plan, context.payer);
-        if self.use_wsol {
-            strip_wsol_wrapping_instructions(&mut plan, context.payer);
-        }
 
         Ok(plan)
     }
@@ -718,51 +751,6 @@ fn collect_placeholder_ata_rewrites(
     }
 
     rewrites
-}
-
-fn strip_wsol_wrapping_instructions(plan: &mut LegPlan, payer: Pubkey) {
-    const WSOL_MINT_STR: &str = "So11111111111111111111111111111111111111112";
-    let wsol_mint = Pubkey::from_str(WSOL_MINT_STR).expect("valid WSOL mint");
-    let spl_token_program_id =
-        Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").expect("token program");
-    let system_program_id =
-        Pubkey::from_str("11111111111111111111111111111111").expect("system program");
-    let wsol_ata = cached_associated_token_address(&payer, &wsol_mint, &spl_token_program_id);
-
-    plan.instructions.retain(|ix| {
-        !is_wsol_wrap_or_sync(ix, payer, wsol_ata, system_program_id, spl_token_program_id)
-    });
-}
-
-fn is_sync_native_instruction(data: &[u8]) -> bool {
-    matches!(data.first(), Some(&17))
-}
-
-fn is_wsol_wrap_or_sync(
-    ix: &Instruction,
-    payer: Pubkey,
-    wsol_ata: Pubkey,
-    system_program_id: Pubkey,
-    spl_token_program_id: Pubkey,
-) -> bool {
-    if ix.program_id == system_program_id {
-        return ix.accounts.len() >= 2
-            && ix.accounts[0].pubkey == payer
-            && ix.accounts[1].pubkey == wsol_ata;
-    }
-
-    if ix.program_id == spl_token_program_id
-        && is_sync_native_instruction(&ix.data)
-        && ix.accounts.first().map(|meta| meta.pubkey) == Some(wsol_ata)
-    {
-        return true;
-    }
-
-    ix.accounts
-        .iter()
-        .any(|meta| meta.pubkey == payer && meta.is_signer)
-        && ix.accounts.iter().any(|meta| meta.pubkey == wsol_ata)
-        && ix.data.get(0).copied().unwrap_or_default() == 12
 }
 
 fn strip_redundant_ata_creations(plan: &mut LegPlan, payer: Pubkey) {
@@ -938,9 +926,6 @@ mod tests {
         assert_eq!(rewrite.replacement, context.payer);
     }
 }
-pub(crate) const TITAN_PROGRAM_ID: Pubkey =
-    pubkey!("T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT");
-pub(crate) const METIS_PROGRAM_ID: Pubkey =
-    pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
-pub(crate) const OKX_PROGRAM_ID: Pubkey =
-    pubkey!("proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u");
+pub(crate) const TITAN_PROGRAM_ID: Pubkey = pubkey!("T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT");
+pub(crate) const METIS_PROGRAM_ID: Pubkey = pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
+pub(crate) const OKX_PROGRAM_ID: Pubkey = pubkey!("proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u");

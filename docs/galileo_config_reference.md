@@ -21,6 +21,7 @@ Galileo 已移除历史 Jupiter 依赖，所有聚合器配置均通过 `galileo
 - `[engine.dflow]`
   - `api_quote_base` / `api_swap_base`：DFlow Quote 与 Swap API 基址。
   - `api_proxy`：可选，覆盖全局代理。
+  - `quote_config.slippage_bps`：显式设置报价请求使用的 `slippageBps`，若留空则回退到策略层的 `quote_config.slippage_bps`。旧版 `use_auto_slippage` 已移除。
 - `quote_config.cadence.default.max_concurrent_slots`：`"auto"`（按 IP 资源自动推导槽位数）或正整数（显式限制同时运行的槽位数）；`inter_batch_delay_ms` 控制同一槽位连续 trade size 之间的固定等待时间，`cycle_cooldown_ms` 定义一轮任务全部完成后的休息时间。
   - `quote_config.cadence.per_base_mint`：可选，针对特定 base mint 覆盖默认节奏（同字段含义）；未配置时沿用 `default`。
   - `swap_config.cu_limit_multiplier`：对 `/swap-instructions` 返回的 compute unit limit 乘以系数重写。
@@ -54,7 +55,7 @@ Galileo 已移除历史 Jupiter 依赖，所有聚合器配置均通过 `galileo
   - 各聚合器的 `swap_config.wrap_and_unwrap_sol`、`dynamic_compute_unit_limit` 等选项会注入 `MultiLegEngineContext`，直接影响组合装配。
 
 ## 3. Titan / Flashloan / 上链器
-- Titan 参数集中在 `[engine.titan]`：包含 WS 端点、JWT、推送节奏以及允许的路由列表。可用 `idle_resubscribe_timeout_ms` 控制“长时间无推流时自动重订阅”的超时，设为 0 或 `null` 表示禁用。
+- Titan 参数集中在 `[engine.titan]`：包含 WS 端点、JWT、推送节奏以及允许的路由列表。`jwt.api_url` 指向 `https://titan.exchange/api/apollo-jwt`（或部署方提供的等价端点），`jwt.address` 则填入 Titan 面板绑定的钱包地址；多 IP 会为每个 IP 独立申请 token。可用 `idle_resubscribe_timeout_ms` 控制“长时间无推流时自动重订阅”的超时，设为 0 或 `null` 表示禁用。`tx_config` 仅保留 `create_output_token_account` / `filter_other_instructions` 等落地行为开关。
 - 闪电贷配置 → `[flashloan.marginfi]`：保留 Marginfi 账户、CU 开销等细节；启停及是否优先使用钱包余额由 `bot.flashloan` 统一驱动。
 - 各类上链器（Jito、Staked、Temporal、Astralane）已拆分到 `lander.yaml`，Galileo 会在与主配置相同的目录下自动加载。
 

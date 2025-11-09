@@ -43,7 +43,7 @@ engine:
     api_quote_base: "https://quote-api.dflow.net"
     api_swap_base: "https://quote-api.dflow.net"
     quote_config:
-      use_auto_slippage: false
+      slippage_bps: 5
       only_direct_routes: false
       max_route_length: 3
       cadence:

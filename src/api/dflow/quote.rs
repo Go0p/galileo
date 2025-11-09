@@ -176,6 +176,16 @@ pub struct QuoteResponsePayload {
 }
 
 impl QuoteResponsePayload {
+    pub fn apply_slippage_bps(&mut self, slippage_bps: u16) {
+        self.slippage_bps = slippage_bps;
+        let denominator = 10_000u128;
+        let factor = denominator.saturating_sub(slippage_bps as u128);
+        let adjusted = (self.out_amount as u128).saturating_mul(factor) / denominator;
+        let min_out = adjusted.min(u128::from(u64::MAX)) as u64;
+        self.min_out_amount = min_out;
+        self.other_amount_threshold = min_out;
+    }
+
     #[allow(dead_code)]
     pub fn try_from_value(value: Value) -> Result<Self, serde_json::Error> {
         serde_json::from_value(value)
@@ -198,5 +208,9 @@ impl QuoteResponse {
 
     pub fn payload(&self) -> &QuoteResponsePayload {
         &self.data
+    }
+
+    pub fn payload_mut(&mut self) -> &mut QuoteResponsePayload {
+        &mut self.data
     }
 }

@@ -221,7 +221,7 @@ impl Default for cfg::TitanEngineConfig {
 impl Default for cfg::DflowQuoteConfig {
     fn default() -> Self {
         Self {
-            use_auto_slippage: true,
+            slippage_bps: None,
             only_direct_routes: false,
             max_route_length: None,
             cadence: cfg::QuoteCadenceConfig::default(),

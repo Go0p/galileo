@@ -633,7 +633,7 @@ pub struct TitanEngineConfig {
     #[serde(default)]
     pub ws_proxy: Option<String>,
     #[serde(default)]
-    pub jwt: Option<String>,
+    pub jwt: Option<TitanJwtConfig>,
     #[serde(default)]
     pub providers: Vec<String>,
     #[serde(default)]
@@ -651,6 +651,14 @@ pub struct TitanEngineConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+pub struct TitanJwtConfig {
+    #[serde(default)]
+    pub api_url: Option<String>,
+    #[serde(default)]
+    pub address: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct TitanSwapConfig {
     #[serde(default)]
     pub dexes: Vec<String>,
@@ -665,11 +673,7 @@ pub struct TitanSwapConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TitanTxConfig {
     #[serde(default)]
-    pub user_public_key: Option<String>,
-    #[serde(default)]
     pub create_output_token_account: Option<bool>,
-    #[serde(default)]
-    pub use_wsol: bool,
     #[serde(default)]
     pub filter_other_instructions: bool,
 }
@@ -731,8 +735,8 @@ impl Default for KaminoQuoteConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DflowQuoteConfig {
-    #[serde(default = "super::default_true")]
-    pub use_auto_slippage: bool,
+    #[serde(default)]
+    pub slippage_bps: Option<u16>,
     #[serde(default)]
     pub only_direct_routes: bool,
     #[serde(default)]

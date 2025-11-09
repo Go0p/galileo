@@ -54,8 +54,11 @@ import contextlib
 import gzip
 import json
 import os
+import signal
 import struct
 import time
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -140,6 +143,22 @@ def b64_url(data: bytes) -> str:
 
 _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 _BASE58_LOOKUP = {ch: idx for idx, ch in enumerate(_BASE58_ALPHABET)}
+
+RESET_COLOR = "\033[0m"
+CLIENT_COLOR = "\033[92m"
+SERVER_COLOR = "\033[91m"
+
+
+def _print_direction(prefix: str, color: str, message: str) -> None:
+    print(f"{color}{prefix}{RESET_COLOR} {message}")
+
+
+def _print_client(message: str) -> None:
+    _print_direction("client ↑", CLIENT_COLOR, message)
+
+
+def _print_server(message: str) -> None:
+    _print_direction("server ↓", SERVER_COLOR, message)
 
 
 def base58_decode(value: str) -> bytes:
@@ -593,10 +612,14 @@ class SessionCrypto:
 
 
 # Optional async demo utilities.
-DEFAULT_TITAN_ENDPOINT = (
-    "wss://api.titan.exchange/api/v1/ws?auth=eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjI2NjE0MjEsImV4cCI6MTc2MjY2MjMyMSwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.-vYVrht_S7Og3EEGYwUFEPSrY21Bwbu_oo5WLtkUJvw"
+DEFAULT_TITAN_ENDPOINT = "wss://api.titan.exchange/api/v1/ws"
+DEFAULT_JWT_ENDPOINT = "https://titan.exchange/api/apollo-jwt"
+DEFAULT_REFERER_TEMPLATE = "https://titan.exchange/swap?{input}-{output}"
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
 )
-DEFAULT_WALLET = "Titan11111111111111111111111111111111111111"
+DEFAULT_WALLET = "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
 DEFAULT_INPUT_MINT = "So11111111111111111111111111111111111111112"
 DEFAULT_OUTPUT_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 DEFAULT_AMOUNT = 1 * 1_000_000_000
@@ -759,6 +782,30 @@ class TitanWsClient:
         response = await self.send_request({"GetInfo": {}}, timeout=timeout)
         return response.get("data", {})
 
+    async def get_venues(
+        self,
+        *,
+        include_program_ids: bool = False,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        request: Dict[str, Any] = {}
+        if include_program_ids:
+            request["includeProgramIds"] = True
+        response = await self.send_request({"GetVenues": request}, timeout=timeout)
+        return response.get("data", {})
+
+    async def list_providers(
+        self,
+        *,
+        include_icons: bool = False,
+        timeout: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        request: Dict[str, Any] = {}
+        if include_icons:
+            request["includeIcons"] = True
+        response = await self.send_request({"ListProviders": request}, timeout=timeout)
+        return response.get("data", [])
+
     async def new_swap_quote_stream(
         self,
         *,
@@ -881,6 +928,73 @@ def _decode_swap_quotes(quotes: Dict[str, Any]) -> Dict[str, Any]:
     return decoded
 
 
+def _build_referer_url(template: str, input_mint: str, output_mint: str) -> str:
+    try:
+        return template.format(input=input_mint, output=output_mint)
+    except Exception:
+        return template
+
+
+def _append_address_param(endpoint: str, address: str) -> str:
+    if not address:
+        return endpoint
+    parsed = urllib.parse.urlsplit(endpoint)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    query = [(k, v) for (k, v) in query if k != "address"]
+    query.append(("address", address))
+    new_query = urllib.parse.urlencode(query)
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment)
+    )
+
+
+def _fetch_jwt_sync(
+    address: str,
+    endpoint: str,
+    referer: str,
+    user_agent: str,
+) -> Tuple[str, Dict[str, Any]]:
+    url = _append_address_param(endpoint, address)
+    headers = {
+        "User-Agent": user_agent,
+        "Referer": referer,
+        "Accept": "application/json",
+    }
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        body = resp.read()
+    data = json.loads(body.decode("utf-8"))
+    token = data.get("token")
+    if not token:
+        raise RuntimeError("JWT response missing token field")
+    return token, data
+
+
+def _install_sigint_handler(
+    loop: asyncio.AbstractEventLoop,
+    handler: Callable[[], None],
+) -> Callable[[], None]:
+    """
+    Install a SIGINT handler that routes Ctrl+C into the asyncio loop and
+    returns a callback that restores the previous handler.
+    """
+    try:
+        loop.add_signal_handler(signal.SIGINT, handler)
+        return lambda: loop.remove_signal_handler(signal.SIGINT)
+    except (NotImplementedError, RuntimeError):
+        previous = signal.getsignal(signal.SIGINT)
+
+        def _sync_handler(_: int, __: Any) -> None:
+            handler()
+
+        signal.signal(signal.SIGINT, _sync_handler)
+
+        def _restore() -> None:
+            signal.signal(signal.SIGINT, previous)
+
+        return _restore
+
+
 def main(argv: Optional[Any] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command")
@@ -978,6 +1092,10 @@ def main(argv: Optional[Any] = None) -> int:
         action="store_true",
         help="Print StreamData payloads without decoding bytes to base58",
     )
+    parser_stream.add_argument(
+        "--jwt",
+        help="Explicit JWT token for wss auth (skip auto-fetch when provided)",
+    )
 
     sub.add_parser("demo", help="Run AES-GCM round-trip demo (default)")
 
@@ -988,12 +1106,63 @@ def main(argv: Optional[Any] = None) -> int:
         return 0
     if args.command == "stream":
         async def run_stream() -> None:
-            client = TitanWsClient(endpoint=args.endpoint, request_timeout=args.timeout)
-            async with client:
-                info = await client.get_info(timeout=args.timeout)
-                print("Server info:", json.dumps(info, indent=2, default=_json_default))
-                if args.print_request:
-                    preview = {
+            ws_endpoint = args.endpoint
+            jwt_token = args.jwt
+            if "auth=" not in ws_endpoint and not jwt_token:
+                referer = _build_referer_url(
+                    DEFAULT_REFERER_TEMPLATE, args.input_mint, args.output_mint
+                )
+                try:
+                    jwt_token, metadata = await asyncio.to_thread(
+                        _fetch_jwt_sync,
+                        args.wallet,
+                        DEFAULT_JWT_ENDPOINT,
+                        referer,
+                        DEFAULT_USER_AGENT,
+                    )
+                    expires = metadata.get("expires_at") or metadata.get("expires_in")
+                    _print_server(
+                        f"Fetched JWT for {args.wallet} "
+                        f"(expires: {expires})"
+                    )
+                except Exception as exc:  # pragma: no cover - network error
+                    raise RuntimeError(f"Failed to fetch JWT: {exc}") from exc
+            if jwt_token and "auth=" not in ws_endpoint:
+                separator = "&" if "?" in ws_endpoint else "?"
+                ws_endpoint = f"{ws_endpoint}{separator}auth={jwt_token}"
+
+            client = TitanWsClient(endpoint=ws_endpoint, request_timeout=args.timeout)
+            loop = asyncio.get_running_loop()
+            main_task = asyncio.current_task()
+            cancelled_by_signal = False
+            remove_sigint_handler: Callable[[], None] = lambda: None
+            if main_task is not None:
+                def _request_shutdown() -> None:
+                    nonlocal cancelled_by_signal
+                    cancelled_by_signal = True
+                    loop.call_soon_threadsafe(main_task.cancel)
+
+                remove_sigint_handler = _install_sigint_handler(loop, _request_shutdown)
+            try:
+                async with client:
+                    info = await client.get_info(timeout=args.timeout)
+                    _print_server("Server info:")
+                    print(json.dumps(info, indent=2, default=_json_default))
+                    try:
+                        venues = await client.get_venues(
+                            include_program_ids=True, timeout=args.timeout
+                        )
+                        _print_server("GetVenues - 支持的 dex 标签：")
+                        print(json.dumps(venues, indent=2, default=_json_default))
+                    except Exception as exc:  # pragma: no cover - network error
+                        _print_server(f"获取 GetVenues 失败: {exc}")
+                    try:
+                        providers = await client.list_providers(timeout=args.timeout)
+                        _print_server("ListProviders - 已配置的 providers：")
+                        print(json.dumps(providers, indent=2, default=_json_default))
+                    except Exception as exc:  # pragma: no cover - network error
+                        _print_server(f"获取 ListProviders 失败: {exc}")
+                    request_payload = {
                         "swap": {
                             "inputMint": args.input_mint,
                             "outputMint": args.output_mint,
@@ -1005,68 +1174,85 @@ def main(argv: Optional[Any] = None) -> int:
                             "addSizeConstraint": not args.no_size_constraint,
                         },
                         "transaction": {"userPublicKey": args.wallet},
-                        "update": {"intervalMs": args.interval} if args.interval is not None else None,
                     }
-                    print("SwapQuoteRequest:", json.dumps(preview, indent=2))
+                    update_params = {}
+                    if args.interval is not None:
+                        update_params["intervalMs"] = args.interval
+                    if update_params:
+                        request_payload["update"] = update_params
 
-                response, queue = await client.new_swap_quote_stream(
-                    input_mint=args.input_mint,
-                    output_mint=args.output_mint,
-                    amount=args.amount,
-                    user_public_key=args.wallet,
-                    swap_mode=args.swap_mode,
-                    slippage_bps=args.slippage_bps,
-                    include_dexes=args.dexes,
-                    only_direct_routes=args.only_direct_routes,
-                    add_size_constraint=not args.no_size_constraint,
-                    update_interval_ms=args.interval,
-                    timeout=args.timeout,
-                )
-                stream_id = response.get("stream", {}).get("id")
-                print("Stream opened:", json.dumps(response, indent=2, default=_json_default))
+                    if args.print_request:
+                        _print_client("SwapQuoteRequest 参数 (调试显示)")
+                        print(json.dumps(request_payload, indent=2))
 
-                received = 0
-                start = time.monotonic()
-                deadline = start + args.duration if args.duration and args.duration > 0 else None
-                try:
-                    while True:
-                        now = time.monotonic()
-                        remaining = (
-                            max(0.0, deadline - now) if deadline is not None else None
-                        )
-                        timeouts = []
-                        if remaining is not None:
-                            timeouts.append(remaining)
-                        if args.idle_timeout and args.idle_timeout > 0:
-                            timeouts.append(args.idle_timeout)
-                        wait_timeout: Optional[float] = min(timeouts) if timeouts else None
-                        if wait_timeout is not None and wait_timeout <= 0:
-                            print("Stream duration reached, exiting.")
-                            break
-                        try:
-                            if wait_timeout is None:
-                                message = await queue.get()
-                            else:
-                                message = await asyncio.wait_for(queue.get(), timeout=wait_timeout)
-                        except asyncio.TimeoutError:
-                            print("Quote stream timed out waiting for data.")
-                            break
-                        printable = message if args.raw_stream else _decode_stream_payload(message)
-                        print(json.dumps(printable, indent=2, default=_json_default))
-                        if isinstance(message, dict) and "StreamEnd" in message:
-                            break
-                        received += 1
-                        if args.max_messages and args.max_messages > 0 and received >= args.max_messages:
-                            break
-                except KeyboardInterrupt:
-                    print("\nInterrupted by user, closing stream...")
-                finally:
-                    if stream_id is not None:
-                        try:
-                            await client.stop_stream(stream_id, timeout=args.timeout)
-                        except Exception as exc:  # pragma: no cover - best effort
-                            print(f"Failed to stop stream cleanly: {exc}")
-                    await client.close()
+                    _print_client("发送订阅请求 (SwapQuoteRequest)")
+                    print(json.dumps(request_payload, indent=2))
+                    response, queue = await client.new_swap_quote_stream(
+                        input_mint=args.input_mint,
+                        output_mint=args.output_mint,
+                        amount=args.amount,
+                        user_public_key=args.wallet,
+                        swap_mode=args.swap_mode,
+                        slippage_bps=args.slippage_bps,
+                        include_dexes=args.dexes,
+                        only_direct_routes=args.only_direct_routes,
+                        add_size_constraint=not args.no_size_constraint,
+                        update_interval_ms=args.interval,
+                        timeout=args.timeout,
+                    )
+                    stream_id = response.get("stream", {}).get("id")
+                    _print_server("Stream opened:")
+                    print(json.dumps(response, indent=2, default=_json_default))
+
+                    received = 0
+                    start = time.monotonic()
+                    deadline = start + args.duration if args.duration and args.duration > 0 else None
+                    try:
+                        while True:
+                            now = time.monotonic()
+                            remaining = (
+                                max(0.0, deadline - now) if deadline is not None else None
+                            )
+                            timeouts = []
+                            if remaining is not None:
+                                timeouts.append(remaining)
+                            if args.idle_timeout and args.idle_timeout > 0:
+                                timeouts.append(args.idle_timeout)
+                            wait_timeout: Optional[float] = min(timeouts) if timeouts else None
+                            if wait_timeout is not None and wait_timeout <= 0:
+                                print("Stream duration reached, exiting.")
+                                break
+                            try:
+                                if wait_timeout is None:
+                                    message = await queue.get()
+                                else:
+                                    message = await asyncio.wait_for(queue.get(), timeout=wait_timeout)
+                            except asyncio.TimeoutError:
+                                print("Quote stream timed out waiting for data.")
+                                break
+                            printable = message if args.raw_stream else _decode_stream_payload(message)
+                            _print_server("Stream payload:")
+                            print(json.dumps(printable, indent=2, default=_json_default))
+                            if isinstance(message, dict) and "StreamEnd" in message:
+                                break
+                            received += 1
+                            if args.max_messages and args.max_messages > 0 and received >= args.max_messages:
+                                break
+                    except asyncio.CancelledError:
+                        if cancelled_by_signal:
+                            print("\nInterrupted by user, closing stream...")
+                        raise
+                    finally:
+                        if stream_id is not None:
+                            try:
+                                await client.stop_stream(stream_id, timeout=args.timeout)
+                            except Exception as exc:  # pragma: no cover - best effort
+                                print(f"Failed to stop stream cleanly: {exc}")
+            except asyncio.CancelledError:
+                if not cancelled_by_signal:
+                    raise
+            finally:
+                remove_sigint_handler()
 
         asyncio.run(run_stream())
         return 0

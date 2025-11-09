@@ -35,9 +35,9 @@ global:
 
 engine:
   # 可选值：jupiter / dflow / ultra / multi-legs / kamino / none
-  backend: "multi-legs"
+  # backend: "multi-legs"
   # backend: "kamino"
-  # backend: "none"
+  backend: "dflow"
   # backend: "multi-legs"
   # backend: "dflow"
   # 设置为 true 时启用控制台摘要面板，每轮 trade size 批次完成后打印关键统计。
@@ -133,14 +133,14 @@ engine:
     # api_quote_base: "https://aggregator-api-proxy.dflow.workers.dev"
     api_quote_base: "https://quote-api.dflow.net"
     api_swap_base: "https://quote-api.dflow.net"
-    # api_quote_base: "http://109.94.98.33:9800"
-    # api_swap_base: "http://109.94.98.33:9800"
     # api_quote_base: "http://109.94.98.33:9999"
     # api_swap_base: "http://109.94.98.33:9999"
+    # api_quote_base: "http://185.209.177.203:10000"
+    # api_swap_base: "http://185.209.177.203:10000"
     # api_proxy: "http://192.168.3.3:9999"
     api_proxy: "http://192.168.124.4:9999"
     quote_config:
-      use_auto_slippage: false
+      slippage_bps: 2
       only_direct_routes: false
       max_route_length: 3
       cadence:
@@ -165,7 +165,7 @@ engine:
     # 腿方向：Titan 仅支持 buy 腿
     leg: "buy"
     # Titan 推流首条报价超时时间（毫秒），超过后视为异常并重新调度
-    first_quote_timeout_ms: 2000
+    first_quote_timeout_ms: null
     # Titan 推流若在该时间（毫秒）内无报价更新，将自动重新发起订阅；设置为 0 或 null 可禁用
     idle_resubscribe_timeout_ms: 10000
     # 开启 loopback 后仅订阅 base→base 的单条 Titan 流，根据 out>in 判断套利
@@ -173,22 +173,100 @@ engine:
     # 可选：通过 WebSocket 代理抓包/调试 Titan 数据
     # ws_proxy: "ws://192.168.124.4:9999"
     ws_proxy: ""
-    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjI1MjM1NTksImV4cCI6MTc2MjUyNDQ1OSwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.6HscBZuRtYgv1SsuV6bN2an9S4uOOrbFPPkLxqRJJjs"
+    jwt: 
+      api_url: "https://titan.exchange/api/apollo-jwt"
+      address: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
     # Titan , Okx , Metis , Pyth
     swap_config:
-      # dexes:
+    #  "Gavel Swap",
+    #   "Raydium Launchlab",
+    #   "AlphaQ",
+    #   "Vault Unstakepool",
+    #   "Heaven",
+    #   "DexLab",
+    #   "Whirlpool",
+    #   "GoonFi",
+    #   "Penguin",
+    #   "1DEX",
+    #   "Guacswap",
+    #   "Saros DLMM",
+    #   "Crema",
+    #   "PancakeSwap",
+    #   "FluxBeam",
+    #   "Solayer",
+    #   "Byreal",
+    #   "Moonshot",
+    #   "Saber (Decimals)",
+    #   "Raydium CLMM",
+    #   "GooseFX",
+    #   "Aldrin V2",
+    #   "StepN",
+    #   "Mercurial",
+    #   "Clearpools",
+    #   "Perps",
+    #   "Token Swap",
+    #   "Dynamic Bonding Curve",
+    #   "SolFi",
+    #   "Obric V2",
+    #   "Orca V1",
+    #   "Sanctum",
+    #   "SolFiV2",
+    #   "Raydium CP",
+    #   "Hylo",
+    #   "Phoenix",
+    #   "Helium Network",
+    #   "Saros",
+    #   "Openbook",
+    #   "Bonkswap",
+    #   "Obsidian AMM",
+    #   "OpenBook V2",
+    #   "PumpFun",
+    #   "Cropper",
+    #   "ZeroFi",
+    #   "Manifest",
+    #   "Orca V2",
+    #   "Meteora DAMM V2",
+    #   "Sanctum Infinity",
+    #   "Daos.fun",
+    #   "Saber",
+    #   "Invariant",
+    #   "Perena",
+    #   "Raydium",
+    #   "Vertigo",
+    #   "Virtuals",
+    #   "Meteora",
+    #   "Oasis",
+    #   "TesseraV",
+    #   "Stabble Stable Swap",
+    #   "Fusion AMM",
+    #   "Hashflow",
+    #   "Boop.fun",
+    #   "Aquifer",
+    #   "Pump.fun Amm",
+    #   "Lifinity V1",
+    #   "Stabble Weighted Swap",
+    #   "HumidiFi",
+    #   "Token Mill",
+    #   "Meteora DLMM",
+    #   "WooFi",
+    #   "Mozart",
+    #   "Carrot",
+    #   "Aldrin",
+    #   "Lifinity V2",
+    #   "Rubicon"
+      dexes:
+        - "HumidiFi"
       # exclude_dexes:
       only_direct_routes: false
       providers:
         - "Titan"
-        # - "Metis"
+        - "Metis"
+        - "Okx"
     tx_config:
-      user_public_key: "Titan11111111111111111111111111111111111111"
-      # user_public_key: "goopNoaJhhrzxi6oq2j4chcyHKGucAeVZSk4QBA7Gu1"
       create_output_token_account: false
       filter_other_instructions: true
     # 服务端推送报价更新的间隔，单位毫秒。
-    interval_ms: 800
+    interval_ms: 2000
     # 每次更新最多返回的报价数量。
     num_quotes: 2
   kamino:
@@ -245,35 +323,35 @@ intermedium:
     # USDC
     - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     # USDG
-    - "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
-    # USDT
-    - "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
-    # PENGU
-    - "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv"
-    # Bonk
-    - "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
-    # # MET
-    - "METvsvVRapdj9cFLzq4Tr43xK4tAjQfwX76z3n6mWQL"
-    # # JLP
-    - "27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4"
-    # cbBTC
-    - "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij"
-    # zBTC
-    - "zBTCug3er3tLyffELcvDNrKkCymbPWysGcWihESYfLg"
-    # WETH
-    - "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs"
-    # Fartcoin
-    - "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"
-    # # PUMP
-    - "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn"
-    # JitoSOL
-    - "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn"
-    # JUP
-    - "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
-    # # Saros
-    - "SarosY6Vscao718M4A778z4CGtvcwcGef5M9MEH1LGL"
-    # Kmnio
-    - "KMNo3nJsBXfcpJTVhZcXLW7RmTwTt4GVFE7suUBo9sS"
+    # - "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+    # # USDT
+    # - "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+    # # PENGU
+    # - "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv"
+    # # Bonk
+    # - "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+    # # # MET
+    # - "METvsvVRapdj9cFLzq4Tr43xK4tAjQfwX76z3n6mWQL"
+    # # # JLP
+    # - "27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4"
+    # # cbBTC
+    # - "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij"
+    # # zBTC
+    # - "zBTCug3er3tLyffELcvDNrKkCymbPWysGcWihESYfLg"
+    # # WETH
+    # - "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs"
+    # # Fartcoin
+    # - "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"
+    # # # PUMP
+    # - "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn"
+    # # JitoSOL
+    # - "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn"
+    # # JUP
+    # - "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
+    # # # Saros
+    # - "SarosY6Vscao718M4A778z4CGtvcwcGef5M9MEH1LGL"
+    # # Kmnio
+    # - "KMNo3nJsBXfcpJTVhZcXLW7RmTwTt4GVFE7suUBo9sS"
 
   disable_mints: []
 wallet_keys:
@@ -296,8 +374,8 @@ bot:
     config_dir: "strategies"
   engines:
     pairs:
-      - buy_leg: jupiter
-        sell_leg: jupiter
+      - buy_leg: titan
+        sell_leg: dflow
   flashloan:
     products:
       - marginfi

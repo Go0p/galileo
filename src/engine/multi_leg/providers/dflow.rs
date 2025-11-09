@@ -5,7 +5,7 @@ use tracing::debug;
 use crate::api::dflow::{
     ComputeUnitPriceMicroLamports as DflowComputeUnitPriceMicroLamports, DflowApiClient,
     DflowError, QuoteRequest as DflowQuoteRequest, QuoteResponse as DflowQuoteResponse,
-    SlippageBps, SlippagePreset, SwapInstructionsRequest as DflowSwapInstructionsRequest,
+    SlippageBps, SwapInstructionsRequest as DflowSwapInstructionsRequest,
     SwapInstructionsResponse as DflowSwapInstructionsResponse,
 };
 use crate::config::{DflowQuoteConfig, DflowSwapConfig};
@@ -48,11 +48,11 @@ impl DflowLegProvider {
     fn build_quote_request(&self, intent: &QuoteIntent) -> DflowQuoteRequest {
         let mut request =
             DflowQuoteRequest::new(intent.input_mint, intent.output_mint, intent.amount);
-        if self.quote_defaults.use_auto_slippage {
-            request.slippage_bps = Some(SlippageBps::Preset(SlippagePreset::Auto));
-        } else {
-            request.slippage_bps = Some(SlippageBps::Fixed(intent.slippage_bps));
-        }
+        let slippage = self
+            .quote_defaults
+            .slippage_bps
+            .unwrap_or(intent.slippage_bps);
+        request.slippage_bps = Some(SlippageBps::Fixed(slippage));
         if self.quote_defaults.only_direct_routes {
             request.only_direct_routes = Some(true);
         }
@@ -160,6 +160,10 @@ impl LegProvider for DflowLegProvider {
         intent: &QuoteIntent,
         lease: Option<&IpLeaseHandle>,
     ) -> Result<Self::QuoteResponse, Self::BuildError> {
+        let slippage = self
+            .quote_defaults
+            .slippage_bps
+            .unwrap_or(intent.slippage_bps);
         let request = self.build_quote_request(intent);
         debug!(
             target: "multi_leg::dflow",
@@ -168,11 +172,13 @@ impl LegProvider for DflowLegProvider {
             amount = intent.amount,
             "开始请求 DFlow 报价"
         );
-        let result = self
+        let mut result = self
             .client
             .quote_with_ip(&request, lease.map(|handle| handle.ip()))
             .await;
-        if let Err(err) = &result {
+        if let Ok(quote) = result.as_mut() {
+            quote.payload_mut().apply_slippage_bps(slippage);
+        } else if let Err(err) = &result {
             if let Some(handle) = lease {
                 if let Some(outcome) = classify_dflow_error(err) {
                     handle.mark_outcome(outcome);
@@ -204,6 +210,7 @@ impl LegProvider for DflowLegProvider {
                 return Err(err);
             }
         };
+        response.apply_slippage_overrides(request.quote_response.slippage_bps);
         let multiplier = context
             .compute_unit_limit_multiplier
             .unwrap_or(self.swap_defaults.cu_limit_multiplier);

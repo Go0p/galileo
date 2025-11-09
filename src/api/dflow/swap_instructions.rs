@@ -190,6 +190,19 @@ pub struct SwapInstructionsResponse {
     pub prioritization_type: Option<PrioritizationType>,
 }
 
+impl SwapInstructionsResponse {
+    pub fn apply_slippage_overrides(&mut self, slippage_bps: u16) {
+        let data = &mut self.swap_instruction.data;
+        if data.len() < 12 {
+            return;
+        }
+        let len = data.len();
+        // slippage_bps
+        data[len - 4..len - 2].copy_from_slice(&slippage_bps.to_le_bytes());
+        // platform_fee_bps is left untouched (len-2..len)
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SwapInstructionsResponseInternal {

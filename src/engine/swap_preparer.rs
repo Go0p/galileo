@@ -241,6 +241,7 @@ impl SwapPreparer {
                 }
 
                 let mut response = client.swap_instructions(&request, local_ip).await?;
+                response.apply_slippage_overrides(request.quote_response.slippage_bps);
                 let original_limit = response.compute_unit_limit;
                 let adjusted_limit =
                     response.adjust_compute_unit_limit(defaults.cu_limit_multiplier);
