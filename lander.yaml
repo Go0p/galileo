@@ -66,6 +66,8 @@ lander:
         auto_generate_interval_ms: 30000
         # 自动生成钱包的个数，异步生成
         auto_generate_count: 1000
+        # 仅当池子内钱包数量低于该阈值时才触发补充，0 表示不限制
+        refill_threshold: 15000
       endpoints:
         - https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles
         - https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/bundles

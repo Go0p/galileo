@@ -15,6 +15,7 @@ use tokio::time::sleep;
 use tracing::{debug, warn};
 
 use super::orchestrator::{LegPairDescriptor, LegPairPlan, MultiLegOrchestrator};
+use super::providers::titan::TitanWsQuoteSource;
 use super::transaction::instructions::{InstructionExtractionError, extract_instructions};
 use super::types::{
     AggregatorKind, LegBuildContext, LegDescriptor, LegPlan, LegSide, QuoteIntent, SignerRewrite,
@@ -30,6 +31,7 @@ pub struct MultiLegRuntime {
     rpc: Arc<RpcClient>,
     concurrency: ConcurrencyPolicy,
     ip_allocator: Arc<IpAllocator>,
+    titan_source: Option<Arc<TitanWsQuoteSource>>,
 }
 
 /// 运行时行为调优项。
@@ -44,7 +46,7 @@ pub struct MultiLegRuntimeConfig {
 impl Default for MultiLegRuntimeConfig {
     fn default() -> Self {
         Self {
-            titan_stream_limit: 2,
+            titan_stream_limit: 0,
             titan_debounce_ms: 200,
         }
     }
@@ -57,6 +59,7 @@ impl MultiLegRuntime {
         rpc: Arc<RpcClient>,
         ip_allocator: Arc<IpAllocator>,
         config: MultiLegRuntimeConfig,
+        titan_source: Option<Arc<TitanWsQuoteSource>>,
     ) -> Self {
         Self {
             orchestrator,
@@ -64,11 +67,16 @@ impl MultiLegRuntime {
             rpc,
             concurrency: ConcurrencyPolicy::new(config),
             ip_allocator,
+            titan_source,
         }
     }
 
     pub fn orchestrator(&self) -> &MultiLegOrchestrator {
         &self.orchestrator
+    }
+
+    pub fn titan_source(&self) -> Option<Arc<TitanWsQuoteSource>> {
+        self.titan_source.as_ref().map(Arc::clone)
     }
 
     async fn plan_pair_raw(&self, request: &PairPlanRequest) -> Result<Option<LegPairPlan>> {

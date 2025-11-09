@@ -37,7 +37,6 @@ engine:
   # 可选值：jupiter / dflow / ultra / multi-legs / kamino / none
   backend: "multi-legs"
   # backend: "kamino"
-  # backend: "kamino"
   # backend: "none"
   # backend: "multi-legs"
   # backend: "dflow"
@@ -56,29 +55,30 @@ engine:
         inter_batch_delay_ms: 2000
 
   jupiter:
-    # jupiter_buy:
-    #   enable: true
-    #   leg: "buy"
-    #   api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
-    #   api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
-    #   api_proxy: "http://192.168.3.3:9999"
-    #   quote_config:
-    #     only_direct_routes: true
-    #     restrict_intermediate_tokens: true
-    #     # cadence 控制 trade size 的调度节奏：
-    #     #   max_concurrent_slots: 槽位数量，auto 表示根据可用 IP 自动推导（多 IP 时可调整为固定值）。
-    #     #   inter_batch_delay_ms: 单个槽位两次 quote 之间的等待时间；设置为 0 表示立即轮询下一个 trade size。
-    #     #   cycle_cooldown_ms: 一轮所有 trade size 完成后的休息时间（大多数场景可留空或设为 0）。
-    #     cadence:
-    #       default:
-    #         max_concurrent_slots: 1
-    #         inter_batch_delay_ms: 3000
-            
-    #   swap_config:
-    #     use_shared_accounts: true
-    #     skip_user_accounts_rpc_calls: false
-    #     dynamic_compute_unit_limit: true
-    #     wrap_and_unwrap_sol: false
+    jupiter_buy:
+      enable: true
+      leg: "buy"
+      api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
+      api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
+      api_proxy: "http://192.168.124.4:9999"
+      quote_config:
+        slippage_bps: 5
+        only_direct_routes: true
+        restrict_intermediate_tokens: false
+        # cadence 控制 trade size 的调度节奏：
+        #   max_concurrent_slots: 槽位数量，auto 表示根据可用 IP 自动推导（多 IP 时可调整为固定值）。
+        #   inter_batch_delay_ms: 单个槽位两次 quote 之间的等待时间；设置为 0 表示立即轮询下一个 trade size。
+        #   cycle_cooldown_ms: 一轮所有 trade size 完成后的休息时间（大多数场景可留空或设为 0）。
+        cadence:
+          default:
+            max_concurrent_slots: 1
+            inter_batch_delay_ms: 3000
+
+      swap_config:
+        use_shared_accounts: true
+        skip_user_accounts_rpc_calls: false
+        dynamic_compute_unit_limit: true
+        wrap_and_unwrap_sol: false
     jupiter_sell:
       enable: true
       leg: "sell"
@@ -86,13 +86,14 @@ engine:
       api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
       api_proxy: "http://192.168.124.4:9999"
       quote_config:
-        only_direct_routes: true
-        restrict_intermediate_tokens: true
+        slippage_bps: 2
+        only_direct_routes: false
+        restrict_intermediate_tokens: false
         cadence:
           default:
             max_concurrent_slots: 1
             inter_batch_delay_ms: 3000
-            
+
       swap_config:
         use_shared_accounts: true
         skip_user_accounts_rpc_calls: false
@@ -150,7 +151,7 @@ engine:
           # inter_batch_delay_ms: 同一波次内组与组之间的最小启动间隔（毫秒）
           inter_batch_delay_ms: 3000
           # cycle_cooldown_ms: 一波结束后等待下一波的时间（毫秒）
-          
+
         # per_base_mint: 可选，覆盖指定 base mint 的默认节奏
         #   So11111111111111111111111111111111111111112:
         #     # group_parallelism: 1
@@ -165,6 +166,8 @@ engine:
     leg: "buy"
     # Titan 推流首条报价超时时间（毫秒），超过后视为异常并重新调度
     first_quote_timeout_ms: 2000
+    # Titan 推流若在该时间（毫秒）内无报价更新，将自动重新发起订阅；设置为 0 或 null 可禁用
+    idle_resubscribe_timeout_ms: 10000
     # 开启 loopback 后仅订阅 base→base 的单条 Titan 流，根据 out>in 判断套利
     ws_url: "wss://api.titan.exchange/api/v1/ws"
     # 可选：通过 WebSocket 代理抓包/调试 Titan 数据
@@ -173,7 +176,7 @@ engine:
     jwt: "eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjI1MjM1NTksImV4cCI6MTc2MjUyNDQ1OSwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.6HscBZuRtYgv1SsuV6bN2an9S4uOOrbFPPkLxqRJJjs"
     # Titan , Okx , Metis , Pyth
     swap_config:
-      # dexes: 
+      # dexes:
       # exclude_dexes:
       only_direct_routes: false
       providers:
@@ -193,14 +196,14 @@ engine:
     leg: "sell"
     api_quote_base: "https://api.kamino.finance"
     api_swap_base: "https://api.kamino.finance"
-    api_proxy: "http://192.168.3.3:9999"
+    api_proxy: "http://192.168.124.4:9999"
     quote_config:
       cu_limit_multiplier: 2.1
       cadence:
         default:
           max_concurrent_slots: 1
           inter_batch_delay_ms: 2000
-          
+
       max_slippage_bps: 1
       with_simulation: true
       executor: "P1ayvj9UdRxiVWa6rxXbqmosF1tZf62VZSJnrUnvhak"
@@ -217,15 +220,15 @@ engine:
         # - "fluxbeam"
         # - "raydium"
         # - "hashflow"
-        - "jupiterEuropa"
-        - "jupiterSelfHosted"
-        - "jupiter"
+        # - "jupiterEuropa"
+        # - "jupiterSelfHosted"
+        # - "jupiter"
         # - "okx"
         # - "clover"
         # - "zeroEx"
         # - "spur"
-        # - "lifi"
-      
+        - "lifi"
+
 # 机器人会尝试找到盈利路线，具体方法是：获取给定交易规模的 base_mint 到 intermediate_mints 的报价，
 # 然后再获取 intermediate_mints 到 base_mint 的另一个报价，
 # 并将它们组合起来，形成一条潜在的盈利路线。基本上就是一条从 A -> B -> A 的路线。
@@ -237,26 +240,46 @@ intermedium:
   load_mints_from_url: ""
   max_tokens_limit: 20
   mints:
-    - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    # WSOL
     - "So11111111111111111111111111111111111111112"
+    # USDC
+    - "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    # USDG
+    - "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+    # USDT
+    - "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+    # PENGU
+    - "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv"
     # Bonk
-    # - "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+    - "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
     # # MET
-    # - "METvsvVRapdj9cFLzq4Tr43xK4tAjQfwX76z3n6mWQL"
+    - "METvsvVRapdj9cFLzq4Tr43xK4tAjQfwX76z3n6mWQL"
     # # JLP
-    # - "27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4"
-    # # cbBTC
+    - "27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4"
+    # cbBTC
+    - "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij"
+    # zBTC
+    - "zBTCug3er3tLyffELcvDNrKkCymbPWysGcWihESYfLg"
+    # WETH
+    - "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs"
+    # Fartcoin
+    - "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"
     # # PUMP
-    # - "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn"
-    # # JitoSOL
-    # - "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn"
+    - "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn"
+    # JitoSOL
+    - "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn"
+    # JUP
+    - "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
     # # Saros
-    # - "SarosY6Vscao718M4A778z4CGtvcwcGef5M9MEH1LGL"
+    - "SarosY6Vscao718M4A778z4CGtvcwcGef5M9MEH1LGL"
+    # Kmnio
+    - "KMNo3nJsBXfcpJTVhZcXLW7RmTwTt4GVFE7suUBo9sS"
+
   disable_mints: []
 wallet_keys:
   - P1ay: R0xXQUxMRVQBQpV4ThdnX6Kc5xfbnUpsc/+PNWNhNtjPSkvIWFwoNfBb/4051cMrXUKmGRxPxeyar4E4t2rrC2WCCE24XavuVr4vJ3lQcNHSyimURWALEaIOnrTDTEybI2AH5TJFkMFRCX/omFjJB39/vfyjdR4+fVh3Pq0+zDwhyzCPiyLIiMe/+J2HfWUXEf8pkbwWb3nRN1hwkF7saZ9B9biW54TiEnBAhx4jqWHVHgGmmZJ1/gE3mu6P7TsaQSKwaBRCE/z5TtpnPNRgCHNzTdo1gd/zE3te2mAHhL9tzr3r4jK3j5vJV7dJTavIXutzqJu8LhIup7iN2N8kTLSj3LWkQa8dyhvNdMsY5FOWuIA=
 bot:
-  dry_run: 
+  dry_run:
     enable: true
     # dry-run 模式下所有 RPC/落地请求都会路由到该节点，通常指向本地 devnet/sandbox。
     rpc_url: "http://127.0.0.1:8899"
@@ -273,7 +296,7 @@ bot:
     config_dir: "strategies"
   engines:
     pairs:
-      - buy_leg: titan
+      - buy_leg: jupiter
         sell_leg: jupiter
   flashloan:
     products:
@@ -312,7 +335,6 @@ flashloan:
     # 闪电贷指令额外的 compute unit 开销
     compute_unit_overhead: 110000
     marginfi_account: "3TmqCbKgsBEgnPMmi1YvdHvUq76v8qbx6JFH2YYyettJ"
-
 # lander 相关配置已移至独立的 lander.yaml
 
 # 策略配置已拆分到 strategies/ 目录

@@ -1,0 +1,43 @@
+2025-11-09T04:49:11.210048Z  INFO lander::jito: bundle submission succeeded endpoint=https://jito-worker.meteora.ag/bundles strategy="forward" label=forward#0:https://jito-worker.meteora.ag/bundles slot=0 blockhash=39zgb3YhS6PZNZYsJzRTP5vUFK6JwjnXSXNDgTjkP6BE
+2025-11-09T04:49:11.210085Z  INFO lander::submit: 发送交易 endpoint_num=0 endpoint=https://jito-worker.meteora.ag/bundles id=ff13f650e81a3e856096598fb05d19a9af0480d584a52b75c06a876ff8d0985c elapsed_ms=46.734 ip=217.217.223.47 strategy="blind" dispatch="one_by_one" lander="jito" tip_strategy="fixed" tips=5555
+2025-11-09T04:49:11.239726Z  INFO lander::jito: bundle submission succeeded endpoint=https://jito-worker.meteora.ag/bundles strategy="forward" label=forward#0:https://jito-worker.meteora.ag/bundles slot=0 blockhash=39zgb3YhS6PZNZYsJzRTP5vUFK6JwjnXSXNDgTjkP6BE
+2025-11-09T04:49:11.239762Z  INFO lander::submit: 发送交易 endpoint_num=0 endpoint=https://jito-worker.meteora.ag/bundles id=2c23faa72b5f9a5e83b17106bf4beab9e4353867b5d487c06ac69fa0ff6f9654 elapsed_ms=40.824 ip=217.217.223.48 strategy="blind" dispatch="one_by_one" lander="jito" tip_strategy="fixed" tips=5555
+2025-11-09T04:49:11.467424Z  WARN galileo::engine::multi_leg::providers::titan: Titan 报价失败，标记网络错误 target="multi_leg::titan" error=Titan 
+  价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:11.467464Z  WARN galileo::engine::multi_leg::runtime: 双腿计划构建失败 target="multi_leg::runtime" buy_index=0 sell_index=0 trade_size=4730000000 error=买腿报价失败: Titan 报价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:11.475652Z  WARN galileo::engine::multi_leg::providers::titan: Titan 报价失败，标记网络错误 target="multi_leg::titan" error=Titan 
+  价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:11.475683Z  WARN galileo::engine::multi_leg::runtime: 双腿计划构建失败 target="multi_leg::runtime" buy_index=0 sell_index=0 trade_size=605288892 error=买腿报价失败: Titan 报价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:11.477504Z  WARN galileo::engine::multi_leg::providers::titan: Titan 报价失败，标记网络错误 target="multi_leg::titan" error=Titan 
+  价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:11.477528Z  WARN galileo::engine::multi_leg::runtime: 双腿计划构建失败 target="multi_leg::runtime" buy_index=0 sell_index=0 trade_size=7532217992 error=买腿报价失败: Titan 报价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:14.579090Z  WARN engine::multi_leg: 多腿腿组合规划失败 input_mint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v output_mint=So11111111111111111111111111111111111111112 amount=605288892 trade_size=605288892 buy_index=0 sell_index=0 error=买腿报价失败: Titan 报价源错误: Titan 推流
+  束但未获得有效路线
+2025-11-09T04:49:14.579132Z  WARN engine::multi_leg: 多腿腿组合规划失败 input_mint=So11111111111111111111111111111111111111112 output_mint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v amount=4730000000 trade_size=4730000000 buy_index=0 sell_index=0 error=买腿报价失败: Titan 报价源错误: Titan 推
+  结束但未获得有效路线
+2025-11-09T04:49:14.579150Z  INFO monitoring::profit: 利润不足 base_mint=WSOL forward={in=6116916697,out=959106889,latency_ms=0.012} reverse={in=959106889,out=6116928472,latency_ms=53.899} event="shortfall" aggregator="multi_leg:titan->dflow" profit=10641 expected_profit=11000
+2025-11-09T04:49:14.579189Z  WARN engine::multi_leg: 多腿腿组合规划失败 input_mint=So11111111111111111111111111111111111111112 output_mint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v amount=7532217992 trade_size=7532217992 buy_index=0 sell_index=0 error=买腿报价失败: Titan 报价源错误: Titan 推
+  结束但未获得有效路线
+2025-11-09T04:49:14.840694Z  WARN galileo::engine::multi_leg::providers::titan: Titan 报价失败，标记网络错误 target="multi_leg::titan" error=Titan 
+  价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:14.840734Z  WARN galileo::engine::multi_leg::runtime: 双腿计划构建失败 target="multi_leg::runtime" buy_index=0 sell_index=0 trade_size=59400000 error=买腿报价失败: Titan 报价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:14.866330Z  WARN galileo::engine::multi_leg::providers::titan: Titan 报价失败，标记网络错误 target="multi_leg::titan" error=Titan 
+  价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:14.866388Z  WARN galileo::engine::multi_leg::runtime: 双腿计划构建失败 target="multi_leg::runtime" buy_index=0 sell_index=0 trade_size=7532217992 error=买腿报价失败: Titan 报价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:17.881892Z  WARN engine::multi_leg: 多腿腿组合规划失败 input_mint=So11111111111111111111111111111111111111112 output_mint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v amount=7532217992 trade_size=7532217992 buy_index=0 sell_index=0 error=买腿报价失败: Titan 报价源错误: Titan 推
+  结束但未获得有效路线
+2025-11-09T04:49:17.881928Z  WARN engine::multi_leg: 多腿腿组合规划失败 input_mint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v output_mint=So11111111111111111111111111111111111111112 amount=59400000 trade_size=59400000 buy_index=0 sell_index=0 error=买腿报价失败: Titan 报价源错误: Titan 推流结
+  但未获得有效路线
+2025-11-09T04:49:18.151774Z  WARN galileo::engine::multi_leg::providers::titan: Titan 报价失败，标记网络错误 target="multi_leg::titan" error=Titan 
+  价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:18.151814Z  WARN galileo::engine::multi_leg::runtime: 双腿计划构建失败 target="multi_leg::runtime" buy_index=0 sell_index=0 trade_size=1886000000 error=买腿报价失败: Titan 报价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:18.157611Z  WARN galileo::engine::multi_leg::providers::titan: Titan 报价失败，标记网络错误 target="multi_leg::titan" error=Titan 
+  价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:18.157628Z  WARN galileo::engine::multi_leg::runtime: 双腿计划构建失败 target="multi_leg::runtime" buy_index=0 sell_index=0 trade_size=7532217992 error=买腿报价失败: Titan 报价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:18.159149Z  WARN galileo::engine::multi_leg::providers::titan: Titan 报价失败，标记网络错误 target="multi_leg::titan" error=Titan 
+  价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:18.159161Z  WARN galileo::engine::multi_leg::runtime: 双腿计划构建失败 target="multi_leg::runtime" buy_index=0 sell_index=0 trade_size=4730000000 error=买腿报价失败: Titan 报价源错误: Titan 推流结束但未获得有效路线
+2025-11-09T04:49:21.185365Z  WARN engine::multi_leg: 多腿腿组合规划失败 input_mint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v output_mint=So11111111111111111111111111111111111111112 amount=1886000000 trade_size=1886000000 buy_index=0 sell_index=0 error=买腿报价失败: Titan 报价源错误: Titan 推
+  结束但未获得有效路线
+2025-11-09T04:49:21.185391Z  WARN engine::multi_leg: 多腿腿组合规划失败 input_mint=So11111111111111111111111111111111111111112 output_mint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v amount=4730000000 trade_size=4730000000 buy_index=0 sell_index=0 error=买腿报价失败: Titan 报价源错误: Titan 推
+  结束但未获得有效路线

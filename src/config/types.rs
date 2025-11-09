@@ -497,6 +497,8 @@ pub struct JupiterEngineConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct JupiterQuoteConfig {
     #[serde(default)]
+    pub slippage_bps: u16,
+    #[serde(default)]
     pub only_direct_routes: bool,
     #[serde(default = "super::default_true")]
     pub restrict_intermediate_tokens: bool,
@@ -507,6 +509,7 @@ pub struct JupiterQuoteConfig {
 impl Default for JupiterQuoteConfig {
     fn default() -> Self {
         Self {
+            slippage_bps: 0,
             only_direct_routes: false,
             restrict_intermediate_tokens: super::default_true(),
             cadence: QuoteCadenceConfig::default(),
@@ -639,6 +642,8 @@ pub struct TitanEngineConfig {
     pub num_quotes: Option<u32>,
     #[serde(default)]
     pub first_quote_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub idle_resubscribe_timeout_ms: Option<u64>,
     #[serde(default)]
     pub swap_config: TitanSwapConfig,
     #[serde(default)]
@@ -2173,6 +2178,8 @@ pub struct LanderJitoTipsWalletConfig {
     pub auto_generate_interval_ms: u64,
     #[serde(default)]
     pub auto_generate_count: u64,
+    #[serde(default)]
+    pub refill_threshold: u64,
 }
 
 impl Default for LanderJitoTipsWalletConfig {
@@ -2181,6 +2188,7 @@ impl Default for LanderJitoTipsWalletConfig {
             init_wallet_size: 0,
             auto_generate_interval_ms: 0,
             auto_generate_count: 0,
+            refill_threshold: 0,
         }
     }
 }

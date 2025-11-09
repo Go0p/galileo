@@ -22,6 +22,14 @@ impl TitanSubscriptionPlanner {
 #[derive(Debug, Clone)]
 pub struct TitanSubscriptionPlan {
     assignments: HashMap<TitanBatchKey, IpAddr>,
+    entries: Vec<TitanPlanEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TitanPlanEntry {
+    pub pair: TradePair,
+    pub amount: u64,
+    pub ip: IpAddr,
 }
 
 impl TitanSubscriptionPlan {
@@ -33,6 +41,7 @@ impl TitanSubscriptionPlan {
         if ips.is_empty() {
             return Self {
                 assignments: HashMap::new(),
+                entries: Vec::new(),
             };
         }
 
@@ -41,6 +50,7 @@ impl TitanSubscriptionPlan {
         if entries.is_empty() || capacity == 0 {
             return Self {
                 assignments: HashMap::new(),
+                entries: Vec::new(),
             };
         }
 
@@ -54,6 +64,7 @@ impl TitanSubscriptionPlan {
         entries.dedup_by(|a, b| a.pair == b.pair && a.amount == b.amount);
 
         let mut assignments = HashMap::new();
+        let mut planned_entries = Vec::new();
         let mut ip_slots = ips
             .iter()
             .copied()
@@ -75,11 +86,20 @@ impl TitanSubscriptionPlan {
             }
 
             let (ip, count) = ip_slots[ip_index];
-            assignments.insert(TitanBatchKey::new(&entry.pair, entry.amount), ip);
+            let key = TitanBatchKey::new(&entry.pair, entry.amount);
+            assignments.insert(key, ip);
+            planned_entries.push(TitanPlanEntry {
+                pair: entry.pair.clone(),
+                amount: entry.amount,
+                ip,
+            });
             ip_slots[ip_index].1 = count + 1;
         }
 
-        Self { assignments }
+        Self {
+            assignments,
+            entries: planned_entries,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -96,6 +116,10 @@ impl TitanSubscriptionPlan {
         }
         let key = TitanBatchKey::new(pair, amount);
         self.assignments.get(&key).copied()
+    }
+
+    pub fn entries(&self) -> &[TitanPlanEntry] {
+        &self.entries
     }
 }
 

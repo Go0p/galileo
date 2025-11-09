@@ -41,7 +41,12 @@ impl JupiterLegProvider {
     fn build_quote_request(&self, intent: &QuoteIntent) -> JupiterQuoteRequest {
         let mut request =
             JupiterQuoteRequest::new(intent.input_mint, intent.output_mint, intent.amount);
-        request.slippage_bps = Some(intent.slippage_bps);
+        let slippage_bps = if self.quote_config.slippage_bps > 0 {
+            self.quote_config.slippage_bps
+        } else {
+            intent.slippage_bps
+        };
+        request.slippage_bps = Some(slippage_bps);
         if self.quote_config.only_direct_routes {
             request.only_direct_routes = Some(true);
         }

@@ -50,10 +50,11 @@ Galileo 已移除历史 Jupiter 依赖，所有聚合器配置均通过 `galileo
           api_swap_base: "..."
     ```
     旧版单实例写法仍然兼容（直接在 `engine.jupiter` 中配置字段）。
+  - `engine.jupiter.*.quote_config.slippage_bps`：覆盖发送到 Jupiter `/quote` 的 `slippageBps` 参数，默认 `0`（沿用策略层意图值），设置为正整数即可强制指定滑点。
   - 各聚合器的 `swap_config.wrap_and_unwrap_sol`、`dynamic_compute_unit_limit` 等选项会注入 `MultiLegEngineContext`，直接影响组合装配。
 
 ## 3. Titan / Flashloan / 上链器
-- Titan 参数集中在 `[engine.titan]`：包含 WS 端点、JWT、推送节奏以及允许的路由列表。
+- Titan 参数集中在 `[engine.titan]`：包含 WS 端点、JWT、推送节奏以及允许的路由列表。可用 `idle_resubscribe_timeout_ms` 控制“长时间无推流时自动重订阅”的超时，设为 0 或 `null` 表示禁用。
 - 闪电贷配置 → `[flashloan.marginfi]`：保留 Marginfi 账户、CU 开销等细节；启停及是否优先使用钱包余额由 `bot.flashloan` 统一驱动。
 - 各类上链器（Jito、Staked、Temporal、Astralane）已拆分到 `lander.yaml`，Galileo 会在与主配置相同的目录下自动加载。
 

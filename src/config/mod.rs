@@ -211,6 +211,7 @@ impl Default for cfg::TitanEngineConfig {
             interval_ms: None,
             num_quotes: None,
             first_quote_timeout_ms: Some(2_000),
+            idle_resubscribe_timeout_ms: Some(10_000),
             swap_config: cfg::TitanSwapConfig::default(),
             tx_config: cfg::TitanTxConfig::default(),
         }

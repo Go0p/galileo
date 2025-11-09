@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use solana_sdk::pubkey::Pubkey;
 
+use crate::engine::multi_leg::providers::titan::TitanWsQuoteSource;
 use crate::engine::multi_leg::runtime::MultiLegRuntime;
 use crate::engine::multi_leg::types::{
     AggregatorKind as MultiLegAggregatorKind, LegBuildContext as MultiLegBuildContext,
@@ -52,6 +53,10 @@ impl MultiLegEngineContext {
 
     pub fn runtime(&self) -> &MultiLegRuntime {
         &self.runtime
+    }
+
+    pub fn titan_source(&self) -> Option<Arc<TitanWsQuoteSource>> {
+        self.runtime.titan_source()
     }
 
     pub fn combinations(&self) -> &[LegCombination] {

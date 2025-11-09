@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,7 +31,7 @@ use crate::engine::multi_leg::{
         dflow::DflowLegProvider,
         jupiter::JupiterLegProvider,
         kamino::KaminoLegProvider,
-        titan::{TitanLegProvider, TitanWsQuoteSource},
+        titan::{TitanLegProvider, TitanWsQuoteSource, METIS_PROGRAM_ID, OKX_PROGRAM_ID, TITAN_PROGRAM_ID},
         ultra::UltraLegProvider,
     },
     runtime::{MultiLegRuntime, MultiLegRuntimeConfig},
@@ -460,7 +460,7 @@ fn build_multi_leg_runtime(
         Arc::clone(&rpc_client),
         alt_cache.clone(),
     )?;
-    register_titan_leg(&mut orchestrator, config)?;
+    let titan_source = register_titan_leg(&mut orchestrator, config)?;
 
     if orchestrator.buy_legs().is_empty() {
         return Err(anyhow!("multi-legs 模式至少需要一个 buy 腿"));
@@ -477,6 +477,7 @@ fn build_multi_leg_runtime(
         rpc_client,
         ip_allocator,
         runtime_cfg,
+        titan_source,
     ))
 }
 
@@ -1042,7 +1043,10 @@ fn parse_lighthouse_settings(cfg: &config::LightHouseBotConfig) -> Result<Lighth
     })
 }
 
-fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfig) -> Result<()> {
+fn register_titan_leg(
+    orchestrator: &mut MultiLegOrchestrator,
+    config: &AppConfig,
+) -> Result<Option<Arc<TitanWsQuoteSource>>> {
     let titan_cfg = &config.galileo.engine.titan;
     if !config
         .galileo
@@ -1050,7 +1054,7 @@ fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
         .engines
         .buy_leg_enabled(EngineLegBackend::Titan)
     {
-        return Ok(());
+        return Ok(None);
     }
 
     match titan_cfg.leg {
@@ -1059,7 +1063,7 @@ fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
                 target: "multi_leg::titan",
                 "未配置 Titan 腿角色，跳过 Titan 注册"
             );
-            return Ok(());
+            return Ok(None);
         }
         Some(LegRole::Buy) => {}
         Some(other) => {
@@ -1129,6 +1133,8 @@ fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
     let dexes = sanitize_list(&titan_cfg.swap_config.dexes);
     let exclude_dexes = sanitize_list(&titan_cfg.swap_config.exclude_dexes);
 
+    let allowed_programs = resolve_titan_allowed_programs(&swap_providers);
+
     let subscription_cfg = TitanSubscriptionConfig {
         ws_url,
         ws_proxy,
@@ -1142,6 +1148,9 @@ fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
         update_num_quotes: titan_cfg.num_quotes,
         close_input_token_account: false,
         create_output_token_account: titan_cfg.tx_config.create_output_token_account,
+        idle_resubscribe_timeout: titan_cfg
+            .idle_resubscribe_timeout_ms
+            .and_then(|ms| (ms > 0).then_some(Duration::from_millis(ms))),
     };
 
     let first_quote_timeout = titan_cfg
@@ -1157,21 +1166,44 @@ fn register_titan_leg(orchestrator: &mut MultiLegOrchestrator, config: &AppConfi
         .filter(|ms| *ms > 0)
         .map(Duration::from_millis);
 
-    let quote_source = TitanWsQuoteSource::new(
+    let quote_source = Arc::new(TitanWsQuoteSource::new(
         subscription_cfg,
         first_quote_timeout,
         titan_push_stride,
         stride_wait_timeout,
-    );
+    ));
     let provider = TitanLegProvider::new(
-        quote_source,
+        (*quote_source).clone(),
         LegSide::Buy,
         user_pubkey,
         titan_cfg.tx_config.use_wsol,
+        allowed_programs,
         titan_cfg.tx_config.filter_other_instructions,
     );
     orchestrator.register_owned_provider(provider);
-    Ok(())
+    Ok(Some(quote_source))
+}
+
+fn resolve_titan_allowed_programs(providers: &[String]) -> HashSet<Pubkey> {
+    let mut set = HashSet::new();
+    set.insert(TITAN_PROGRAM_ID);
+
+    for provider in providers {
+        match provider.trim().to_lowercase().as_str() {
+            "titan" => {
+                set.insert(TITAN_PROGRAM_ID);
+            }
+            "okx" => {
+                set.insert(OKX_PROGRAM_ID);
+            }
+            "metis" => {
+                set.insert(METIS_PROGRAM_ID);
+            }
+            _ => {}
+        }
+    }
+
+    set
 }
 
 fn resolve_quote_cadence(

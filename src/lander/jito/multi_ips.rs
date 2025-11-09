@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::convert::TryFrom;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -222,17 +223,34 @@ impl WalletPool {
         gauge!("galileo_jito_multi_ips_wallet_pool_size").set(initial_len as f64);
 
         let interval_ms = config.auto_generate_interval_ms;
-        let generate_count = config.auto_generate_count;
+        let generate_count = usize::try_from(config.auto_generate_count).unwrap_or(usize::MAX);
+        let refill_threshold = if config.refill_threshold == 0 {
+            None
+        } else {
+            Some(usize::try_from(config.refill_threshold).unwrap_or(usize::MAX))
+        };
         if interval_ms > 0 && generate_count > 0 {
             if let Ok(handle) = Handle::try_current() {
                 let store_clone = store.clone();
+                let threshold = refill_threshold;
                 handle.spawn(async move {
                     let interval = Duration::from_millis(interval_ms);
                     loop {
                         sleep(interval).await;
                         let mut guard = store_clone.lock().await;
-                        for _ in 0..generate_count {
-                            guard.push_back(Arc::new(Keypair::new()));
+                        if let Some(limit) = threshold {
+                            if guard.len() >= limit {
+                                continue;
+                            }
+                            let missing = limit - guard.len();
+                            let batch = missing.min(generate_count);
+                            for _ in 0..batch {
+                                guard.push_back(Arc::new(Keypair::new()));
+                            }
+                        } else {
+                            for _ in 0..generate_count {
+                                guard.push_back(Arc::new(Keypair::new()));
+                            }
                         }
                         gauge!("galileo_jito_multi_ips_wallet_pool_size").set(guard.len() as f64);
                     }

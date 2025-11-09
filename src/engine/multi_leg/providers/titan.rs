@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::{StreamExt, stream::FuturesUnordered};
 use solana_compute_budget_interface as compute_budget;
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::pubkey;
@@ -14,7 +15,7 @@ use solana_sdk::pubkey::Pubkey;
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
 use tokio::time::timeout;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::api::titan::{
     Instruction as TitanInstruction, SwapRoute, TitanError,
@@ -26,6 +27,7 @@ use crate::engine::multi_leg::types::{
     AggregatorKind, LegBuildContext, LegDescriptor, LegPlan, LegQuote, LegSide, QuoteIntent,
     SignerRewrite,
 };
+use crate::engine::titan::subscription::TitanSubscriptionPlan;
 use crate::monitoring::short_mint_str;
 use crate::network::{IpLeaseHandle, IpLeaseOutcome};
 use crate::strategy::types::TradePair;
@@ -55,6 +57,7 @@ pub struct TitanLegProvider<S> {
     source: Arc<S>,
     placeholder_signer: Pubkey,
     use_wsol: bool,
+    allowed_programs: Arc<HashSet<Pubkey>>,
     filter_other_instructions: bool,
 }
 
@@ -64,6 +67,7 @@ impl<S> TitanLegProvider<S> {
         side: LegSide,
         placeholder_signer: Pubkey,
         use_wsol: bool,
+        allowed_programs: HashSet<Pubkey>,
         filter_other_instructions: bool,
     ) -> Self {
         Self {
@@ -71,6 +75,7 @@ impl<S> TitanLegProvider<S> {
             source: Arc::new(source),
             placeholder_signer,
             use_wsol,
+            allowed_programs: Arc::new(allowed_programs),
             filter_other_instructions,
         }
     }
@@ -215,48 +220,114 @@ impl TitanWsQuoteSource {
         local_ip: IpAddr,
         sender: watch::Sender<StreamSnapshot>,
     ) -> Result<(), TitanLegError> {
-        let mut stream = subscribe_quote_stream(
-            (*config).clone(),
-            &key.pair,
-            TitanLeg::Forward,
-            key.amount,
-            Some(local_ip),
-        )
-        .await
-        .map_err(TitanLegError::from)?;
+        let idle_timeout = config.idle_resubscribe_timeout;
+        let base_display = short_mint_str(key.pair.input_mint.as_str());
+        let quote_display = short_mint_str(key.pair.output_mint.as_str());
+        loop {
+            let mut stream = subscribe_quote_stream(
+                (*config).clone(),
+                &key.pair,
+                TitanLeg::Forward,
+                key.amount,
+                Some(local_ip),
+            )
+            .await
+            .map_err(TitanLegError::from)?;
 
-        debug!(
-            target: "multi_leg::titan",
-            amount = key.amount,
-            base_mint = %short_mint_str(key.pair.input_mint.as_str()),
-            quote_mint = %short_mint_str(key.pair.output_mint.as_str()),
-            ip = %key.ip,
-            "已建立 Titan 报价流"
-        );
+            debug!(
+                target: "multi_leg::titan",
+                amount = key.amount,
+                base_mint = %base_display,
+                quote_mint = %quote_display,
+                ip = %key.ip,
+                "已建立 Titan 报价流"
+            );
 
-        while let Some(update) = stream.recv().await {
-            if let Some((provider, route)) = Self::select_best_route(&update) {
-                debug!(
-                    target: "multi_leg::titan",
-                    provider = provider,
-                    out_amount = route.out_amount,
-                    in_amount = route.in_amount,
-                    slippage_bps = route.slippage_bps,
-                    "Titan 报价更新"
-                );
-                let quote = TitanQuote {
-                    route,
-                    provider,
-                    quote_id: Some(update.quotes.id.clone()),
-                };
-                let snapshot = StreamSnapshot::with_quote(update.seq, quote);
-                if sender.send(snapshot).is_err() {
-                    break;
+            let mut idle_triggered = false;
+            while let Some(update) = {
+                let recv_future = stream.recv();
+                match idle_timeout {
+                    Some(timeout) => match tokio::time::timeout(timeout, recv_future).await {
+                        Ok(item) => item,
+                        Err(_) => {
+                            idle_triggered = true;
+                            warn!(
+                                target: "multi_leg::titan",
+                                amount = key.amount,
+                                base_mint = %base_display,
+                                quote_mint = %quote_display,
+                                ip = %key.ip,
+                                timeout_ms = timeout.as_millis() as u64,
+                                "Titan 推流在指定时间内无更新，重新订阅"
+                            );
+                            None
+                        }
+                    },
+                    None => recv_future.await,
+                }
+            } {
+                if let Some((provider, route)) = Self::select_best_route(&update) {
+                    debug!(
+                        target: "multi_leg::titan",
+                        provider = provider,
+                        out_amount = route.out_amount,
+                        in_amount = route.in_amount,
+                        slippage_bps = route.slippage_bps,
+                        ip = %key.ip,
+                        "Titan 报价更新"
+                    );
+                    let quote = TitanQuote {
+                        route,
+                        provider,
+                        quote_id: Some(update.quotes.id.clone()),
+                    };
+                    let snapshot = StreamSnapshot::with_quote(update.seq, quote);
+                    if sender.send(snapshot).is_err() {
+                        break;
+                    }
                 }
             }
+
+            if idle_triggered {
+                continue;
+            }
+
+            break;
         }
 
         let _ = sender.send(StreamSnapshot::empty());
+        Ok(())
+    }
+
+    pub async fn ensure_stream(
+        &self,
+        pair: TradePair,
+        amount: u64,
+        local_ip: IpAddr,
+    ) -> Result<(), TitanLegError> {
+        let _ = self.stream_state(pair, amount, local_ip).await?;
+        Ok(())
+    }
+
+    pub async fn bootstrap_plan(&self, plan: &TitanSubscriptionPlan) -> Result<(), TitanLegError> {
+        if plan.is_empty() {
+            return Ok(());
+        }
+        let mut tasks = FuturesUnordered::new();
+        for entry in plan.entries() {
+            info!(
+                target: "multi_leg::titan",
+                ip = %entry.ip,
+                base_mint = %short_mint_str(entry.pair.input_mint.as_str()),
+                quote_mint = %short_mint_str(entry.pair.output_mint.as_str()),
+                amount = entry.amount,
+                "Titan 预热订阅"
+            );
+            tasks.push(self.ensure_stream(entry.pair.clone(), entry.amount, entry.ip));
+        }
+        while let Some(result) = tasks.next().await {
+            result?;
+        }
         Ok(())
     }
 }
@@ -314,7 +385,6 @@ impl TitanQuoteSource for TitanWsQuoteSource {
                                 timeout_ms,
                                 "Titan 首次报价超时"
                             );
-                            self.streams.lock().await.remove(&key);
                             return Err(TitanLegError::Source(format!(
                                 "Titan 推流首次报价超时 {}ms",
                                 timeout_ms
@@ -446,7 +516,7 @@ where
                 continue;
             }
 
-            if self.filter_other_instructions && ix.program_id != TITAN_PROGRAM_ID {
+            if self.filter_other_instructions && !self.allowed_programs.contains(&ix.program_id) {
                 continue;
             }
 
@@ -843,6 +913,11 @@ mod tests {
             LegSide::Buy,
             placeholder,
             false,
+            {
+                let mut allowed = HashSet::new();
+                allowed.insert(TITAN_PROGRAM_ID);
+                allowed
+            },
             false,
         );
 
@@ -863,4 +938,9 @@ mod tests {
         assert_eq!(rewrite.replacement, context.payer);
     }
 }
-const TITAN_PROGRAM_ID: Pubkey = pubkey!("T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT");
+pub(crate) const TITAN_PROGRAM_ID: Pubkey =
+    pubkey!("T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT");
+pub(crate) const METIS_PROGRAM_ID: Pubkey =
+    pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
+pub(crate) const OKX_PROGRAM_ID: Pubkey =
+    pubkey!("proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u");

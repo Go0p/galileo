@@ -164,6 +164,20 @@ def base58_decode(value: str) -> bytes:
     return b"\x00" * pad + data.lstrip(b"\x00")
 
 
+def base58_encode(data: bytes) -> str:
+    """Encode bytes into base58 (no checksum)."""
+    if not data:
+        return ""
+    num = int.from_bytes(data, "big")
+    encoded = ""
+    while num:
+        num, rem = divmod(num, 58)
+        encoded = _BASE58_ALPHABET[rem] + encoded
+    # Preserve leading zeroes
+    pad = len(data) - len(data.lstrip(b"\x00"))
+    return "1" * pad + encoded or "1"
+
+
 def _fallback_unpackb(data: bytes, *, raw: bool) -> Any:
     """Minimal msgpack decoder covering Jupiter websocket payloads."""
 
@@ -580,11 +594,11 @@ class SessionCrypto:
 
 # Optional async demo utilities.
 DEFAULT_TITAN_ENDPOINT = (
-    "wss://api.titan.exchange/api/v1/ws?auth=eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjE5ODM2NDIsImV4cCI6MTc2MTk4NDU0Miwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.Vez2ne5CsMKT0bXSlF4RNt_VOiz5bBg1bDbIjtKDIJE"
+    "wss://api.titan.exchange/api/v1/ws?auth=eyJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE3NjI2NjE0MjEsImV4cCI6MTc2MjY2MjMyMSwic3ViIjoiZ2VuZXJpY19mcm9udGVuZF91c2VyIiwiYXVkIjoiYXBpLnRpdGFuLmFnIiwiaXNzIjoiaHR0cHM6Ly9qd3QtYXV0aC13b3JrZXItcHJvZC5kZWxpY2F0ZS1zaWxlbmNlLTE2Nzcud29ya2Vycy5kZXYvIiwiaHR0cHM6Ly9hcGkudGl0YW4uYWcvdXBrX2I1OCI6IlRpdGFuMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.-vYVrht_S7Og3EEGYwUFEPSrY21Bwbu_oo5WLtkUJvw"
 )
 DEFAULT_WALLET = "Titan11111111111111111111111111111111111111"
 DEFAULT_INPUT_MINT = "So11111111111111111111111111111111111111112"
-DEFAULT_OUTPUT_MINT = "So11111111111111111111111111111111111111112"
+DEFAULT_OUTPUT_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 DEFAULT_AMOUNT = 1 * 1_000_000_000
 
 
@@ -824,12 +838,47 @@ async def demo_round_trip() -> None:
 
 def _json_default(value: Any) -> Any:
     if isinstance(value, (bytes, bytearray)):
-        return {
-            "type": "bytes",
-            "base64": base64.b64encode(value).decode("ascii"),
-            "length": len(value),
-        }
+        return _bytes_repr(value)
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _bytes_repr(value: bytes) -> Dict[str, Any]:
+    """Provide base58 + base64 encodings to keep dumps readable."""
+    return {
+        "type": "bytes",
+        "base58": base58_encode(value),
+        "base64": base64.b64encode(value).decode("ascii"),
+        "length": len(value),
+    }
+
+
+def _decode_stream_payload(message: Any) -> Any:
+    """Best-effort conversion of Titan stream payloads into human-readable form."""
+    if isinstance(message, dict):
+        if "SwapQuotes" in message:
+            return {"SwapQuotes": _decode_swap_quotes(message["SwapQuotes"])}
+        if "StreamData" in message:
+            data = dict(message)
+            data["StreamData"] = _decode_stream_payload(message["StreamData"])
+            return data
+        return {k: _decode_stream_payload(v) for k, v in message.items()}
+    if isinstance(message, list):
+        return [_decode_stream_payload(item) for item in message]
+    if isinstance(message, (bytes, bytearray)):
+        return base58_encode(message)
+    return message
+
+
+def _decode_swap_quotes(quotes: Dict[str, Any]) -> Dict[str, Any]:
+    decoded = {}
+    for key, value in quotes.items():
+        if isinstance(value, (bytes, bytearray)):
+            decoded[key] = base58_encode(value)
+        elif isinstance(value, dict):
+            decoded[key] = _decode_stream_payload(value)
+        else:
+            decoded[key] = value
+    return decoded
 
 
 def main(argv: Optional[Any] = None) -> int:
@@ -898,20 +947,36 @@ def main(argv: Optional[Any] = None) -> int:
     parser_stream.add_argument(
         "--duration",
         type=float,
-        default=15.0,
-        help="Maximum seconds to keep the stream open (default: 15)",
+        default=0.0,
+        help="Optional cap in seconds for how long to keep the stream open (0 = unlimited)",
     )
     parser_stream.add_argument(
         "--max-messages",
         type=int,
-        default=5,
-        help="Stop after receiving this many StreamData payloads (default: 5)",
+        default=0,
+        help="Stop after this many StreamData payloads (0 = unlimited)",
     )
     parser_stream.add_argument(
         "--timeout",
         type=float,
         default=10.0,
         help="Per-request timeout in seconds (default: 10)",
+    )
+    parser_stream.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=0.0,
+        help="Exit if no StreamData arrives within this many seconds (0 = wait indefinitely)",
+    )
+    parser_stream.add_argument(
+        "--print-request",
+        action="store_true",
+        help="Dump the SwapQuoteRequest payload before sending",
+    )
+    parser_stream.add_argument(
+        "--raw-stream",
+        action="store_true",
+        help="Print StreamData payloads without decoding bytes to base58",
     )
 
     sub.add_parser("demo", help="Run AES-GCM round-trip demo (default)")
@@ -927,6 +992,23 @@ def main(argv: Optional[Any] = None) -> int:
             async with client:
                 info = await client.get_info(timeout=args.timeout)
                 print("Server info:", json.dumps(info, indent=2, default=_json_default))
+                if args.print_request:
+                    preview = {
+                        "swap": {
+                            "inputMint": args.input_mint,
+                            "outputMint": args.output_mint,
+                            "amount": args.amount,
+                            "swapMode": args.swap_mode,
+                            "slippageBps": args.slippage_bps,
+                            "dexes": args.dexes,
+                            "onlyDirectRoutes": args.only_direct_routes,
+                            "addSizeConstraint": not args.no_size_constraint,
+                        },
+                        "transaction": {"userPublicKey": args.wallet},
+                        "update": {"intervalMs": args.interval} if args.interval is not None else None,
+                    }
+                    print("SwapQuoteRequest:", json.dumps(preview, indent=2))
+
                 response, queue = await client.new_swap_quote_stream(
                     input_mint=args.input_mint,
                     output_mint=args.output_mint,
@@ -945,29 +1027,46 @@ def main(argv: Optional[Any] = None) -> int:
 
                 received = 0
                 start = time.monotonic()
-                while True:
-                    remaining = max(0.0, args.duration - (time.monotonic() - start)) if args.duration else None
-                    wait_timeout = args.timeout
-                    if remaining is not None:
-                        wait_timeout = min(wait_timeout, remaining)
-                        if wait_timeout <= 0:
+                deadline = start + args.duration if args.duration and args.duration > 0 else None
+                try:
+                    while True:
+                        now = time.monotonic()
+                        remaining = (
+                            max(0.0, deadline - now) if deadline is not None else None
+                        )
+                        timeouts = []
+                        if remaining is not None:
+                            timeouts.append(remaining)
+                        if args.idle_timeout and args.idle_timeout > 0:
+                            timeouts.append(args.idle_timeout)
+                        wait_timeout: Optional[float] = min(timeouts) if timeouts else None
+                        if wait_timeout is not None and wait_timeout <= 0:
+                            print("Stream duration reached, exiting.")
                             break
-                    try:
-                        message = await asyncio.wait_for(queue.get(), timeout=wait_timeout)
-                    except asyncio.TimeoutError:
-                        print("Quote stream timed out waiting for data.")
-                        break
-                    print(json.dumps(message, indent=2, default=_json_default))
-                    if isinstance(message, dict) and "StreamEnd" in message:
-                        break
-                    received += 1
-                    if args.max_messages and received >= args.max_messages:
-                        break
-                if stream_id is not None:
-                    try:
-                        await client.stop_stream(stream_id, timeout=args.timeout)
-                    except Exception as exc:  # pragma: no cover - best effort
-                        print(f"Failed to stop stream cleanly: {exc}")
+                        try:
+                            if wait_timeout is None:
+                                message = await queue.get()
+                            else:
+                                message = await asyncio.wait_for(queue.get(), timeout=wait_timeout)
+                        except asyncio.TimeoutError:
+                            print("Quote stream timed out waiting for data.")
+                            break
+                        printable = message if args.raw_stream else _decode_stream_payload(message)
+                        print(json.dumps(printable, indent=2, default=_json_default))
+                        if isinstance(message, dict) and "StreamEnd" in message:
+                            break
+                        received += 1
+                        if args.max_messages and args.max_messages > 0 and received >= args.max_messages:
+                            break
+                except KeyboardInterrupt:
+                    print("\nInterrupted by user, closing stream...")
+                finally:
+                    if stream_id is not None:
+                        try:
+                            await client.stop_stream(stream_id, timeout=args.timeout)
+                        except Exception as exc:  # pragma: no cover - best effort
+                            print(f"Failed to stop stream cleanly: {exc}")
+                    await client.close()
 
         asyncio.run(run_stream())
         return 0
@@ -978,3 +1077,30 @@ def main(argv: Optional[Any] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+def _decode_stream_payload(message: Any) -> Any:
+    """Best-effort conversion of Titan stream payloads into human-readable form."""
+    if isinstance(message, dict):
+        if "SwapQuotes" in message:
+            return {"SwapQuotes": _decode_swap_quotes(message["SwapQuotes"])}
+        if "StreamData" in message:
+            data = dict(message)
+            data["StreamData"] = _decode_stream_payload(message["StreamData"])
+            return data
+        return {k: _decode_stream_payload(v) for k, v in message.items()}
+    if isinstance(message, list):
+        return [_decode_stream_payload(item) for item in message]
+    if isinstance(message, (bytes, bytearray)):
+        return base58_encode(message)
+    return message
+
+
+def _decode_swap_quotes(quotes: Dict[str, Any]) -> Dict[str, Any]:
+    decoded = {}
+    for key, value in quotes.items():
+        if isinstance(value, (bytes, bytearray)):
+            decoded[key] = base58_encode(value)
+        elif isinstance(value, dict):
+            decoded[key] = _decode_stream_payload(value)
+        else:
+            decoded[key] = value
+    return decoded

@@ -177,6 +177,7 @@ where
     multi_leg: Option<Arc<MultiLegEngineContext>>,
     lighthouse: LighthouseRuntime,
     titan_plan: Option<TitanSubscriptionPlan>,
+    titan_bootstrapped: bool,
 }
 
 impl<S> StrategyEngine<S>
@@ -252,6 +253,7 @@ where
             multi_leg: multi_leg.map(Arc::new),
             lighthouse: lighthouse_runtime,
             titan_plan,
+            titan_bootstrapped: false,
         }
     }
 
@@ -260,6 +262,8 @@ where
         if self.landers.is_empty() {
             return Err(EngineError::InvalidConfig("未配置可用的落地器".into()));
         }
+
+        self.bootstrap_titan_streams().await?;
 
         info!(
             target: "engine",
@@ -276,6 +280,37 @@ where
         );
 
         self.run_jupiter().await
+    }
+
+    async fn bootstrap_titan_streams(&mut self) -> EngineResult<()> {
+        if self.titan_bootstrapped {
+            return Ok(());
+        }
+        let Some(plan) = self.titan_plan.as_ref() else {
+            self.titan_bootstrapped = true;
+            return Ok(());
+        };
+        let Some(ctx) = self.multi_leg.as_ref() else {
+            self.titan_bootstrapped = true;
+            return Ok(());
+        };
+        let Some(source) = ctx.titan_source() else {
+            self.titan_bootstrapped = true;
+            return Ok(());
+        };
+
+        info!(
+            target: "engine::titan",
+            assignments = plan.len(),
+            "预热 Titan 推流订阅"
+        );
+
+        source
+            .bootstrap_plan(plan)
+            .await
+            .map_err(|err| EngineError::Internal(format!("Titan 推流预热失败: {err}")))?;
+        self.titan_bootstrapped = true;
+        Ok(())
     }
 
     async fn run_jupiter(&mut self) -> EngineResult<()> {

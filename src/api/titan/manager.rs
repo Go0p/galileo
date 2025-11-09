@@ -1,5 +1,6 @@
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json;
 use solana_sdk::pubkey::Pubkey;
@@ -37,6 +38,7 @@ pub struct TitanSubscriptionConfig {
     pub update_num_quotes: Option<u32>,
     pub close_input_token_account: bool,
     pub create_output_token_account: Option<bool>,
+    pub idle_resubscribe_timeout: Option<Duration>,
 }
 
 #[derive(Debug, Clone)]
