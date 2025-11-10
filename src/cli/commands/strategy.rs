@@ -62,6 +62,7 @@ use crate::strategy::{
     BlindStrategy, PureBlindRouteBuilder, PureBlindStrategy, Strategy, StrategyEvent,
 };
 use rand::Rng as _;
+use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use url::Url;
 use yellowstone_grpc_proto::tonic::metadata::AsciiMetadataValue;
@@ -210,6 +211,7 @@ async fn run_blind_engine(
         backend,
         &mut identity,
         &compute_unit_price_mode,
+        rpc_client.clone(),
         alt_cache.clone(),
     )
     .await?;
@@ -1271,6 +1273,7 @@ async fn run_pure_blind_engine(
         backend,
         &mut identity,
         &compute_unit_price_mode,
+        rpc_client.clone(),
         alt_cache.clone(),
     )
     .await?;
@@ -1575,6 +1578,7 @@ async fn prepare_swap_components(
     backend: &StrategyBackend<'_>,
     identity: &mut EngineIdentity,
     compute_unit_price_mode: &Option<ComputeUnitPriceMode>,
+    rpc_client: Arc<RpcClient>,
     alt_cache: AltCache,
 ) -> Result<(QuoteExecutor, SwapPreparer, (bool, bool))> {
     match backend {
@@ -1595,6 +1599,8 @@ async fn prepare_swap_components(
                 (*api_client).clone(),
                 swap_defaults,
                 compute_unit_price_mode.clone(),
+                rpc_client.clone(),
+                alt_cache.clone(),
             );
             Ok((
                 quote_executor,

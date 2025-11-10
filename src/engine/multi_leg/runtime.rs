@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -94,12 +95,34 @@ impl MultiLegRuntime {
         let _buy_guard = self.concurrency.acquire(&buy_descriptor).await;
         let _sell_guard = self.concurrency.acquire(&sell_descriptor).await;
 
+        let mut buy_ip_context: Option<IpAddr> = None;
+        let mut sell_ip_context: Option<IpAddr> = None;
+
         let buy_quote_handle = self
             .acquire_leg_handle(&buy_descriptor, request.preferred_buy_ip)
-            .await?;
+            .await
+            .map_err(|err| {
+                PairPlanError::new(
+                    PairPlanErrorStage::AcquireQuoteHandle,
+                    buy_ip_context,
+                    sell_ip_context,
+                    err,
+                )
+            })?;
+        buy_ip_context = Some(buy_quote_handle.ip());
+
         let sell_quote_handle = self
             .acquire_leg_handle(&sell_descriptor, request.preferred_sell_ip)
-            .await?;
+            .await
+            .map_err(|err| {
+                PairPlanError::new(
+                    PairPlanErrorStage::AcquireQuoteHandle,
+                    buy_ip_context,
+                    sell_ip_context,
+                    err,
+                )
+            })?;
+        sell_ip_context = Some(sell_quote_handle.ip());
 
         let pair_quote = self
             .orchestrator
@@ -116,7 +139,14 @@ impl MultiLegRuntime {
         drop(buy_quote_handle);
         drop(sell_quote_handle);
 
-        let pair_quote = pair_quote?;
+        let pair_quote = pair_quote.map_err(|err| {
+            PairPlanError::new(
+                PairPlanErrorStage::Quote,
+                buy_ip_context,
+                sell_ip_context,
+                err,
+            )
+        })?;
 
         let estimated_profit = pair_quote.estimated_gross_profit();
         if estimated_profit <= 0 {
@@ -133,8 +163,31 @@ impl MultiLegRuntime {
             return Ok(None);
         }
 
-        let buy_plan_handle = self.acquire_leg_handle(&buy_descriptor, None).await?;
-        let sell_plan_handle = self.acquire_leg_handle(&sell_descriptor, None).await?;
+        let buy_plan_handle = self
+            .acquire_leg_handle(&buy_descriptor, None)
+            .await
+            .map_err(|err| {
+                PairPlanError::new(
+                    PairPlanErrorStage::AcquirePlanHandle,
+                    buy_ip_context,
+                    sell_ip_context,
+                    err,
+                )
+            })?;
+        buy_ip_context = Some(buy_plan_handle.ip());
+
+        let sell_plan_handle = self
+            .acquire_leg_handle(&sell_descriptor, None)
+            .await
+            .map_err(|err| {
+                PairPlanError::new(
+                    PairPlanErrorStage::AcquirePlanHandle,
+                    buy_ip_context,
+                    sell_ip_context,
+                    err,
+                )
+            })?;
+        sell_ip_context = Some(sell_plan_handle.ip());
 
         let plan = self
             .orchestrator
@@ -145,12 +198,20 @@ impl MultiLegRuntime {
                 Some(&buy_plan_handle),
                 Some(&sell_plan_handle),
             )
-            .await;
+            .await
+            .map_err(|err| {
+                PairPlanError::new(
+                    PairPlanErrorStage::BuildPlan,
+                    buy_ip_context,
+                    sell_ip_context,
+                    err,
+                )
+            })?;
 
         drop(buy_plan_handle);
         drop(sell_plan_handle);
 
-        plan.map(Some)
+        Ok(Some(plan))
     }
 
     async fn acquire_leg_handle(
@@ -241,6 +302,9 @@ impl MultiLegRuntime {
                             buy_index: request.buy_index,
                             sell_index: request.sell_index,
                             trade_size: request.trade_size(),
+                            buy_ip: None,
+                            sell_ip: None,
+                            failure_stage: None,
                             error,
                         });
                     }
@@ -249,11 +313,15 @@ impl MultiLegRuntime {
                     // Already logged at quote stage; nothing else to do.
                 }
                 Err(error) => {
+                    let (buy_ip, sell_ip, stage) = extract_pair_plan_error_metadata(&error);
                     warn!(
                         target = "multi_leg::runtime",
                         buy_index = request.buy_index,
                         sell_index = request.sell_index,
                         trade_size = request.trade_size(),
+                        buy_ip = ?buy_ip,
+                        sell_ip = ?sell_ip,
+                        failure_stage = ?stage,
                         error = %error,
                         "双腿计划构建失败"
                     );
@@ -261,6 +329,9 @@ impl MultiLegRuntime {
                         buy_index: request.buy_index,
                         sell_index: request.sell_index,
                         trade_size: request.trade_size(),
+                        buy_ip,
+                        sell_ip,
+                        failure_stage: stage,
                         error,
                     });
                 }
@@ -457,7 +528,92 @@ pub struct PairPlanFailure {
     pub buy_index: usize,
     pub sell_index: usize,
     pub trade_size: u64,
+    pub buy_ip: Option<IpAddr>,
+    pub sell_ip: Option<IpAddr>,
+    pub failure_stage: Option<PairPlanErrorStage>,
     pub error: Error,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PairPlanErrorStage {
+    AcquireQuoteHandle,
+    AcquirePlanHandle,
+    Quote,
+    BuildPlan,
+}
+
+impl fmt::Display for PairPlanErrorStage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            PairPlanErrorStage::AcquireQuoteHandle => "acquire_quote_handle",
+            PairPlanErrorStage::AcquirePlanHandle => "acquire_plan_handle",
+            PairPlanErrorStage::Quote => "quote",
+            PairPlanErrorStage::BuildPlan => "build_plan",
+        };
+        f.write_str(label)
+    }
+}
+
+#[derive(Debug)]
+struct PairPlanError {
+    stage: PairPlanErrorStage,
+    buy_ip: Option<IpAddr>,
+    sell_ip: Option<IpAddr>,
+    inner: Error,
+}
+
+impl PairPlanError {
+    fn new(
+        stage: PairPlanErrorStage,
+        buy_ip: Option<IpAddr>,
+        sell_ip: Option<IpAddr>,
+        inner: Error,
+    ) -> Self {
+        Self {
+            stage,
+            buy_ip,
+            sell_ip,
+            inner,
+        }
+    }
+
+    fn buy_ip(&self) -> Option<IpAddr> {
+        self.buy_ip
+    }
+
+    fn sell_ip(&self) -> Option<IpAddr> {
+        self.sell_ip
+    }
+
+    fn stage(&self) -> PairPlanErrorStage {
+        self.stage
+    }
+}
+
+impl fmt::Display for PairPlanError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}] {}", self.stage, self.inner)
+    }
+}
+
+impl std::error::Error for PairPlanError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner.source()
+    }
+}
+
+fn extract_pair_plan_error_metadata(
+    error: &Error,
+) -> (Option<IpAddr>, Option<IpAddr>, Option<PairPlanErrorStage>) {
+    if let Some(plan_error) = error.downcast_ref::<PairPlanError>() {
+        return (
+            plan_error.buy_ip(),
+            plan_error.sell_ip(),
+            Some(plan_error.stage()),
+        );
+    }
+
+    (None, None, None)
 }
 
 struct ConcurrencyPolicy {

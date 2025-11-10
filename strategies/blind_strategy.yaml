@@ -33,19 +33,19 @@ auto_scale_to_ip:
   max_multiplier: 3.0
 
 base_mints:
-  # - mint: "So11111111111111111111111111111111111111112"
-  #   # 每个 lane 描述一个交易规模区间与生成策略：
-  #   # - min/max：规模范围（单位 lamports）
-  #   # - count：初始生成多少个规模；结合 auto_scale 时也作为扩容基数
-  #   # - strategy：linear / exponential / random
-  #   # - weight：auto_scale 启用时的扩容权重（可选，默认 1.0）
-  #   lanes:
-  #     - min: 1_000_000_000
-  #       max: 6_000_000_000
-  #       count: 1
-  #       strategy: linear
-  #   # 最小利润
-  #   min_quote_profit: 10000
+  - mint: "So11111111111111111111111111111111111111112"
+    # 每个 lane 描述一个交易规模区间与生成策略：
+    # - min/max：规模范围（单位 lamports）
+    # - count：初始生成多少个规模；结合 auto_scale 时也作为扩容基数
+    # - strategy：linear / exponential / random
+    # - weight：auto_scale 启用时的扩容权重（可选，默认 1.0）
+    lanes:
+      - min: 1_000_000_000
+        max: 6_000_000_000
+        count: 1
+        strategy: linear
+    # 最小利润
+    min_quote_profit: 100
   - mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     lanes:
       - min: 600_000_000

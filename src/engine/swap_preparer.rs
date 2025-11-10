@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use anyhow::anyhow;
 use tracing::{debug, warn};
 
 use super::aggregator::{KaminoSwapBundle, QuotePayloadVariant, SwapInstructionsVariant};
@@ -14,6 +15,7 @@ use crate::api::dflow::{
 };
 use crate::api::jupiter::{
     JupiterApiClient, SwapInstructionsRequest as JupiterSwapInstructionsRequest,
+    SwapInstructionsResponse as JupiterSwapResponse, swap_instructions::SwapDecodeError,
 };
 use crate::cache::AltCache;
 use crate::config::{DflowSwapConfig, JupiterSwapConfig, KaminoQuoteConfig, UltraSwapConfig};
@@ -63,6 +65,8 @@ pub enum SwapPreparerBackend {
     Jupiter {
         client: JupiterApiClient,
         defaults: JupiterSwapConfig,
+        rpc: Arc<RpcClient>,
+        alt_cache: AltCache,
     },
     Dflow {
         client: DflowApiClient,
@@ -93,11 +97,15 @@ impl SwapPreparer {
         client: JupiterApiClient,
         request_defaults: JupiterSwapConfig,
         compute_unit_price: Option<ComputeUnitPriceMode>,
+        rpc: Arc<RpcClient>,
+        alt_cache: AltCache,
     ) -> Self {
         Self {
             backend: SwapPreparerBackend::Jupiter {
                 client,
                 defaults: request_defaults,
+                rpc,
+                alt_cache,
             },
             compute_unit_price,
         }
@@ -174,7 +182,12 @@ impl SwapPreparer {
 
         let variant = match (&self.backend, payload) {
             (
-                SwapPreparerBackend::Jupiter { client, defaults },
+                SwapPreparerBackend::Jupiter {
+                    client,
+                    defaults,
+                    rpc,
+                    alt_cache,
+                },
                 QuotePayloadVariant::Jupiter(inner),
             ) => {
                 let mut request = JupiterSwapInstructionsRequest::from_quote(
@@ -208,7 +221,8 @@ impl SwapPreparer {
                     }
                 }
 
-                let response = client.swap_instructions_with_ip(&request, local_ip).await?;
+                let mut response = client.swap_instructions_with_ip(&request, local_ip).await?;
+                resolve_jupiter_response(&mut response, rpc, alt_cache).await?;
                 SwapInstructionsVariant::Jupiter(response)
             }
             (
@@ -523,6 +537,30 @@ fn apply_cu_limit_multiplier(base: u32, multiplier: f64) -> u32 {
         scaled = u32::MAX as f64;
     }
     scaled.round() as u32
+}
+
+async fn resolve_jupiter_response(
+    response: &mut JupiterSwapResponse,
+    rpc: &Arc<RpcClient>,
+    alt_cache: &AltCache,
+) -> EngineResult<()> {
+    if !response.needs_lookup_resolution() {
+        return Ok(());
+    }
+    let addresses = response.address_lookup_table_addresses.clone();
+    if addresses.is_empty() {
+        return Err(EngineError::Transaction(anyhow!(
+            "Jupiter swapTransaction 缺少 addressLookupTableAddresses"
+        )));
+    }
+    let lookup_accounts = alt_cache
+        .fetch_many(rpc, &addresses)
+        .await
+        .map_err(EngineError::from)?;
+    response
+        .resolve_with_lookup_accounts(&lookup_accounts)
+        .map_err(|err: SwapDecodeError| EngineError::Transaction(anyhow!(err)))?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]

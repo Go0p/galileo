@@ -175,6 +175,7 @@ impl JupiterApiClient {
             input_mint = %request.input_mint,
             output_mint = %request.output_mint,
             amount = request.amount,
+            local_ip = ?local_ip,
             slippage_bps = ?request.slippage_bps,
             only_direct_routes = ?request.only_direct_routes,
             restrict_intermediate_tokens = ?request.restrict_intermediate_tokens,
@@ -197,6 +198,7 @@ impl JupiterApiClient {
                         target: "jupiter::quote",
                         endpoint = %url,
                         timeout_ms = timeout,
+                        local_ip = ?local_ip,
                         "Jupiter 报价请求超时"
                     );
                     JupiterError::Timeout {
@@ -210,6 +212,7 @@ impl JupiterApiClient {
                         target: "jupiter::quote",
                         endpoint = %url,
                         error = %err,
+                        local_ip = ?local_ip,
                         "Jupiter 报价请求发送失败"
                     );
                     JupiterError::from(err)
@@ -225,6 +228,7 @@ impl JupiterApiClient {
                     target: "jupiter::quote",
                     endpoint = %url,
                     timeout_ms = timeout,
+                    local_ip = ?local_ip,
                     "Jupiter 报价读取响应超时"
                 );
                 JupiterError::Timeout {
@@ -238,6 +242,7 @@ impl JupiterApiClient {
                     target: "jupiter::quote",
                     endpoint = %url,
                     error = %err,
+                    local_ip = ?local_ip,
                     "Jupiter 报价读取响应失败"
                 );
                 JupiterError::from(err)
@@ -252,6 +257,7 @@ impl JupiterApiClient {
                 endpoint = %url,
                 status = status.as_u16(),
                 body = %summary,
+                local_ip = ?local_ip,
                 "Jupiter 报价命中限流"
             );
             return Err(JupiterError::RateLimited {
@@ -269,6 +275,7 @@ impl JupiterApiClient {
                 endpoint = %url,
                 status = status.as_u16(),
                 body = %summary,
+                local_ip = ?local_ip,
                 "Jupiter 报价返回非 200 状态"
             );
             return Err(JupiterError::ApiStatus {
@@ -284,6 +291,7 @@ impl JupiterApiClient {
                 target: "jupiter::quote",
                 endpoint = %url,
                 error = %err,
+                local_ip = ?local_ip,
                 "Jupiter 报价 JSON 解析失败"
             );
             JupiterError::Json(err)
@@ -295,6 +303,7 @@ impl JupiterApiClient {
                 target: "jupiter::quote",
                 endpoint = %url,
                 error = %err,
+                local_ip = ?local_ip,
                 "Jupiter 报价 schema 校验失败"
             );
             JupiterError::Schema(err.to_string())
@@ -352,6 +361,7 @@ impl JupiterApiClient {
         trace!(
             target: "jupiter::swap",
             payload = %payload,
+            local_ip = ?local_ip,
             "即将请求 Jupiter swap 指令"
         );
 
@@ -370,6 +380,7 @@ impl JupiterApiClient {
                         target: "jupiter::swap",
                         endpoint = %url,
                         timeout_ms = timeout,
+                        local_ip = ?local_ip,
                         "Jupiter 指令请求超时"
                     );
                     JupiterError::Timeout {
@@ -383,6 +394,7 @@ impl JupiterApiClient {
                         target: "jupiter::swap",
                         endpoint = %url,
                         error = %err,
+                        local_ip = ?local_ip,
                         "Jupiter 指令请求发送失败"
                     );
                     JupiterError::from(err)
@@ -398,6 +410,7 @@ impl JupiterApiClient {
                     target: "jupiter::swap",
                     endpoint = %url,
                     timeout_ms = timeout,
+                    local_ip = ?local_ip,
                     "Jupiter 指令读取响应超时"
                 );
                 JupiterError::Timeout {
@@ -411,6 +424,7 @@ impl JupiterApiClient {
                     target: "jupiter::swap",
                     endpoint = %url,
                     error = %err,
+                    local_ip = ?local_ip,
                     "Jupiter 指令读取响应失败"
                 );
                 JupiterError::from(err)
@@ -425,6 +439,7 @@ impl JupiterApiClient {
                 endpoint = %url,
                 status = status.as_u16(),
                 body = %summary,
+                local_ip = ?local_ip,
                 "Jupiter 指令请求命中限流"
             );
             return Err(JupiterError::RateLimited {
@@ -442,6 +457,7 @@ impl JupiterApiClient {
                 endpoint = %url,
                 status = status.as_u16(),
                 body = %summary,
+                local_ip = ?local_ip,
                 "Jupiter 指令返回非 200 状态"
             );
             return Err(JupiterError::ApiStatus {
@@ -457,6 +473,7 @@ impl JupiterApiClient {
                 target: "jupiter::swap",
                 endpoint = %url,
                 error = %err,
+                local_ip = ?local_ip,
                 "Jupiter 指令 JSON 解析失败"
             );
             JupiterError::Json(err)
@@ -468,6 +485,7 @@ impl JupiterApiClient {
                 target: "jupiter::swap",
                 endpoint = %url,
                 error = %err,
+                local_ip = ?local_ip,
                 "Jupiter 指令 schema 校验失败"
             );
             JupiterError::Schema(err.to_string())

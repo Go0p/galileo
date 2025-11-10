@@ -210,6 +210,9 @@ where
                 trade_size = failure.trade_size,
                 buy_index = failure.buy_index,
                 sell_index = failure.sell_index,
+                buy_ip = ?failure.buy_ip,
+                sell_ip = ?failure.sell_ip,
+                failure_stage = ?failure.failure_stage,
                 error = %failure.error,
                 "多腿腿组合规划失败"
             );

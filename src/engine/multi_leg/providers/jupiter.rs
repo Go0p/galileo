@@ -106,11 +106,7 @@ impl JupiterLegProvider {
 
         let quote_meta = self.summarize_quote(quote);
 
-        let mut instructions = Vec::new();
-        instructions.extend(swap.setup_instructions.clone());
-        instructions.push(swap.swap_instruction.clone());
-        instructions.extend(swap.cleanup_instructions.clone());
-        instructions.extend(swap.other_instructions.clone());
+        let instructions = swap.main_instructions();
 
         LegPlan {
             descriptor: self.descriptor.clone(),
@@ -121,7 +117,7 @@ impl JupiterLegProvider {
             resolved_lookup_tables: Vec::new(),
             prioritization_fee_lamports: swap.prioritization_fee_lamports,
             blockhash: swap.blockhash.as_ref().map(|meta| meta.blockhash),
-            raw_transaction: None,
+            raw_transaction: swap.decoded_transaction.clone(),
             signer_rewrite: None,
             account_rewrites: Vec::new(),
             requested_compute_unit_limit: Some(swap.compute_unit_limit),

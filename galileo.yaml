@@ -35,9 +35,9 @@ global:
 
 engine:
   # 可选值：jupiter / dflow / ultra / multi-legs / kamino / none
-  # backend: "multi-legs"
+  backend: "multi-legs"
   # backend: "kamino"
-  backend: "dflow"
+  # backend: "dflow"
   # backend: "multi-legs"
   # backend: "dflow"
   # 设置为 true 时启用控制台摘要面板，每轮 trade size 批次完成后打印关键统计。
@@ -59,10 +59,10 @@ engine:
       enable: true
       leg: "buy"
       api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
-      api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
-      api_proxy: "http://192.168.124.4:9999"
+      api_swap_base: "https://lite-api.jup.ag/swap/v1/swap"
+      api_proxy: "http://192.168.3.3:9999"
       quote_config:
-        slippage_bps: 5
+        slippage_bps: 0
         only_direct_routes: true
         restrict_intermediate_tokens: false
         # cadence 控制 trade size 的调度节奏：
@@ -83,10 +83,10 @@ engine:
       enable: true
       leg: "sell"
       api_quote_base: "https://lite-api.jup.ag/swap/v1/quote"
-      api_swap_base: "https://lite-api.jup.ag/swap/v1/swap-instructions"
-      api_proxy: "http://192.168.124.4:9999"
+      api_swap_base: "https://lite-api.jup.ag/swap/v1/swap"
+      api_proxy: "http://192.168.3.3:9999"
       quote_config:
-        slippage_bps: 2
+        slippage_bps: 0
         only_direct_routes: false
         restrict_intermediate_tokens: false
         cadence:
@@ -374,8 +374,8 @@ bot:
     config_dir: "strategies"
   engines:
     pairs:
-      - buy_leg: titan
-        sell_leg: dflow
+      - buy_leg: jupiter
+        sell_leg: jupiter
   flashloan:
     products:
       - marginfi

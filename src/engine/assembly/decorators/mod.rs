@@ -153,6 +153,8 @@ mod tests {
             prioritization_fee_lamports: Some(1_000),
             compute_unit_limit: 200_000,
             blockhash: None,
+            ordered_instructions: None,
+            decoded_transaction: None,
         };
         SwapInstructionsVariant::Jupiter(response)
     }
