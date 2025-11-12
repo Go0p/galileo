@@ -229,6 +229,7 @@ where
                 compute_unit_price,
                 self.settings.quote.dex_whitelist.clone(),
                 self.settings.quote.dex_blacklist.clone(),
+                self.titan_event_rx.is_some(),
             ));
             let outcomes: Vec<MultiLegDispatchResult> = self
                 .quote_dispatcher

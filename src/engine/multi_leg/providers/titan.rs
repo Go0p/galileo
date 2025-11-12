@@ -192,12 +192,6 @@ impl TitanWsQuoteSource {
         let (Some(seq), Some(quote)) = (snapshot.seq, snapshot.quote.clone()) else {
             return None;
         };
-
-        if self.push_stride.get() == 1 {
-            cursor.force_consume(seq).await;
-            return Some(quote);
-        }
-
         if cursor.try_consume_with_stride(seq, self.push_stride).await {
             Some(quote)
         } else {
@@ -368,6 +362,86 @@ impl TitanWsQuoteSource {
         }
         Ok(())
     }
+
+    async fn wait_for_quote_with_cursor(
+        &self,
+        key: &StreamKey,
+        cursor: &mut TitanStreamCursor,
+    ) -> Result<TitanQuote, TitanLegError> {
+        if let Some(quote) = self.accept_snapshot(cursor, &cursor.snapshot()).await {
+            return Ok(quote);
+        }
+
+        let base_display = short_mint_str(key.pair.input_mint.as_str());
+        let quote_display = short_mint_str(key.pair.output_mint.as_str());
+
+        loop {
+            let snapshot = cursor.snapshot();
+            if let Some(quote) = self.accept_snapshot(cursor, &snapshot).await {
+                return Ok(quote);
+            }
+
+            let wait_duration = if snapshot.seq.is_none() {
+                self.first_quote_timeout
+            } else {
+                self.stride_wait_timeout
+            };
+
+            let wait_future = cursor.wait_for_change();
+            match wait_duration {
+                Some(wait) if wait > Duration::ZERO => match timeout(wait, wait_future).await {
+                    Ok(Ok(())) => continue,
+                    Ok(Err(_)) => break,
+                    Err(_) => {
+                        if snapshot.seq.is_none() {
+                            let timeout_ms = wait.as_millis() as u64;
+                            warn!(
+                                target: "multi_leg::titan",
+                                amount = key.amount,
+                                base_mint = %base_display,
+                                quote_mint = %quote_display,
+                                timeout_ms,
+                                "Titan 首次报价超时"
+                            );
+                            return Err(TitanLegError::Source(format!(
+                                "Titan 推流首次报价超时 {}ms",
+                                timeout_ms
+                            )));
+                        }
+
+                        if let Some(quote) = self.force_accept_snapshot(cursor, &snapshot).await {
+                            return Ok(quote);
+                        }
+                        continue;
+                    }
+                },
+                _ => {
+                    if wait_future.await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        self.streams.lock().await.remove(key);
+        Err(TitanLegError::Source(
+            "Titan 推流结束但未获得有效路线".to_string(),
+        ))
+    }
+
+    pub async fn subscribe_updates(
+        self: &Arc<Self>,
+        pair: TradePair,
+        amount: u64,
+        local_ip: IpAddr,
+    ) -> Result<TitanUpdateStream, TitanLegError> {
+        let state = self.stream_state(pair.clone(), amount, local_ip).await?;
+        Ok(TitanUpdateStream {
+            source: Arc::clone(self),
+            key: StreamKey::new(pair, amount, local_ip),
+            cursor: state.cursor(),
+        })
+    }
 }
 
 #[async_trait]
@@ -388,65 +462,11 @@ impl TitanQuoteSource for TitanWsQuoteSource {
             TitanLegError::Source("Titan 推流未建立且缺少 IP 资源，无法初始化".to_string())
         })?;
         let key = StreamKey::new(trade_pair.clone(), amount, local_ip);
-        let state = self.stream_state(trade_pair, amount, local_ip).await?;
+        let state = self
+            .stream_state(trade_pair.clone(), amount, local_ip)
+            .await?;
         let mut cursor = state.cursor();
-
-        if let Some(quote) = self.accept_snapshot(&cursor, &cursor.snapshot()).await {
-            return Ok(quote);
-        }
-
-        loop {
-            let snapshot = cursor.snapshot();
-            if let Some(quote) = self.accept_snapshot(&cursor, &snapshot).await {
-                return Ok(quote);
-            }
-
-            let wait_duration = if snapshot.seq.is_none() {
-                self.first_quote_timeout
-            } else {
-                self.stride_wait_timeout
-            };
-
-            let wait_future = cursor.wait_for_change();
-            match wait_duration {
-                Some(wait) if wait > Duration::ZERO => match timeout(wait, wait_future).await {
-                    Ok(Ok(())) => continue,
-                    Ok(Err(_)) => break,
-                    Err(_) => {
-                        if snapshot.seq.is_none() {
-                            let timeout_ms = wait.as_millis() as u64;
-                            warn!(
-                                target: "multi_leg::titan",
-                                amount,
-                                input = %intent.input_mint,
-                                output = %intent.output_mint,
-                                timeout_ms,
-                                "Titan 首次报价超时"
-                            );
-                            return Err(TitanLegError::Source(format!(
-                                "Titan 推流首次报价超时 {}ms",
-                                timeout_ms
-                            )));
-                        }
-
-                        if let Some(quote) = self.force_accept_snapshot(&cursor, &snapshot).await {
-                            return Ok(quote);
-                        }
-                        continue;
-                    }
-                },
-                _ => {
-                    if wait_future.await.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-
-        self.streams.lock().await.remove(&key);
-        Err(TitanLegError::Source(
-            "Titan 推流结束但未获得有效路线".to_string(),
-        ))
+        self.wait_for_quote_with_cursor(&key, &mut cursor).await
     }
 }
 
@@ -722,6 +742,20 @@ impl TitanStreamCursor {
     async fn force_consume(&self, seq: u64) {
         let mut guard = self.last_consumed.lock().await;
         *guard = Some(seq);
+    }
+}
+
+pub struct TitanUpdateStream {
+    source: Arc<TitanWsQuoteSource>,
+    key: StreamKey,
+    cursor: TitanStreamCursor,
+}
+
+impl TitanUpdateStream {
+    pub async fn next_quote(&mut self) -> Result<TitanQuote, TitanLegError> {
+        self.source
+            .wait_for_quote_with_cursor(&self.key, &mut self.cursor)
+            .await
     }
 }
 

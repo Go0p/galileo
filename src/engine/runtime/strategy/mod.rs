@@ -2,14 +2,21 @@ mod blind;
 mod multi_leg;
 mod quote;
 mod swap;
+mod titan_driver;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use solana_sdk::pubkey::Pubkey;
+use tokio::pin;
+use tokio::sync::mpsc::{self, error::TryRecvError};
 use tracing::{debug, error, info, trace};
 
+use self::{
+    multi_leg::MultiLegDispatchResult,
+    titan_driver::{TitanEventConfig, spawn_titan_event_driver},
+};
 use crate::engine::context::{Action, StrategyContext, StrategyDecision, StrategyResources};
 use crate::engine::planner::{DispatchStrategy, TxVariantPlanner};
 use crate::engine::plugins::flashloan::MarginfiFlashloanManager;
@@ -17,7 +24,7 @@ use crate::engine::runtime::{LighthouseRuntime, multi_leg::MultiLegEngineContext
 use crate::engine::titan::subscription::{TitanSubscriptionPlan, TitanSubscriptionPlanner};
 use crate::engine::{
     ComputeUnitPriceMode, EngineError, EngineIdentity, EngineResult, ProfitEvaluator, QuoteCadence,
-    QuoteConfig, QuoteDispatcher, QuoteExecutor, Scheduler, StrategyTick, SwapPreparer,
+    QuoteConfig, QuoteDispatcher, QuoteExecutor, QuoteTask, Scheduler, StrategyTick, SwapPreparer,
     TradeProfile, TransactionBuilder,
 };
 use crate::lander::LanderStack;
@@ -178,6 +185,7 @@ where
     lighthouse: LighthouseRuntime,
     titan_plan: Option<TitanSubscriptionPlan>,
     titan_bootstrapped: bool,
+    titan_event_rx: Option<mpsc::Receiver<MultiLegDispatchResult>>,
 }
 
 impl<S> StrategyEngine<S>
@@ -254,6 +262,7 @@ where
             lighthouse: lighthouse_runtime,
             titan_plan,
             titan_bootstrapped: false,
+            titan_event_rx: None,
         }
     }
 
@@ -264,6 +273,7 @@ where
         }
 
         self.bootstrap_titan_streams().await?;
+        self.launch_titan_event_driver().await?;
 
         info!(
             target: "engine",
@@ -313,10 +323,47 @@ where
         Ok(())
     }
 
+    async fn launch_titan_event_driver(&mut self) -> EngineResult<()> {
+        if self.titan_event_rx.is_some() {
+            return Ok(());
+        }
+        let Some(plan) = self.titan_plan.clone() else {
+            return Ok(());
+        };
+        if plan.is_empty() {
+            return Ok(());
+        }
+        let Some(ctx) = self.multi_leg.clone() else {
+            return Ok(());
+        };
+        let Some(source) = ctx.titan_source() else {
+            return Ok(());
+        };
+
+        let compute_unit_price = if self.landers.has_jito() && !self.landers.has_non_jito() {
+            None
+        } else {
+            self.settings.sample_compute_unit_price()
+        };
+        let (tx, rx) = mpsc::channel(128);
+        spawn_titan_event_driver(TitanEventConfig {
+            context: ctx,
+            payer: self.identity.pubkey,
+            compute_unit_price,
+            dex_whitelist: self.settings.quote.dex_whitelist.clone(),
+            dex_blacklist: self.settings.quote.dex_blacklist.clone(),
+            source,
+            plan,
+            sender: tx,
+        });
+        self.titan_event_rx = Some(rx);
+        Ok(())
+    }
+
     async fn run_jupiter(&mut self) -> EngineResult<()> {
         loop {
             let next_wait = self.process_strategy_tick().await?;
-            self.scheduler.wait(next_wait).await;
+            self.wait_with_titan(next_wait).await?;
         }
     }
 
@@ -360,5 +407,74 @@ where
         };
 
         Ok(strategy_wait.max(cadence_wait))
+    }
+
+    async fn wait_with_titan(&mut self, delay: Duration) -> EngineResult<()> {
+        if self.titan_event_rx.is_none() {
+            self.scheduler.wait(delay).await;
+            return Ok(());
+        }
+
+        if delay.is_zero() {
+            self.drain_titan_events().await?;
+            return Ok(());
+        }
+
+        let sleep = tokio::time::sleep(delay);
+        pin!(sleep);
+        loop {
+            tokio::select! {
+                _ = &mut sleep => break,
+                dispatch = async {
+                    if let Some(rx) = self.titan_event_rx.as_mut() {
+                        rx.recv().await
+                    } else {
+                        None
+                    }
+                }, if self.titan_event_rx.is_some() => {
+                    match dispatch {
+                        Some(result) => self.handle_titan_dispatch(result).await?,
+                        None => {
+                            self.titan_event_rx = None;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn drain_titan_events(&mut self) -> EngineResult<()> {
+        loop {
+            let dispatch = match self.titan_event_rx.as_mut() {
+                Some(rx) => match rx.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        self.titan_event_rx = None;
+                        break;
+                    }
+                },
+                None => break,
+            };
+            if let Some(result) = dispatch {
+                self.handle_titan_dispatch(result).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_titan_dispatch(
+        &mut self,
+        dispatch: MultiLegDispatchResult,
+    ) -> EngineResult<()> {
+        let Some(ctx) = self.multi_leg.as_ref() else {
+            return Ok(());
+        };
+        let ctx = Arc::clone(ctx);
+        let task = QuoteTask::new(dispatch.batch.pair.clone(), dispatch.batch.amount);
+        self.handle_multi_leg_batch(ctx.as_ref(), task, dispatch.result)
+            .await
     }
 }

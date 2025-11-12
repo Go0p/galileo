@@ -4,6 +4,7 @@ use crate::engine::context::QuoteBatchPlan;
 use crate::engine::landing::ExecutionPlan;
 use crate::engine::multi_leg::orchestrator::{LegPairDescriptor, LegPairPlan};
 use crate::engine::multi_leg::runtime::{PairPlanBatchResult, PairPlanEvaluation, PairPlanRequest};
+use crate::engine::multi_leg::types::LegDescriptor;
 use crate::engine::multi_leg::types::{
     AggregatorKind as MultiLegAggregatorKind, LegPlan, LegSide as MultiLegSide,
     QuoteIntent as MultiLegQuoteIntent,
@@ -53,6 +54,7 @@ pub(super) struct MultiLegBatchHandler {
     compute_unit_price: Option<u64>,
     dex_whitelist: Vec<String>,
     dex_blacklist: Vec<String>,
+    exclude_titan_buy: bool,
 }
 
 impl MultiLegBatchHandler {
@@ -62,6 +64,7 @@ impl MultiLegBatchHandler {
         compute_unit_price: Option<u64>,
         dex_whitelist: Vec<String>,
         dex_blacklist: Vec<String>,
+        exclude_titan_buy: bool,
     ) -> Self {
         Self {
             context,
@@ -69,6 +72,7 @@ impl MultiLegBatchHandler {
             compute_unit_price,
             dex_whitelist,
             dex_blacklist,
+            exclude_titan_buy,
         }
     }
 }
@@ -84,76 +88,20 @@ impl DispatchTaskHandler<MultiLegDispatchResult> for MultiLegBatchHandler {
             });
         }
 
-        let mut buy_intent_template = MultiLegQuoteIntent::new(
-            batch.pair.input_pubkey,
-            batch.pair.output_pubkey,
-            batch.amount,
-            0,
+        let requests = build_pair_plan_requests(
+            &self.context,
+            self.payer,
+            self.compute_unit_price,
+            &self.dex_whitelist,
+            &self.dex_blacklist,
+            &batch,
+            |buy, _sell| {
+                if self.exclude_titan_buy && buy.kind == MultiLegAggregatorKind::Titan {
+                    return false;
+                }
+                true
+            },
         );
-        let mut sell_intent_template = MultiLegQuoteIntent::new(
-            batch.pair.output_pubkey,
-            batch.pair.input_pubkey,
-            batch.amount,
-            0,
-        );
-        if !self.dex_whitelist.is_empty() {
-            buy_intent_template.dex_whitelist = self.dex_whitelist.clone();
-            sell_intent_template.dex_whitelist = self.dex_whitelist.clone();
-        }
-        if !self.dex_blacklist.is_empty() {
-            buy_intent_template.dex_blacklist = self.dex_blacklist.clone();
-            sell_intent_template.dex_blacklist = self.dex_blacklist.clone();
-        }
-        let tag_value = format!(
-            "{}->{}/{}",
-            batch.pair.input_mint, batch.pair.output_mint, batch.amount
-        );
-
-        let orchestrator = self.context.runtime().orchestrator();
-        let mut requests = Vec::with_capacity(combinations.len());
-        for combo in combinations {
-            let Some(buy_descriptor) = orchestrator
-                .descriptor(MultiLegSide::Buy, combo.buy_index)
-                .cloned()
-            else {
-                continue;
-            };
-            let Some(sell_descriptor) = orchestrator
-                .descriptor(MultiLegSide::Sell, combo.sell_index)
-                .cloned()
-            else {
-                continue;
-            };
-
-            let buy_context =
-                self.context
-                    .build_context(&buy_descriptor, self.payer, self.compute_unit_price);
-            let sell_context =
-                self.context
-                    .build_context(&sell_descriptor, self.payer, self.compute_unit_price);
-            let preferred_buy_ip = if buy_descriptor.kind == MultiLegAggregatorKind::Titan {
-                batch.preferred_ip
-            } else {
-                None
-            };
-            let preferred_sell_ip = if sell_descriptor.kind == MultiLegAggregatorKind::Titan {
-                batch.preferred_ip
-            } else {
-                None
-            };
-
-            requests.push(PairPlanRequest {
-                buy_index: combo.buy_index,
-                sell_index: combo.sell_index,
-                buy_intent: buy_intent_template.clone(),
-                sell_intent: sell_intent_template.clone(),
-                buy_context,
-                sell_context,
-                tag: Some(tag_value.clone()),
-                preferred_buy_ip,
-                preferred_sell_ip,
-            });
-        }
 
         if requests.is_empty() {
             return Ok(MultiLegDispatchResult {
@@ -170,6 +118,89 @@ impl DispatchTaskHandler<MultiLegDispatchResult> for MultiLegBatchHandler {
 
         Ok(MultiLegDispatchResult { batch, result })
     }
+}
+
+pub(super) fn build_pair_plan_requests(
+    context: &MultiLegEngineContext,
+    payer: Pubkey,
+    compute_unit_price: Option<u64>,
+    dex_whitelist: &[String],
+    dex_blacklist: &[String],
+    batch: &QuoteBatchPlan,
+    filter: impl Fn(&LegDescriptor, &LegDescriptor) -> bool,
+) -> Vec<PairPlanRequest> {
+    let mut buy_intent_template = MultiLegQuoteIntent::new(
+        batch.pair.input_pubkey,
+        batch.pair.output_pubkey,
+        batch.amount,
+        0,
+    );
+    let mut sell_intent_template = MultiLegQuoteIntent::new(
+        batch.pair.output_pubkey,
+        batch.pair.input_pubkey,
+        batch.amount,
+        0,
+    );
+    if !dex_whitelist.is_empty() {
+        buy_intent_template.dex_whitelist = dex_whitelist.to_vec();
+        sell_intent_template.dex_whitelist = dex_whitelist.to_vec();
+    }
+    if !dex_blacklist.is_empty() {
+        buy_intent_template.dex_blacklist = dex_blacklist.to_vec();
+        sell_intent_template.dex_blacklist = dex_blacklist.to_vec();
+    }
+
+    let tag_value = format!(
+        "{}->{}/{}",
+        batch.pair.input_mint, batch.pair.output_mint, batch.amount
+    );
+
+    let orchestrator = context.runtime().orchestrator();
+    let mut requests = Vec::new();
+    for combo in context.combinations() {
+        let Some(buy_descriptor) = orchestrator
+            .descriptor(MultiLegSide::Buy, combo.buy_index)
+            .cloned()
+        else {
+            continue;
+        };
+        let Some(sell_descriptor) = orchestrator
+            .descriptor(MultiLegSide::Sell, combo.sell_index)
+            .cloned()
+        else {
+            continue;
+        };
+        if !filter(&buy_descriptor, &sell_descriptor) {
+            continue;
+        }
+
+        let buy_context = context.build_context(&buy_descriptor, payer, compute_unit_price);
+        let sell_context = context.build_context(&sell_descriptor, payer, compute_unit_price);
+        let preferred_buy_ip = if buy_descriptor.kind == MultiLegAggregatorKind::Titan {
+            batch.preferred_ip
+        } else {
+            None
+        };
+        let preferred_sell_ip = if sell_descriptor.kind == MultiLegAggregatorKind::Titan {
+            batch.preferred_ip
+        } else {
+            None
+        };
+
+        requests.push(PairPlanRequest {
+            buy_index: combo.buy_index,
+            sell_index: combo.sell_index,
+            buy_intent: buy_intent_template.clone(),
+            sell_intent: sell_intent_template.clone(),
+            buy_context,
+            sell_context,
+            tag: Some(tag_value.clone()),
+            preferred_buy_ip,
+            preferred_sell_ip,
+        });
+    }
+
+    requests
 }
 
 impl<S> StrategyEngine<S>
@@ -389,11 +420,19 @@ where
             }
         }
 
-        if any_executed || last_error.is_none() {
-            Ok(())
-        } else {
-            Err(last_error.expect("checked above"))
+        if any_executed {
+            return Ok(());
         }
+
+        if let Some(err) = last_error {
+            warn!(
+                target: "engine::multi_leg",
+                error = %err,
+                "所有多腿组合执行失败，将继续等待后续机会"
+            );
+        }
+
+        Ok(())
     }
 
     async fn execute_multi_leg(&mut self, execution: MultiLegExecution) -> EngineResult<()> {
