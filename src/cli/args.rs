@@ -19,6 +19,9 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Jupiter 二进制管理命令
+    #[command(subcommand)]
+    Jupiter(JupiterCmd),
     /// Lander 工具
     #[command(subcommand)]
     Lander(LanderCmd),
@@ -59,6 +62,36 @@ pub enum WalletCmd {
 
 #[derive(Args, Debug, Default)]
 pub struct WalletAddArgs {}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum JupiterCmd {
+    /// 启动 Jupiter 自托管二进制（可选强制更新）
+    Start {
+        #[arg(long, help = "启动前强制更新二进制")]
+        force_update: bool,
+    },
+    /// 停止已运行的 Jupiter 二进制
+    Stop,
+    /// 重启 Jupiter 二进制
+    Restart,
+    /// 下载并安装最新 Jupiter 二进制
+    Update {
+        #[arg(
+            short = 'v',
+            long,
+            value_name = "TAG",
+            help = "指定版本 tag，缺省为最新版本"
+        )]
+        version: Option<String>,
+    },
+    /// 查看当前二进制状态
+    Status,
+    /// 列出最近可用版本
+    List {
+        #[arg(long, default_value_t = 5, help = "展示最近的版本数量")]
+        limit: usize,
+    },
+}
 
 #[derive(Args, Debug)]
 pub struct LanderSendArgs {

@@ -13,11 +13,13 @@ Galileo 已移除历史 Jupiter 依赖，所有聚合器配置均通过 `galileo
 - `engines.pairs` → `[bot.engines.pairs]`：配置 multi-leg 组合允许的买/卖腿来源。
 - `flashloan.products` → `[bot.flashloan.products]`：启用的闪电贷协议列表，同时在此处标注 `prefer_wallet_balance` 等偏好。
 - `[bot.dry_run]`：包含 `enable` 与 `rpc_url`。启用后，所有策略的 RPC 调用与落地请求会改用该节点，并强制落地器退化为 RPC，适合在本地 devnet/sandbox 回放交易。
+- `[bot.binary]`：当 `engine.backend = "jupiter_self_hosted"` 时生效，`disable_local_binary` 可强制仅使用远端 HTTP API，`show_logs` 控制是否打印 `jupiter-swap-api` 的 stdout/stderr 以协助排障。
 
 ## 2. 聚合器引擎
-`[engine.backend]` 支持 `jupiter` / `dflow` / `ultra` / `kamino` / `multi-legs` / `none`，各自子表涵盖 API 端点、代理以及并发参数：
+`[engine.backend]` 支持 `jupiter_self_hosted` / `jupiter` / `dflow` / `ultra` / `kamino` / `multi-legs` / `none`，各自子表涵盖 API 端点、代理以及并发参数：
 
 - `[engine.console_summary]`：`enable` 控制是否开启控制台机会摘要面板；启用后，每轮 trade size 批次结束会输出机会数、延迟与落地统计（当前仅适用于单引擎 Quote 流程），默认关闭以保持日志精简。
+- `backend = "jupiter_self_hosted"`：Galileo 会根据根目录的 `jupiter.toml` 启动或更新本地 `jupiter-swap-api` 进程，并在需要时通过 `galileo jupiter start|stop|restart|status|update|list` 管理生命周期。代理优先级为 `engine.jupiter_self_hosted.api_proxy → global.proxy.enable.quote → global.proxy.default`，若 `jupiter.toml` 监听地址属于 `127.0.0.1` / `localhost` 则自动绕过代理；是否真正拉起本地进程与日志保留行为由 `[bot.binary]` 控制。`engine.jupiter_self_hosted.args_included_dexes` 可用于生成 `--include-dex-program-ids`，同时在启用 `core.exclude_other_dex_program_ids` 时用于过滤下载的 `markets.json`。
 - `[engine.dflow]`
   - `api_quote_base` / `api_swap_base`：DFlow Quote 与 Swap API 基址。
   - `api_proxy`：可选，覆盖全局代理。
@@ -73,4 +75,4 @@ Galileo 已移除历史 Jupiter 依赖，所有聚合器配置均通过 `galileo
 2. 将旧版 `intermediate_tokens` 文件转换为 `blind_strategy.base_mints[*].intermediate_mints` 或按需落入 DFlow/Kamino 白名单；若仍使用脚本生成 `token-cache.json`，请同步更新配置引用。
 3. 若需要分环境部署，建议在 `config/` 目录维护多份 `galileo.<env>.yaml`，通过 CLI `--config` 指定。
 
-截至当前版本，Galileo 默认不再启动本地 Jupiter 进程，所有聚合器调用均直接走远端 API。若外部流程仍依赖旧的 Jupiter 启动脚本，请更新文档或脚本指向新的配置路径。
+若需要自管 Jupiter 二进制，请在 `jupiter.toml` 中维护下载/运行参数并在 `galileo.yaml` 中将 `engine.backend` 设为 `jupiter_self_hosted`。其余场景默认仍走远端 HTTP API，确保老版本脚本或面板能够逐步退场。

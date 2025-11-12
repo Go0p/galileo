@@ -15,6 +15,7 @@ mod dexes;
 mod engine;
 mod instructions;
 mod intermedium;
+pub mod jupiter;
 mod lander;
 mod monitoring;
 mod network;

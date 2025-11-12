@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::IpAddr;
+use std::path::PathBuf;
 
 use serde::de::value::MapAccessDeserializer;
 use serde::de::{Deserializer, Error as DeError, MapAccess, Unexpected, Visitor};
@@ -18,6 +19,7 @@ pub struct AppConfig {
     pub galileo: GalileoConfig,
     #[allow(dead_code)]
     pub lander: LanderConfig,
+    pub jupiter: JupiterConfig,
 }
 
 #[serde_as]
@@ -305,6 +307,8 @@ pub struct EngineConfig {
     #[serde(default)]
     pub enable_console_summary: bool,
     #[serde(default)]
+    pub jupiter_self_hosted: JupiterSelfHostedEngineConfig,
+    #[serde(default)]
     pub jupiter: JupiterEngineSet,
     #[serde(default)]
     pub dflow: DflowEngineConfig,
@@ -316,6 +320,315 @@ pub struct EngineConfig {
     pub kamino: KaminoEngineConfig,
     #[serde(default)]
     pub multi_leg: MultiLegEngineConfig,
+}
+
+#[serde_as]
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct JupiterConfig {
+    /// `[jupiter.binary]`：GitHub Release 下载来源及安装目录。
+    #[serde(default)]
+    pub binary: JupiterBinaryConfig,
+    /// `[jupiter.core]`：RPC、监听端口等核心启动参数。
+    #[serde(default)]
+    pub core: JupiterCoreConfig,
+    /// `[jupiter.launch]`：路由与功能开关相关的 CLI 选项。
+    #[serde(default)]
+    pub launch: JupiterLaunchConfig,
+    /// `[jupiter.performance]`：线程数等性能配置。
+    #[serde(default)]
+    pub performance: JupiterPerformanceConfig,
+    /// `[jupiter.process]`：守护与自动重启策略。
+    #[serde(default)]
+    pub process: JupiterProcessConfig,
+    /// `[jupiter.environment]`：附加环境变量。
+    #[serde(default = "crate::config::default_environment")]
+    pub environment: BTreeMap<String, String>,
+    /// `[jupiter.health_check]`：启动后健康检查配置。
+    #[serde(default)]
+    pub health_check: Option<HealthCheckConfig>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LaunchOverrides {
+    pub filter_markets_with_mints: Vec<String>,
+    pub exclude_dex_program_ids: Vec<String>,
+    pub include_dex_program_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JupiterBinaryConfig {
+    #[serde(default = "crate::config::default_repo_owner")]
+    pub repo_owner: String,
+    #[serde(default = "crate::config::default_repo_name")]
+    pub repo_name: String,
+    #[serde(default = "crate::config::default_binary_name")]
+    pub binary_name: String,
+    #[serde(default = "crate::config::default_install_dir")]
+    pub install_dir: PathBuf,
+    #[serde(default)]
+    pub proxy: Option<String>,
+}
+
+impl Default for JupiterBinaryConfig {
+    fn default() -> Self {
+        Self {
+            repo_owner: crate::config::default_repo_owner(),
+            repo_name: crate::config::default_repo_name(),
+            binary_name: crate::config::default_binary_name(),
+            install_dir: crate::config::default_install_dir(),
+            proxy: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JupiterCoreConfig {
+    #[serde(default)]
+    pub rpc_url: String,
+    #[serde(default)]
+    pub secondary_rpc_urls: Vec<String>,
+    #[serde(default = "crate::config::default_host")]
+    pub host: String,
+    #[serde(default = "crate::config::default_port")]
+    pub port: u16,
+    #[serde(default = "crate::config::default_metrics_port")]
+    pub metrics_port: u16,
+    #[serde(default)]
+    pub use_local_market_cache: bool,
+    #[serde(default = "crate::config::default_auto_download_market_cache")]
+    pub auto_download_market_cache: bool,
+    #[serde(default = "crate::config::default_market_cache")]
+    pub market_cache: String,
+    #[serde(default = "crate::config::default_market_cache_download_url")]
+    pub market_cache_download_url: String,
+    #[serde(default)]
+    pub exclude_other_dex_program_ids: bool,
+    #[serde(default = "crate::config::default_market_mode")]
+    pub market_mode: MarketMode,
+}
+
+impl Default for JupiterCoreConfig {
+    fn default() -> Self {
+        Self {
+            rpc_url: String::new(),
+            secondary_rpc_urls: Vec::new(),
+            host: crate::config::default_host(),
+            port: crate::config::default_port(),
+            metrics_port: crate::config::default_metrics_port(),
+            use_local_market_cache: false,
+            auto_download_market_cache: crate::config::default_auto_download_market_cache(),
+            market_cache: crate::config::default_market_cache(),
+            market_cache_download_url: crate::config::default_market_cache_download_url(),
+            exclude_other_dex_program_ids: false,
+            market_mode: crate::config::default_market_mode(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JupiterLaunchConfig {
+    #[serde(default = "crate::config::default_true")]
+    pub allow_circular_arbitrage: bool,
+    #[serde(default = "crate::config::default_true")]
+    pub enable_new_dexes: bool,
+    #[serde(default)]
+    pub enable_add_market: bool,
+    #[serde(default = "crate::config::default_true")]
+    pub expose_quote_and_simulate: bool,
+    #[serde(default)]
+    pub yellowstone: Option<YellowstoneConfig>,
+}
+
+impl Default for JupiterLaunchConfig {
+    fn default() -> Self {
+        Self {
+            allow_circular_arbitrage: crate::config::default_true(),
+            enable_new_dexes: crate::config::default_true(),
+            enable_add_market: false,
+            expose_quote_and_simulate: crate::config::default_true(),
+            yellowstone: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct YellowstoneConfig {
+    pub endpoint: String,
+    #[serde(default)]
+    pub x_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MarketMode {
+    Remote,
+    File,
+    Europa,
+}
+
+impl MarketMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MarketMode::Remote => "remote",
+            MarketMode::File => "file",
+            MarketMode::Europa => "europa",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JupiterPerformanceConfig {
+    #[serde(default = "crate::config::default_total_thread_count")]
+    pub total_thread_count: u16,
+    #[serde(default = "crate::config::default_webserver_thread_count")]
+    pub webserver_thread_count: u16,
+    #[serde(default = "crate::config::default_update_thread_count")]
+    pub update_thread_count: u16,
+}
+
+impl Default for JupiterPerformanceConfig {
+    fn default() -> Self {
+        Self {
+            total_thread_count: crate::config::default_total_thread_count(),
+            webserver_thread_count: crate::config::default_webserver_thread_count(),
+            update_thread_count: crate::config::default_update_thread_count(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JupiterProcessConfig {
+    #[serde(default)]
+    pub auto_restart_minutes: u64,
+    #[serde(default = "crate::config::default_max_restart_attempts")]
+    pub max_restart_attempts: u32,
+    #[serde(default = "crate::config::default_graceful_shutdown_timeout_ms")]
+    pub graceful_shutdown_timeout_ms: u64,
+}
+
+impl Default for JupiterProcessConfig {
+    fn default() -> Self {
+        Self {
+            auto_restart_minutes: 0,
+            max_restart_attempts: crate::config::default_max_restart_attempts(),
+            graceful_shutdown_timeout_ms: crate::config::default_graceful_shutdown_timeout_ms(),
+        }
+    }
+}
+
+impl JupiterConfig {
+    pub fn binary_path(&self) -> PathBuf {
+        self.binary.install_dir.join(&self.binary.binary_name)
+    }
+
+    pub fn effective_args(
+        &self,
+        overrides: &LaunchOverrides,
+        market_cache_override: Option<&str>,
+    ) -> Vec<String> {
+        let mut args = Vec::new();
+        let core = &self.core;
+
+        if !core.rpc_url.trim().is_empty() {
+            args.push("--rpc-url".to_string());
+            args.push(core.rpc_url.trim().to_string());
+        }
+        if !core.secondary_rpc_urls.is_empty() {
+            args.push("--secondary-rpc-urls".to_string());
+            args.push(core.secondary_rpc_urls.join(","));
+        }
+
+        args.push("--host".to_string());
+        args.push(core.host.trim().to_string());
+
+        args.push("--port".to_string());
+        args.push(core.port.to_string());
+
+        args.push("--metrics-port".to_string());
+        args.push(core.metrics_port.to_string());
+
+        if core.use_local_market_cache {
+            args.push("--use-local-market-cache".to_string());
+        }
+        if !core.auto_download_market_cache {
+            args.push("--no-auto-download-market-cache".to_string());
+        }
+
+        if let Some(path) = market_cache_override {
+            args.push("--market-cache".to_string());
+            args.push(path.to_string());
+        } else if !core.market_cache.trim().is_empty() {
+            args.push("--market-cache".to_string());
+            args.push(core.market_cache.trim().to_string());
+        }
+
+        args.push("--market-mode".to_string());
+        args.push(core.market_mode.as_str().to_string());
+
+        if self.launch.allow_circular_arbitrage {
+            args.push("--allow-circular-arbitrage".to_string());
+        }
+        if self.launch.enable_new_dexes {
+            args.push("--enable-new-dexes".to_string());
+        }
+        if self.launch.enable_add_market {
+            args.push("--enable-add-market".to_string());
+        }
+        if self.launch.expose_quote_and_simulate {
+            args.push("--expose-quote-and-simulate".to_string());
+        }
+
+        if let Some(yellowstone) = &self.launch.yellowstone {
+            let endpoint = yellowstone.endpoint.trim();
+            if !endpoint.is_empty() {
+                args.push("--yellowstone-endpoint".to_string());
+                args.push(endpoint.to_string());
+            }
+            if let Some(token) = &yellowstone.x_token {
+                if !token.trim().is_empty() {
+                    args.push("--yellowstone-x-token".to_string());
+                    args.push(token.trim().to_string());
+                }
+            }
+        }
+
+        if !overrides.filter_markets_with_mints.is_empty() {
+            args.push("--filter-markets-with-mints".to_string());
+            args.push(overrides.filter_markets_with_mints.join(","));
+        }
+
+        if !overrides.exclude_dex_program_ids.is_empty() {
+            args.push("--exclude-dex-program-ids".to_string());
+            args.push(overrides.exclude_dex_program_ids.join(","));
+        }
+
+        if !overrides.include_dex_program_ids.is_empty() {
+            args.push("--include-dex-program-ids".to_string());
+            args.push(overrides.include_dex_program_ids.join(","));
+        }
+
+        args.push("--total-thread-count".to_string());
+        args.push(self.performance.total_thread_count.to_string());
+        args.push("--webserver-thread-count".to_string());
+        args.push(self.performance.webserver_thread_count.to_string());
+        args.push("--update-thread-count".to_string());
+        args.push(self.performance.update_thread_count.to_string());
+
+        if self.process.auto_restart_minutes > 0 {
+            args.push("--auto-restart-minutes".to_string());
+            args.push(self.process.auto_restart_minutes.to_string());
+        }
+        if self.process.max_restart_attempts > 0 {
+            args.push("--max-restart-attempts".to_string());
+            args.push(self.process.max_restart_attempts.to_string());
+        }
+        if self.process.graceful_shutdown_timeout_ms > 0 {
+            args.push("--graceful-shutdown-timeout-ms".to_string());
+            args.push(self.process.graceful_shutdown_timeout_ms.to_string());
+        }
+
+        args
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -399,6 +712,8 @@ const fn default_landing_timeout_ms() -> u64 {
 #[serde(rename_all = "lowercase")]
 pub enum EngineBackend {
     Jupiter,
+    #[serde(rename = "jupiter_self_hosted", alias = "binary")]
+    JupiterSelfHosted,
     Dflow,
     Ultra,
     Kamino,
@@ -488,6 +803,20 @@ pub struct JupiterEngineConfig {
     pub api_swap_base: Option<String>,
     #[serde(default)]
     pub api_proxy: Option<String>,
+    #[serde(default)]
+    pub quote_config: JupiterQuoteConfig,
+    #[serde(default)]
+    pub swap_config: JupiterSwapConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct JupiterSelfHostedEngineConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub api_proxy: Option<String>,
+    #[serde(default)]
+    pub args_included_dexes: Vec<String>,
     #[serde(default)]
     pub quote_config: JupiterQuoteConfig,
     #[serde(default)]
@@ -913,6 +1242,8 @@ pub struct BotConfig {
     #[serde(default)]
     pub enable_simulation: bool,
     #[serde(default)]
+    pub binary: BotBinaryConfig,
+    #[serde(default)]
     pub dry_run: DryRunConfig,
     #[serde(default)]
     pub prometheus: PrometheusConfig,
@@ -937,6 +1268,25 @@ impl BotConfig {
 
     pub fn flashloan_enabled(&self, product: FlashloanProduct) -> bool {
         self.flashloan.is_enabled(product)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BotBinaryConfig {
+    #[serde(default)]
+    #[serde(alias = "disable_local_binary")]
+    pub disable_local_binary: bool,
+    #[serde(default = "crate::config::default_true")]
+    #[serde(alias = "show_jupiter_logs")]
+    pub show_logs: bool,
+}
+
+impl Default for BotBinaryConfig {
+    fn default() -> Self {
+        Self {
+            disable_local_binary: false,
+            show_logs: crate::config::default_true(),
+        }
     }
 }
 

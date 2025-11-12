@@ -7,12 +7,13 @@ use thiserror::Error;
 
 use super::strategy_loader::load_strategy_configs;
 use super::wallet::{parse_keypair_string, process_wallet_keys};
-use super::{AppConfig, GalileoConfig, LanderConfig};
+use super::{AppConfig, GalileoConfig, JupiterConfig, LanderConfig};
 use solana_sdk::signer::Signer;
 use tracing::info;
 
 pub const DEFAULT_CONFIG_PATHS: &[&str] = &["galileo.yaml", "config/galileo.yaml"];
 pub const DEFAULT_LANDER_PATHS: &[&str] = &["lander.yaml", "config/lander.yaml"];
+pub const DEFAULT_JUPITER_PATHS: &[&str] = &["jupiter.toml", "config/jupiter.toml"];
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -90,7 +91,19 @@ pub fn load_config(path: Option<PathBuf>) -> Result<AppConfig, ConfigError> {
 
     let (lander, _) = load_first_available_yaml::<LanderConfig>(&lander_candidates)?;
 
-    Ok(AppConfig { galileo, lander })
+    let mut jupiter_candidates = Vec::new();
+    if let Some(dir) = galileo_dir.as_ref() {
+        jupiter_candidates.push(dir.join("jupiter.toml"));
+    }
+    jupiter_candidates.extend(DEFAULT_JUPITER_PATHS.iter().map(PathBuf::from));
+
+    let (jupiter, _) = load_first_available_toml::<JupiterConfig>(&jupiter_candidates)?;
+
+    Ok(AppConfig {
+        galileo,
+        lander,
+        jupiter,
+    })
 }
 
 fn first_existing_path(paths: &[PathBuf]) -> Option<PathBuf> {
@@ -134,6 +147,57 @@ where
         path: path.to_path_buf(),
         message: err.to_string(),
     })?;
+
+    Ok(Some(config))
+}
+
+fn load_first_available_toml<T>(paths: &[PathBuf]) -> Result<(T, Option<PathBuf>), ConfigError>
+where
+    T: DeserializeOwned + Default,
+{
+    for candidate in paths {
+        if let Some(config) = try_load_file_toml::<T>(candidate)? {
+            let parent = candidate.parent().map(|p| p.to_path_buf());
+            return Ok((config, parent));
+        }
+    }
+
+    Ok((T::default(), None))
+}
+
+fn try_load_file_toml<T>(path: &Path) -> Result<Option<T>, ConfigError>
+where
+    T: DeserializeOwned,
+{
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let contents = fs::read_to_string(path).map_err(|source| ConfigError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    let raw_value: toml::Value = toml::from_str(&contents).map_err(|err| ConfigError::Parse {
+        path: path.to_path_buf(),
+        message: err.to_string(),
+    })?;
+
+    let config: T = if let Some(subtable) = raw_value.get("jupiter") {
+        let nested = toml::to_string(subtable).map_err(|err| ConfigError::Parse {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?;
+        toml::from_str(&nested).map_err(|err| ConfigError::Parse {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?
+    } else {
+        toml::from_str(&contents).map_err(|err| ConfigError::Parse {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?
+    };
 
     Ok(Some(config))
 }

@@ -1,6 +1,7 @@
 pub mod args;
 pub mod commands;
 pub mod context;
+pub mod jupiter;
 pub mod lander;
 pub mod runtime;
 pub mod wallet;

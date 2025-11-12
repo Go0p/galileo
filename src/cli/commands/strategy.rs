@@ -48,6 +48,7 @@ use crate::engine::{
     SolPriceFeedSettings, StrategyEngine, SwapPreparer, TipConfig, TradeProfile,
     TransactionBuilder,
 };
+use crate::jupiter::{JupiterBinaryManager, JupiterError};
 use crate::lander::LanderFactory;
 use crate::monitoring::events;
 use crate::network::IpAllocator;
@@ -75,6 +76,7 @@ pub enum StrategyMode {
 
 pub enum StrategyBackend<'a> {
     Jupiter {
+        manager: Option<&'a JupiterBinaryManager>,
         api_client: &'a JupiterApiClient,
     },
     Dflow {
@@ -206,15 +208,23 @@ async fn run_blind_engine(
         None
     };
 
-    let (quote_executor, swap_preparer, quote_defaults_tuple) = prepare_swap_components(
-        config,
-        backend,
-        &mut identity,
-        &compute_unit_price_mode,
-        rpc_client.clone(),
-        alt_cache.clone(),
-    )
-    .await?;
+    let use_self_hosted_jupiter = matches!(
+        config.galileo.engine.backend,
+        crate::config::EngineBackend::JupiterSelfHosted
+    );
+    let start_local_jupiter = use_self_hosted_jupiter;
+    let (quote_executor, swap_preparer, quote_defaults_tuple, jupiter_started) =
+        prepare_swap_components(
+            config,
+            backend,
+            &mut identity,
+            &compute_unit_price_mode,
+            start_local_jupiter,
+            use_self_hosted_jupiter,
+            rpc_client.clone(),
+            alt_cache.clone(),
+        )
+        .await?;
 
     let (only_direct_default, _) = quote_defaults_tuple;
     let allocator_summary = ip_allocator.summary();
@@ -440,9 +450,25 @@ async fn run_blind_engine(
         trade_profiles,
         multi_leg_context,
     );
-    drive_engine(strategy_engine)
-        .await
-        .map_err(|err| anyhow!(err))?;
+    let result = drive_engine(strategy_engine).await;
+
+    if jupiter_started {
+        if let StrategyBackend::Jupiter {
+            manager: Some(manager),
+            ..
+        } = backend
+        {
+            if let Err(err) = manager.stop().await {
+                warn!(
+                    target: "strategy",
+                    error = %err,
+                    "停止 Jupiter 二进制失败"
+                );
+            }
+        }
+    }
+
+    result.map_err(|err| anyhow!(err))?;
 
     Ok(())
 }
@@ -1219,11 +1245,17 @@ fn resolve_quote_cadence(
     backend: &StrategyBackend<'_>,
 ) -> QuoteCadence {
     match backend {
-        StrategyBackend::Jupiter { .. } => engine
-            .jupiter
-            .primary()
-            .map(|cfg| QuoteCadence::from_config(&cfg.quote_config.cadence))
-            .unwrap_or_else(QuoteCadence::default),
+        StrategyBackend::Jupiter { .. } => {
+            if matches!(engine.backend, config::EngineBackend::JupiterSelfHosted) {
+                QuoteCadence::from_config(&engine.jupiter_self_hosted.quote_config.cadence)
+            } else {
+                engine
+                    .jupiter
+                    .primary()
+                    .map(|cfg| QuoteCadence::from_config(&cfg.quote_config.cadence))
+                    .unwrap_or_else(QuoteCadence::default)
+            }
+        }
         StrategyBackend::Dflow { .. } => {
             QuoteCadence::from_config(&engine.dflow.quote_config.cadence)
         }
@@ -1267,16 +1299,23 @@ async fn run_pure_blind_engine(
     let mut identity = EngineIdentity::from_private_key(&config.galileo.private_key)
         .map_err(|err| anyhow!(err))?;
     let alt_cache = AltCache::new();
+    let use_self_hosted_jupiter = matches!(
+        config.galileo.engine.backend,
+        crate::config::EngineBackend::JupiterSelfHosted
+    );
 
-    let (quote_executor, swap_preparer, _unused_defaults) = prepare_swap_components(
-        config,
-        backend,
-        &mut identity,
-        &compute_unit_price_mode,
-        rpc_client.clone(),
-        alt_cache.clone(),
-    )
-    .await?;
+    let (quote_executor, swap_preparer, _unused_defaults, jupiter_started) =
+        prepare_swap_components(
+            config,
+            backend,
+            &mut identity,
+            &compute_unit_price_mode,
+            false,
+            use_self_hosted_jupiter,
+            rpc_client.clone(),
+            alt_cache.clone(),
+        )
+        .await?;
 
     let trade_pairs = build_pure_trade_pairs(pure_config)?;
     let trade_profiles = build_pure_trade_profiles(pure_config)?;
@@ -1568,6 +1607,22 @@ async fn run_pure_blind_engine(
         );
     }
 
+    if jupiter_started {
+        if let StrategyBackend::Jupiter {
+            manager: Some(manager),
+            ..
+        } = backend
+        {
+            if let Err(err) = manager.stop().await {
+                warn!(
+                    target: "strategy",
+                    error = %err,
+                    "停止 Jupiter 二进制失败"
+                );
+            }
+        }
+    }
+
     result.map_err(|err| anyhow!(err))?;
 
     Ok(())
@@ -1578,21 +1633,70 @@ async fn prepare_swap_components(
     backend: &StrategyBackend<'_>,
     identity: &mut EngineIdentity,
     compute_unit_price_mode: &Option<ComputeUnitPriceMode>,
+    start_local_jupiter: bool,
+    use_self_hosted_config: bool,
     rpc_client: Arc<RpcClient>,
     alt_cache: AltCache,
-) -> Result<(QuoteExecutor, SwapPreparer, (bool, bool))> {
+) -> Result<(QuoteExecutor, SwapPreparer, (bool, bool), bool)> {
     match backend {
-        StrategyBackend::Jupiter { api_client } => {
+        StrategyBackend::Jupiter {
+            manager,
+            api_client,
+        } => {
             info!(target: "strategy", "使用 Jupiter 聚合器");
-            let primary_cfg = config
-                .galileo
-                .engine
-                .jupiter
-                .primary()
-                .ok_or_else(|| anyhow!("缺少 Jupiter 引擎配置"))?;
-            let quote_defaults = primary_cfg.quote_config.clone();
-            let swap_defaults = primary_cfg.swap_config.clone();
+            let (quote_defaults, swap_defaults) = if use_self_hosted_config {
+                let cfg = &config.galileo.engine.jupiter_self_hosted;
+                if !cfg.enable {
+                    warn!(
+                        target: "strategy",
+                        "engine.jupiter_self_hosted.enable = false，但当前 backend = \"jupiter_self_hosted\""
+                    );
+                }
+                (cfg.quote_config.clone(), cfg.swap_config.clone())
+            } else {
+                let primary_cfg = config
+                    .galileo
+                    .engine
+                    .jupiter
+                    .primary()
+                    .ok_or_else(|| anyhow!("缺少 Jupiter 引擎配置"))?;
+                (
+                    primary_cfg.quote_config.clone(),
+                    primary_cfg.swap_config.clone(),
+                )
+            };
             identity.set_skip_user_accounts_rpc_calls(swap_defaults.skip_user_accounts_rpc_calls);
+            let mut jupiter_started = false;
+            if start_local_jupiter {
+                if let Some(manager) = manager {
+                    if manager.disable_local_binary {
+                        info!(
+                            target: "strategy",
+                            "已禁用本地 Jupiter 二进制，将直接使用 HTTP API"
+                        );
+                    } else {
+                        match manager.start(false).await {
+                            Ok(()) => {
+                                info!(target: "strategy", "已启动本地 Jupiter 二进制");
+                                jupiter_started = true;
+                            }
+                            Err(JupiterError::AlreadyRunning) => {
+                                info!(
+                                    target: "strategy",
+                                    "检测到本地 Jupiter 二进制已运行，复用现有进程"
+                                );
+                                jupiter_started = true;
+                            }
+                            Err(err) => return Err(err.into()),
+                        }
+                    }
+                } else {
+                    info!(
+                        target: "strategy",
+                        "当前后端未提供本地 Jupiter 管理器，跳过二进制启动"
+                    );
+                }
+            }
             let quote_executor =
                 QuoteExecutor::for_jupiter((*api_client).clone(), quote_defaults.clone());
             let swap_preparer = SwapPreparer::for_jupiter(
@@ -1606,6 +1710,7 @@ async fn prepare_swap_components(
                 quote_executor,
                 swap_preparer,
                 (quote_defaults.only_direct_routes, true),
+                jupiter_started,
             ))
         }
         StrategyBackend::Dflow { api_client } => {
@@ -1624,6 +1729,7 @@ async fn prepare_swap_components(
                 quote_executor,
                 swap_preparer,
                 (dflow_quote_cfg.only_direct_routes, true),
+                false,
             ))
         }
         StrategyBackend::Kamino {
@@ -1642,7 +1748,7 @@ async fn prepare_swap_components(
                 compute_unit_price_mode.clone(),
                 alt_cache.clone(),
             );
-            Ok((quote_executor, swap_preparer, (false, false)))
+            Ok((quote_executor, swap_preparer, (false, false), false))
         }
         StrategyBackend::Ultra {
             api_client,
@@ -1658,13 +1764,13 @@ async fn prepare_swap_components(
                 compute_unit_price_mode.clone(),
                 alt_cache.clone(),
             );
-            Ok((quote_executor, swap_preparer, (true, true)))
+            Ok((quote_executor, swap_preparer, (true, true), false))
         }
         StrategyBackend::None => {
             identity.set_skip_user_accounts_rpc_calls(false);
             let quote_executor = QuoteExecutor::disabled();
             let swap_preparer = SwapPreparer::disabled();
-            Ok((quote_executor, swap_preparer, (true, true)))
+            Ok((quote_executor, swap_preparer, (true, true), false))
         }
     }
 }

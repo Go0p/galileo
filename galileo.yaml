@@ -34,9 +34,10 @@ global:
     timezone_offset_hours: 8
 
 engine:
-  # 可选值：jupiter / dflow / ultra / multi-legs / kamino / none
+  # 可选值：jupiter_self_hosted / jupiter / dflow / ultra / multi-legs / kamino / none
   backend: "multi-legs"
   # backend: "kamino"
+  # backend: "jupiter_self_hosted"
   # backend: "dflow"
   # backend: "multi-legs"
   # backend: "dflow"
@@ -54,6 +55,44 @@ engine:
         max_concurrent_slots: 1
         inter_batch_delay_ms: 2000
 
+  jupiter_self_hosted:
+    enable: false
+    api_proxy: "http://192.168.124.4:9999"
+    args_included_dexes:
+      # TesseraV
+      - "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH"
+      # SolFiV2
+      - "SV2EYYJyRz2YhfXwXnhNAevDEui5Q6yrfyo13WtupPF"
+      # HumidiFi
+      - "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp"
+      # Aquifer
+      - "AQU1FRd7papthgdrwPTTq5JacJh8YtwEXaBfKU3bTz45"
+    quote_config:
+      # 设置为 true 时，机器人将仅寻找两跳（A -> B -> A）交易。设置为 true 将缩短跳转报价时间，加快落地速度。设置为 false 将获得更多机会，但需要更多报价时间。
+      only_direct_routes: false
+      # 仅当 use_direct_route_only 为 false 时，此设置才会生效。
+      # 将中间代币限制为具有稳定流动性的顶级代币集合。这将有助于降低兑换时潜在的高滑点错误率，并将对定价的影响降至最低。
+      # 当您将 use_direct_route_only 设置为 false 时，这可以帮助加快 jupiter 的报价时间。不过，正如它所说，它也会限制在您的路线中使用的额外 mint。
+      restrict_intermediate_tokens: true
+      # cadence 控制 trade size 的调度节奏：
+      #   max_concurrent_slots: 槽位数量，auto 表示根据可用 IP 自动推导（多 IP 时可调整为固定值）。
+      #   inter_batch_delay_ms: 单个槽位两次 quote 之间的等待时间；设置为 0 表示立即轮询下一个 trade size。
+      #   cycle_cooldown_ms: 一轮所有 trade size 完成后的休息时间（大多数场景可留空或设为 0）。
+      cadence:
+        default:
+          max_concurrent_slots: 1
+          inter_batch_delay_ms: 3000
+    swap_config:
+      # 跳过用户账户相关 RPC 调用，以减少重复拉取。
+      # 设置为 false 时，不会有 setupInstructions 等创建 ATA 的指令
+      # 设置为 true 时，会有 setupInstructions 等创建 ATA 的指令
+      skip_user_accounts_rpc_calls: false
+      # 启用后，它将进行交换模拟以获取使用的计算单元并将其设置在 ComputeBudget 的计算单元限制中
+      # 这会导致一个额外的 RPC 调用来模拟这个交易
+      # 我们建议启用此功能以正确估计计算单元并减少所需的优先费用或有更高的机会被纳入区块
+      dynamic_compute_unit_limit: true
+      wrap_and_unwrap_sol: false
+      cu_limit_multiplier: 0.92
   jupiter:
     jupiter_buy:
       enable: true
@@ -363,6 +402,11 @@ bot:
     rpc_url: "http://127.0.0.1:8899"
   get_block_hash_by_grpc: true
   enable_simulation: false
+  binary:
+    # disable_local_binary: true 可以强制仅使用远端 Jupiter API
+    disable_local_binary: false
+    # 设置为 true 时保留 Jupiter 二进制的 stdout/stderr
+    show_logs: false
   auto_refresh_wallet_minute: 30
   strategies:
     # 启用的策略列表（策略配置从 strategies/ 目录加载）

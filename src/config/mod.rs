@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::path::PathBuf;
 
 use crate::engine::DispatchStrategy;
 
@@ -59,12 +60,72 @@ pub(crate) fn default_auto_unwrap_min_balance_lamports() -> u64 {
     1_000_000_000
 }
 
+pub(crate) fn default_repo_owner() -> String {
+    "jup-ag".to_string()
+}
+
+pub(crate) fn default_repo_name() -> String {
+    "jupiter-swap-api".to_string()
+}
+
+pub(crate) fn default_binary_name() -> String {
+    "jupiter-swap-api".to_string()
+}
+
+pub(crate) fn default_install_dir() -> PathBuf {
+    PathBuf::from("bin")
+}
+
+pub(crate) fn default_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+pub(crate) fn default_port() -> u16 {
+    18_080
+}
+
+pub(crate) fn default_metrics_port() -> u16 {
+    18_081
+}
+
+pub(crate) fn default_market_cache() -> String {
+    "https://cache.jup.ag/markets?v=6".to_string()
+}
+
+pub(crate) fn default_market_cache_download_url() -> String {
+    default_market_cache()
+}
+
+pub(crate) fn default_market_mode() -> cfg::MarketMode {
+    cfg::MarketMode::Remote
+}
+
 pub(crate) fn default_prometheus_listen() -> String {
     "0.0.0.0:9898".to_string()
 }
 
+pub(crate) fn default_total_thread_count() -> u16 {
+    64
+}
+
+pub(crate) fn default_webserver_thread_count() -> u16 {
+    24
+}
+
+pub(crate) fn default_update_thread_count() -> u16 {
+    5
+}
+
+pub(crate) fn default_max_restart_attempts() -> u32 {
+    3
+}
+
 pub(crate) fn default_flashloan_compute_unit_overhead() -> u32 {
     110_000
+}
+
+pub(crate) fn default_graceful_shutdown_timeout_ms() -> u64 {
+    5_000
 }
 
 pub(crate) fn default_compute_unit_price_strategy() -> String {
@@ -73,6 +134,14 @@ pub(crate) fn default_compute_unit_price_strategy() -> String {
 
 pub(crate) fn default_tip_strategy() -> cfg::TipStrategyKind {
     cfg::TipStrategyKind::Fixed
+}
+
+pub(crate) fn default_environment() -> BTreeMap<String, String> {
+    BTreeMap::from_iter([(String::from("RUST_LOG"), String::from("info"))])
+}
+
+pub(crate) fn default_auto_download_market_cache() -> bool {
+    true
 }
 
 pub(crate) fn default_health_check_interval_secs() -> u64 {
@@ -163,6 +232,7 @@ impl Default for cfg::EngineConfig {
             backend: cfg::EngineBackend::default(),
             time_out: cfg::EngineTimeoutConfig::default(),
             enable_console_summary: false,
+            jupiter_self_hosted: cfg::JupiterSelfHostedEngineConfig::default(),
             jupiter: cfg::JupiterEngineSet::default(),
             dflow: cfg::DflowEngineConfig::default(),
             ultra: cfg::UltraEngineConfig::default(),
@@ -291,6 +361,7 @@ impl Default for cfg::BotConfig {
             cpu_affinity: cfg::CpuAffinityConfig::default(),
             get_block_hash_by_grpc: true,
             enable_simulation: false,
+            binary: cfg::BotBinaryConfig::default(),
             dry_run: cfg::DryRunConfig::default(),
             prometheus: cfg::PrometheusConfig::default(),
             network: cfg::NetworkConfig::default(),

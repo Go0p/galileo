@@ -1,4 +1,6 @@
+use std::collections::BTreeSet;
 use std::fs;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -14,7 +16,8 @@ use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::config::{
-    AppConfig, ConfigError, DryRunConfig, GlobalConfig, LoggingProfile, ProxyProfile, load_config,
+    AppConfig, ConfigError, DryRunConfig, GlobalConfig, IntermediumConfig, JupiterConfig,
+    JupiterSelfHostedEngineConfig, LaunchOverrides, LoggingProfile, ProxyProfile, load_config,
 };
 
 #[derive(Debug)]
@@ -238,6 +241,126 @@ pub fn rpc_default_headers(endpoint: &str) -> reqwest::header::HeaderMap {
     headers
 }
 
+pub fn should_bypass_proxy(base_url: &str) -> bool {
+    if let Ok(url) = reqwest::Url::parse(base_url) {
+        if let Some(host) = url.host_str() {
+            if host.eq_ignore_ascii_case("localhost") {
+                return true;
+            }
+            if let Ok(ip) = host.parse::<IpAddr>() {
+                return ip.is_loopback() || ip.is_unspecified();
+            }
+        }
+    }
+    false
+}
+
+pub fn build_launch_overrides(
+    intermedium: &IntermediumConfig,
+    jupiter_self_hosted: &JupiterSelfHostedEngineConfig,
+) -> LaunchOverrides {
+    let mut overrides = LaunchOverrides::default();
+
+    let mut mint_set: BTreeSet<String> = intermedium.mints.iter().cloned().collect();
+    for mint in &intermedium.disable_mints {
+        mint_set.remove(mint);
+    }
+
+    if !mint_set.is_empty() {
+        overrides.filter_markets_with_mints = mint_set.into_iter().collect();
+    }
+
+    let include_set: BTreeSet<String> = jupiter_self_hosted
+        .args_included_dexes
+        .iter()
+        .map(|dex| dex.trim().to_string())
+        .filter(|dex| !dex.is_empty())
+        .collect();
+    if !include_set.is_empty() {
+        overrides.include_dex_program_ids = include_set.into_iter().collect();
+    }
+
+    overrides
+}
+
+pub fn resolve_jupiter_base_url(jupiter: &JupiterConfig) -> String {
+    let host = sanitize_jupiter_host(&jupiter.core.host);
+    format!("http://{}:{}", host, jupiter.core.port)
+}
+
+pub fn resolve_self_hosted_jupiter_api_proxy(
+    config: &JupiterSelfHostedEngineConfig,
+) -> Option<String> {
+    config
+        .api_proxy
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+fn sanitize_jupiter_host(host: &str) -> String {
+    let trimmed = host.trim();
+    if trimmed.is_empty() {
+        return "127.0.0.1".to_string();
+    }
+    if let Ok(ip) = trimmed.parse::<IpAddr>() {
+        if ip.is_unspecified() {
+            return match ip {
+                IpAddr::V4(_) => "127.0.0.1".to_string(),
+                IpAddr::V6(_) => "::1".to_string(),
+            };
+        }
+    }
+    trimmed.to_string()
+}
+
+pub fn resolve_jupiter_defaults(
+    mut jupiter: JupiterConfig,
+    global: &GlobalConfig,
+) -> Result<JupiterConfig> {
+    if jupiter.core.rpc_url.trim().is_empty() {
+        if let Some(primary) = global.rpc_urls().first() {
+            jupiter.core.rpc_url = primary.to_string();
+        }
+    }
+
+    if jupiter.core.rpc_url.trim().is_empty() {
+        return Err(anyhow!(
+            "未配置 Jupiter RPC：请在 jupiter.toml 或 galileo.yaml 的 global.rpc_urls 中设置 RPC 端点"
+        ));
+    }
+
+    let needs_yellowstone = jupiter
+        .launch
+        .yellowstone
+        .as_ref()
+        .map(|cfg| cfg.endpoint.trim().is_empty())
+        .unwrap_or(true);
+
+    if needs_yellowstone {
+        if let Some(endpoint) = global.yellowstone_grpc_url.as_ref() {
+            let trimmed = endpoint.trim();
+            if !trimmed.is_empty() {
+                let token = global.yellowstone_grpc_token.as_ref().and_then(|t| {
+                    let tt = t.trim();
+                    if tt.is_empty() {
+                        None
+                    } else {
+                        Some(tt.to_string())
+                    }
+                });
+                jupiter.launch.yellowstone = Some(crate::config::YellowstoneConfig {
+                    endpoint: trimmed.to_string(),
+                    x_token: token,
+                });
+            }
+        }
+    }
+
+    Ok(jupiter)
+}
+
 pub fn init_configs(args: crate::cli::args::InitCmd) -> Result<()> {
     let output_dir = match args.output {
         Some(dir) => dir,
@@ -246,7 +369,7 @@ pub fn init_configs(args: crate::cli::args::InitCmd) -> Result<()> {
 
     fs::create_dir_all(&output_dir)?;
 
-    let templates: [(&str, &str); 2] = [
+    let templates: [(&str, &str); 3] = [
         (
             "galileo.yaml",
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/galileo.yaml")),
@@ -254,6 +377,10 @@ pub fn init_configs(args: crate::cli::args::InitCmd) -> Result<()> {
         (
             "lander.yaml",
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/lander.yaml")),
+        ),
+        (
+            "jupiter.toml",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/jupiter.toml")),
         ),
     ];
 
@@ -301,6 +428,31 @@ mod tests {
     fn test_rpc_default_headers_no_origin_on_other_hosts() {
         let headers = rpc_default_headers("https://api.mainnet-beta.solana.com");
         assert!(headers.get(reqwest::header::ORIGIN).is_none());
+    }
+
+    #[test]
+    fn test_resolve_self_hosted_proxy_none_on_empty() {
+        let cfg: JupiterSelfHostedEngineConfig = serde_yaml::from_str(
+            r#"
+api_proxy: "   "
+"#,
+        )
+        .unwrap();
+        assert!(resolve_self_hosted_jupiter_api_proxy(&cfg).is_none());
+    }
+
+    #[test]
+    fn test_resolve_self_hosted_proxy_trims_value() {
+        let cfg: JupiterSelfHostedEngineConfig = serde_yaml::from_str(
+            r#"
+api_proxy: "  http://127.0.0.1:8888  "
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_self_hosted_jupiter_api_proxy(&cfg).as_deref(),
+            Some("http://127.0.0.1:8888")
+        );
     }
 }
 

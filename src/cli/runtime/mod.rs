@@ -9,16 +9,24 @@ use crate::api::kamino::KaminoApiClient;
 use crate::api::ultra::UltraApiClient;
 use crate::cli::args::{Cli, Command};
 use crate::cli::context::{
-    init_configs, override_proxy_selection, resolve_global_http_proxy, resolve_instruction_memo,
-    resolve_proxy_profile, resolve_rpc_client,
+    build_launch_overrides, init_configs, override_proxy_selection, resolve_global_http_proxy,
+    resolve_instruction_memo, resolve_jupiter_base_url, resolve_jupiter_defaults,
+    resolve_proxy_profile, resolve_rpc_client, resolve_self_hosted_jupiter_api_proxy,
+    should_bypass_proxy,
 };
+use crate::cli::jupiter::handle_jupiter_cmd;
 use crate::cli::lander::handle_lander_cmd;
 use crate::cli::strategy::{StrategyMode, run_strategy};
 use crate::config::launch::resources::{build_http_client_pool, build_http_client_with_options};
 use crate::config::{AppConfig, StrategyToggle};
+use crate::jupiter::JupiterBinaryManager;
 
 enum AggregatorContext {
     Jupiter {
+        api_client: JupiterApiClient,
+    },
+    JupiterSelfHosted {
+        manager: JupiterBinaryManager,
         api_client: JupiterApiClient,
     },
     Dflow {
@@ -39,6 +47,23 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
     if config.galileo.bot.prometheus.enable {
         crate::monitoring::try_init_prometheus(&config.galileo.bot.prometheus.listen)
             .map_err(|err| anyhow!(err))?;
+    }
+
+    if let Command::Jupiter(cmd) = &cli.command {
+        let jupiter_cfg = resolve_jupiter_defaults(config.jupiter.clone(), &config.galileo.global)?;
+        let launch_overrides = build_launch_overrides(
+            &config.galileo.intermedium,
+            &config.galileo.engine.jupiter_self_hosted,
+        );
+        let manager = JupiterBinaryManager::new(
+            jupiter_cfg,
+            launch_overrides,
+            config.galileo.bot.binary.disable_local_binary,
+            config.galileo.bot.binary.show_logs,
+            true,
+        )?;
+        handle_jupiter_cmd(cmd.clone(), &manager).await?;
+        return Ok(());
     }
 
     let blind_enabled = config
@@ -122,6 +147,90 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 Some(api_client_pool),
             );
             AggregatorContext::Jupiter { api_client }
+        }
+        crate::config::EngineBackend::JupiterSelfHosted => {
+            let jupiter_cfg =
+                resolve_jupiter_defaults(config.jupiter.clone(), &config.galileo.global)?;
+            let needs_jupiter = command_needs_jupiter(&cli.command, &config);
+            let launch_overrides = build_launch_overrides(
+                &config.galileo.intermedium,
+                &config.galileo.engine.jupiter_self_hosted,
+            );
+            let base_url = resolve_jupiter_base_url(&jupiter_cfg);
+            let base_endpoint = base_url.trim_end_matches('/');
+            let quote_url = format!("{}/swap/v1/quote", base_endpoint);
+            let swap_url = format!("{}/swap/v1/swap", base_endpoint);
+
+            let proxy_override =
+                resolve_self_hosted_jupiter_api_proxy(&config.galileo.engine.jupiter_self_hosted);
+            let module_proxy = resolve_proxy_profile(&config.galileo.global, "quote");
+            let global_proxy = resolve_global_http_proxy(&config.galileo.global);
+            let effective_proxy = override_proxy_selection(
+                proxy_override.as_deref(),
+                module_proxy.clone(),
+                global_proxy.clone(),
+            );
+            let bypass_proxy = should_bypass_proxy(&base_url);
+
+            if let Some(url) = proxy_override.as_deref() {
+                info!(
+                    target: "jupiter",
+                    proxy = %url,
+                    "Jupiter API 请求将通过配置的代理发送"
+                );
+            } else if let Some(selection) = module_proxy.as_ref() {
+                info!(
+                    target: "jupiter",
+                    proxy = %selection.url,
+                    per_request = selection.per_request,
+                    "Jupiter API 请求将通过 profile 代理发送"
+                );
+            } else if let Some(selection) = global_proxy.as_ref() {
+                info!(
+                    target: "jupiter",
+                    proxy = %selection.url,
+                    per_request = selection.per_request,
+                    "Jupiter API 请求将通过全局代理发送"
+                );
+            } else if bypass_proxy {
+                info!(
+                    target: "jupiter",
+                    base_url = %base_url,
+                    "Jupiter API 请求将绕过代理（本地地址）"
+                );
+            }
+
+            let user_agent = crate::jupiter::updater::USER_AGENT;
+            let api_http_client = build_http_client_with_options(
+                effective_proxy.as_ref(),
+                bypass_proxy,
+                None,
+                Some(user_agent),
+            )?;
+            let api_client_pool = build_http_client_pool(
+                effective_proxy.clone(),
+                bypass_proxy,
+                Some(user_agent.to_string()),
+            );
+            let manager = JupiterBinaryManager::new(
+                jupiter_cfg,
+                launch_overrides,
+                config.galileo.bot.binary.disable_local_binary,
+                config.galileo.bot.binary.show_logs,
+                needs_jupiter,
+            )?;
+            let api_client = JupiterApiClient::with_ip_pool(
+                api_http_client,
+                quote_url,
+                swap_url,
+                &config.galileo.engine.time_out,
+                &config.galileo.global.logging,
+                Some(api_client_pool),
+            );
+            AggregatorContext::JupiterSelfHosted {
+                manager,
+                api_client,
+            }
         }
         crate::config::EngineBackend::Dflow => {
             let quote_base = config
@@ -351,7 +460,20 @@ async fn dispatch(
         }
         Command::Run => match &aggregator {
             AggregatorContext::Jupiter { api_client } => {
-                let backend = crate::cli::strategy::StrategyBackend::Jupiter { api_client };
+                let backend = crate::cli::strategy::StrategyBackend::Jupiter {
+                    manager: None,
+                    api_client,
+                };
+                run_strategy(&config, &backend, StrategyMode::Live).await?;
+            }
+            AggregatorContext::JupiterSelfHosted {
+                manager,
+                api_client,
+            } => {
+                let backend = crate::cli::strategy::StrategyBackend::Jupiter {
+                    manager: Some(manager),
+                    api_client,
+                };
                 run_strategy(&config, &backend, StrategyMode::Live).await?;
             }
             AggregatorContext::Dflow { api_client } => {
@@ -385,7 +507,20 @@ async fn dispatch(
         },
         Command::StrategyDryRun => match &aggregator {
             AggregatorContext::Jupiter { api_client } => {
-                let backend = crate::cli::strategy::StrategyBackend::Jupiter { api_client };
+                let backend = crate::cli::strategy::StrategyBackend::Jupiter {
+                    manager: None,
+                    api_client,
+                };
+                run_strategy(&config, &backend, StrategyMode::DryRun).await?;
+            }
+            AggregatorContext::JupiterSelfHosted {
+                manager,
+                api_client,
+            } => {
+                let backend = crate::cli::strategy::StrategyBackend::Jupiter {
+                    manager: Some(manager),
+                    api_client,
+                };
                 run_strategy(&config, &backend, StrategyMode::DryRun).await?;
             }
             AggregatorContext::Dflow { api_client } => {
@@ -421,7 +556,19 @@ async fn dispatch(
             init_configs(args)?;
         }
         Command::Wallet(_) => {}
+        Command::Jupiter(_) => unreachable!("Jupiter 命令已在入口提前处理"),
     }
 
     Ok(())
+}
+
+fn command_needs_jupiter(command: &Command, config: &AppConfig) -> bool {
+    match command {
+        Command::Run | Command::StrategyDryRun => config
+            .galileo
+            .bot
+            .strategy_enabled(StrategyToggle::BlindStrategy),
+        Command::Jupiter(_) => true,
+        _ => false,
+    }
 }
