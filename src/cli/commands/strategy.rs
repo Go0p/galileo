@@ -422,6 +422,7 @@ async fn run_blind_engine(
 
     let console_summary_settings = ConsoleSummarySettings {
         enable: config.galileo.engine.enable_console_summary,
+        summary_only: config.galileo.engine.console_summary_only,
     };
 
     let engine_settings = EngineSettings::new(quote_config)
@@ -1456,6 +1457,7 @@ async fn run_pure_blind_engine(
     let quote_cadence = resolve_quote_cadence(&config.galileo.engine, backend);
     let console_summary_settings = ConsoleSummarySettings {
         enable: config.galileo.engine.enable_console_summary,
+        summary_only: config.galileo.engine.console_summary_only,
     };
 
     let engine_settings = EngineSettings::new(quote_config)

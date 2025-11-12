@@ -199,6 +199,9 @@ impl SwapPreparer {
                     || identity.skip_user_accounts_rpc_calls();
                 request.skip_user_accounts_rpc_calls = Some(skip_accounts);
                 request.dynamic_compute_unit_limit = Some(defaults.dynamic_compute_unit_limit);
+                if let Some(flag) = defaults.use_shared_accounts {
+                    request.use_shared_accounts = Some(flag);
+                }
 
                 if let Some(strategy) = &self.compute_unit_price {
                     let price = strategy.sample();
@@ -223,6 +226,18 @@ impl SwapPreparer {
 
                 let mut response = client.swap_instructions_with_ip(&request, local_ip).await?;
                 resolve_jupiter_response(&mut response, rpc, alt_cache).await?;
+                let original_limit = response.compute_unit_limit;
+                let adjusted_limit =
+                    response.adjust_compute_unit_limit(defaults.cu_limit_multiplier);
+                if adjusted_limit != original_limit {
+                    debug!(
+                        target = "engine::swap_preparer",
+                        original = original_limit,
+                        adjusted = adjusted_limit,
+                        multiplier = defaults.cu_limit_multiplier,
+                        "Jupiter compute unit limit 已按配置系数调整"
+                    );
+                }
                 SwapInstructionsVariant::Jupiter(response)
             }
             (

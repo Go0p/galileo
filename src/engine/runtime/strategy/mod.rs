@@ -84,6 +84,7 @@ impl Default for SolPriceFeedSettings {
 #[derive(Clone, Default)]
 pub struct ConsoleSummarySettings {
     pub enable: bool,
+    pub summary_only: bool,
 }
 
 #[derive(Clone)]
@@ -271,6 +272,12 @@ where
         if self.landers.is_empty() {
             return Err(EngineError::InvalidConfig("未配置可用的落地器".into()));
         }
+
+        let _summary_guard = if self.settings.console_summary.summary_only {
+            Some(crate::monitoring::events::SummaryModeGuard::new(true))
+        } else {
+            None
+        };
 
         self.bootstrap_titan_streams().await?;
         self.launch_titan_event_driver().await?;

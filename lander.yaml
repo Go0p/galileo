@@ -41,7 +41,7 @@ lander:
       # - uuid
       # 使用IP 时，需要使用第三方钱包来绕过 Jito 的限速
       # Jito 目前根据发送小费的交易中的账户限制捆绑包的速率，此功能可以绕过钱包速率限制的问题
-      # - multi_ips
+      - multi_ips
       # 这个 endpoint 是一个原样交易转发器，用于转发我们的交易，类似 uuid ，但是是转发服务商提供的 endpoint
       - forward
     uuid_setting:

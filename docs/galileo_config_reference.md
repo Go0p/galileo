@@ -5,6 +5,7 @@ Galileo 已移除历史 Jupiter 依赖，所有聚合器配置均通过 `galileo
 ## 1. 全局与运行环境
 - `rpc_url`(s) → `[global].rpc_urls`：按顺序轮询的主链 RPC 列表。
 - `yellowstone_grpc_url` / `yellowstone_grpc_token` → `[bot].yellowstone_grpc_url` / `[bot].yellowstone_grpc_token`。
+- `[jupiter.launch.yellowstone]`：`endpoint` / `x_token` 会映射为 `--yellowstone-grpc-endpoint` / `--yellowstone-grpc-x-token`，用于本地自管 Jupiter 进程。
 - `proxy` → `[global].proxy`：支持定义命名的代理 `profiles`，并在 `enable.<module>` 中引用（例如 `quote`、`lander`）；`per_request: true` 可强制每次请求重建连接以配合旋转代理。旧的单字符串写法仍视作 `default` 兜底，且各引擎的 `engine.<backend>.api_proxy` 依旧可以局部覆盖。
 - 加密钱包 → `[global.wallet.wallet_keys]`：列表项格式 `- "<备注>": "<base64 密文>"`；当列表为空时，启动 Galileo 会提示录入三段私钥并写回配置。
 - `cpu_affinity` 相关参数 → `[bot.cpu_affinity]`：绑定 Tokio runtime 到指定 CPU，减少与 RPC 节点抢占。
@@ -14,12 +15,14 @@ Galileo 已移除历史 Jupiter 依赖，所有聚合器配置均通过 `galileo
 - `flashloan.products` → `[bot.flashloan.products]`：启用的闪电贷协议列表，同时在此处标注 `prefer_wallet_balance` 等偏好。
 - `[bot.dry_run]`：包含 `enable` 与 `rpc_url`。启用后，所有策略的 RPC 调用与落地请求会改用该节点，并强制落地器退化为 RPC，适合在本地 devnet/sandbox 回放交易。
 - `[bot.binary]`：当 `engine.backend = "jupiter_self_hosted"` 时生效，`disable_local_binary` 可强制仅使用远端 HTTP API，`show_logs` 控制是否打印 `jupiter-swap-api` 的 stdout/stderr 以协助排障。
+- `[jupiter.process]`：仅由 Galileo bot 负责的守护参数（自动重启、优雅退出等待等），不会传递给 Jupiter CLI。
 
 ## 2. 聚合器引擎
 `[engine.backend]` 支持 `jupiter_self_hosted` / `jupiter` / `dflow` / `ultra` / `kamino` / `multi-legs` / `none`，各自子表涵盖 API 端点、代理以及并发参数：
 
-- `[engine.console_summary]`：`enable` 控制是否开启控制台机会摘要面板；启用后，每轮 trade size 批次结束会输出机会数、延迟与落地统计（当前仅适用于单引擎 Quote 流程），默认关闭以保持日志精简。
-- `backend = "jupiter_self_hosted"`：Galileo 会根据根目录的 `jupiter.toml` 启动或更新本地 `jupiter-swap-api` 进程，并在需要时通过 `galileo jupiter start|stop|restart|status|update|list` 管理生命周期。代理优先级为 `engine.jupiter_self_hosted.api_proxy → global.proxy.enable.quote → global.proxy.default`，若 `jupiter.toml` 监听地址属于 `127.0.0.1` / `localhost` 则自动绕过代理；是否真正拉起本地进程与日志保留行为由 `[bot.binary]` 控制。`engine.jupiter_self_hosted.args_included_dexes` 可用于生成 `--include-dex-program-ids`，同时在启用 `core.exclude_other_dex_program_ids` 时用于过滤下载的 `markets.json`。
+- `[engine.console_summary]`：`enable` 控制是否开启控制台机会摘要面板；启用后，每轮 trade size 批次结束会输出机会数、延迟与落地统计（当前仅适用于单引擎 Quote 流程），默认关闭以保持日志精简。若需要仅保留摘要、屏蔽 `monitoring::profit` / `lander::*` 等详细日志，可将 `console_summary_only: true` 一并打开。
+- `backend = "jupiter_self_hosted"`：Galileo 会根据根目录的 `jupiter.toml` 启动或更新本地 `jupiter-swap-api` 进程，并在需要时通过 `galileo jupiter start|stop|restart|status|update|list` 管理生命周期。代理优先级为 `engine.jupiter_self_hosted.api_proxy → global.proxy.enable.quote → global.proxy.default`，若 `jupiter.toml` 监听地址属于 `127.0.0.1` / `localhost` 则自动绕过代理；是否真正拉起本地进程与日志保留行为由 `[bot.binary]` 控制。`engine.jupiter_self_hosted.args_included_dexes` 会映射为 `--dex-program-ids`，同时在启用 `core.bot.exclude_other_dex_program_ids` 时用于过滤下载的 `markets.json`。其中 `[jupiter.core]` 只保留 Jupiter 官方 CLI 支持的参数，bot 私有的下载/过滤行为请写在 `[jupiter.core.bot]`。若需要压缩 `/swap-instructions` 返回的 compute unit limit，可在 `swap_config.cu_limit_multiplier` 中填写系数（例如 `0.92`）；该值同样适用于远端 Jupiter 或多腿 Jupiter 腿，Galileo 会在装配指令前改写 ComputeBudget 限制。`quote_config.slippage_bps` / `quote_config.max_accounts` 会覆盖策略层的默认滑点与 `maxAccounts` 请求参数，仅作用于 Jupiter 报价，不影响其他聚合器。
+- `swap_config.use_shared_accounts`：仅在 Jupiter 路径生效，用于显式控制本地 API 的 `useSharedAccounts` 行为；若不给值则跟随 Jupiter 默认（通常为 true），自托管套利建议显式设为 `false`。
 - `[engine.dflow]`
   - `api_quote_base` / `api_swap_base`：DFlow Quote 与 Swap API 基址。
   - `api_proxy`：可选，覆盖全局代理。

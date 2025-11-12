@@ -806,52 +806,54 @@ async fn submit_with_lease(
             .local_ip
             .map(|ip| ip.to_string())
             .unwrap_or_else(|| "-".to_string());
-        match (telemetry.tip, telemetry.compute_unit_price) {
-            (Some((tip_strategy, tips)), _) => {
-                info!(
-                    target: "lander::submit",
-                    strategy,
-                    dispatch,
-                    lander = receipt.lander,
-                    tip_strategy,
-                    tips,
-                    "发送交易 endpoint_num={} endpoint={} id={} elapsed_ms={:.3} ip={}",
-                    endpoint_num,
-                    receipt.endpoint.as_str(),
-                    identifier.as_str(),
-                    elapsed_ms,
-                    ip_label,
-                );
-            }
-            (None, Some((price_strategy, cu_price))) => {
-                info!(
-                    target: "lander::submit",
-                    strategy,
-                    dispatch,
-                    lander = receipt.lander,
-                    compute_unit_price_strategy = price_strategy,
-                    cu_price,
-                    "发送交易 endpoint_num={} endpoint={} id={} elapsed_ms={:.3} ip={}",
-                    endpoint_num,
-                    receipt.endpoint.as_str(),
-                    identifier.as_str(),
-                    elapsed_ms,
-                    ip_label,
-                );
-            }
-            (None, None) => {
-                info!(
-                    target: "lander::submit",
-                    strategy,
-                    dispatch,
-                    lander = receipt.lander,
-                    "发送交易 endpoint_num={} endpoint={} id={} elapsed_ms={:.3} ip={}",
-                    endpoint_num,
-                    receipt.endpoint.as_str(),
-                    identifier.as_str(),
-                    elapsed_ms,
-                    ip_label,
-                );
+        if !events::summary_only_enabled() {
+            match (telemetry.tip, telemetry.compute_unit_price) {
+                (Some((tip_strategy, tips)), _) => {
+                    info!(
+                        target: "lander::submit",
+                        strategy,
+                        dispatch,
+                        lander = receipt.lander,
+                        tip_strategy,
+                        tips,
+                        "发送交易 endpoint_num={} endpoint={} id={} elapsed_ms={:.3} ip={}",
+                        endpoint_num,
+                        receipt.endpoint.as_str(),
+                        identifier.as_str(),
+                        elapsed_ms,
+                        ip_label,
+                    );
+                }
+                (None, Some((price_strategy, cu_price))) => {
+                    info!(
+                        target: "lander::submit",
+                        strategy,
+                        dispatch,
+                        lander = receipt.lander,
+                        compute_unit_price_strategy = price_strategy,
+                        cu_price,
+                        "发送交易 endpoint_num={} endpoint={} id={} elapsed_ms={:.3} ip={}",
+                        endpoint_num,
+                        receipt.endpoint.as_str(),
+                        identifier.as_str(),
+                        elapsed_ms,
+                        ip_label,
+                    );
+                }
+                (None, None) => {
+                    info!(
+                        target: "lander::submit",
+                        strategy,
+                        dispatch,
+                        lander = receipt.lander,
+                        "发送交易 endpoint_num={} endpoint={} id={} elapsed_ms={:.3} ip={}",
+                        endpoint_num,
+                        receipt.endpoint.as_str(),
+                        identifier.as_str(),
+                        elapsed_ms,
+                        ip_label,
+                    );
+                }
             }
         }
     }

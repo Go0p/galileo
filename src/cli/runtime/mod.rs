@@ -158,8 +158,9 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             );
             let base_url = resolve_jupiter_base_url(&jupiter_cfg);
             let base_endpoint = base_url.trim_end_matches('/');
-            let quote_url = format!("{}/swap/v1/quote", base_endpoint);
-            let swap_url = format!("{}/swap/v1/swap", base_endpoint);
+            // 自托管版本提供 `/quote` 与 `/swap-instructions` 原生端点。
+            let quote_url = format!("{}/quote", base_endpoint);
+            let swap_url = format!("{}/swap-instructions", base_endpoint);
 
             let proxy_override =
                 resolve_self_hosted_jupiter_api_proxy(&config.galileo.engine.jupiter_self_hosted);
@@ -170,7 +171,10 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 module_proxy.clone(),
                 global_proxy.clone(),
             );
-            let bypass_proxy = should_bypass_proxy(&base_url);
+            let mut bypass_proxy = should_bypass_proxy(&base_url);
+            if proxy_override.is_some() {
+                bypass_proxy = false;
+            }
 
             if let Some(url) = proxy_override.as_deref() {
                 info!(

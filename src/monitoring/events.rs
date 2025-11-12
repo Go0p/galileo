@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tracing::{debug, info, trace, warn};
@@ -11,6 +12,29 @@ use solana_sdk::signature::Signature;
 use super::format::short_mint_str;
 use super::metrics::prometheus_enabled;
 use metrics::{counter, gauge, histogram};
+
+static SUMMARY_ONLY_MODE: AtomicBool = AtomicBool::new(false);
+
+pub struct SummaryModeGuard {
+    previous: bool,
+}
+
+impl SummaryModeGuard {
+    pub fn new(enable: bool) -> Self {
+        let previous = SUMMARY_ONLY_MODE.swap(enable, Ordering::Relaxed);
+        Self { previous }
+    }
+}
+
+impl Drop for SummaryModeGuard {
+    fn drop(&mut self) {
+        SUMMARY_ONLY_MODE.store(self.previous, Ordering::Relaxed);
+    }
+}
+
+pub fn summary_only_enabled() -> bool {
+    SUMMARY_ONLY_MODE.load(Ordering::Relaxed)
+}
 
 fn base_mint_label(base_mint: Option<&Pubkey>) -> String {
     base_mint
@@ -603,6 +627,9 @@ pub fn profit_shortfall(
     profit: u64,
     expected_profit: u64,
 ) {
+    if summary_only_enabled() {
+        return;
+    }
     let base_display = short_mint_str(base_mint);
     let forward_latency_str = forward_latency_ms.map(|ms| format!("{ms:.3}"));
     let reverse_latency_str = reverse_latency_ms.map(|ms| format!("{ms:.3}"));
@@ -643,6 +670,9 @@ pub fn profit_opportunity(
     reverse_ip: Option<IpAddr>,
     total_latency_ms: Option<f64>,
 ) {
+    if summary_only_enabled() {
+        return;
+    }
     let base_display = short_mint_str(base_mint);
     let forward_latency_str = forward_latency_ms.map(|ms| format!("{ms:.3}"));
     let reverse_latency_str = reverse_latency_ms.map(|ms| format!("{ms:.3}"));

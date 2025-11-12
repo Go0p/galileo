@@ -28,7 +28,13 @@ impl JupiterBinaryManager {
         show_jupiter_logs: bool,
         log_proxy: bool,
     ) -> Result<Self, JupiterError> {
-        let proxy = config.binary.proxy.clone();
+        let proxy = config
+            .binary
+            .proxy
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string());
         let mut builder = reqwest::Client::builder().user_agent(USER_AGENT);
         if let Some(proxy_url) = proxy.as_deref() {
             builder = builder.proxy(reqwest::Proxy::all(proxy_url)?);
@@ -265,9 +271,14 @@ impl JupiterBinaryManager {
             .await?
             .map(|path| path.to_string_lossy().into_owned());
 
-        let effective_args = self
-            .config
-            .effective_args(&self.launch_overrides, market_cache_override.as_deref());
+        let market_mode_override = market_cache_override
+            .as_ref()
+            .map(|_| crate::config::MarketMode::File);
+        let effective_args = self.config.effective_args(
+            &self.launch_overrides,
+            market_cache_override.as_deref(),
+            market_mode_override,
+        );
         let command_line = format_command(&install.path, &effective_args);
         info!(
             target: "jupiter",
@@ -385,7 +396,7 @@ impl JupiterBinaryManager {
     }
 
     async fn prepare_local_market_cache(&self) -> Result<Option<PathBuf>, JupiterError> {
-        if !self.config.core.use_local_market_cache {
+        if !self.config.core.bot.use_local_market_cache {
             return Ok(None);
         }
 
@@ -398,7 +409,7 @@ impl JupiterBinaryManager {
             ));
         };
 
-        let auto_download = self.config.core.auto_download_market_cache;
+        let auto_download = self.config.core.bot.auto_download_market_cache;
         let existed = fs::metadata(&local_path).await.is_ok();
         if existed {
             info!(
@@ -427,7 +438,7 @@ impl JupiterBinaryManager {
             fs::create_dir_all(parent).await?;
         }
 
-        let download_url = self.config.core.market_cache_download_url.trim();
+        let download_url = self.config.core.bot.market_cache_download_url.trim();
         if download_url.is_empty() {
             return Err(JupiterError::Schema(
                 "启用 use_local_market_cache 时，需提供 market_cache_download_url".into(),
@@ -538,7 +549,7 @@ impl JupiterBinaryManager {
             );
         }
 
-        let include_filter: HashSet<_> = if self.config.core.exclude_other_dex_program_ids {
+        let include_filter: HashSet<_> = if self.config.core.bot.exclude_other_dex_program_ids {
             self.launch_overrides
                 .include_dex_program_ids
                 .iter()
@@ -567,15 +578,15 @@ impl JupiterBinaryManager {
             let filtered_len = filtered.len();
             if filtered_len == 0 {
                 return Err(JupiterError::Schema(
-                    "根据 include_dex_program_ids 过滤后市场为空，请检查配置".into(),
+                    "根据 dex_program_ids 过滤后市场为空，请检查配置".into(),
                 ));
             }
             info!(
                 target: "jupiter",
                 total_markets = total,
                 filtered_markets = filtered_len,
-                included_dexes = ?self.launch_overrides.include_dex_program_ids,
-                "已按 include_dex_program_ids 过滤市场缓存"
+                dex_program_ids = ?self.launch_overrides.include_dex_program_ids,
+                "已按 dex_program_ids 过滤市场缓存"
             );
             serde_json::to_vec(&filtered)
                 .map_err(|err| JupiterError::Schema(format!("序列化过滤后的市场缓存失败: {err}")))?
@@ -886,6 +897,7 @@ impl JupiterBinaryManager {
                         version = ?event.handle.version,
                         "Jupiter 进程异常退出"
                     );
+                    self.log_captured_output(&event.handle).await;
                     let auto_restart = self.config.process.auto_restart_minutes;
                     let attempts_limit = event.max_restart_attempts;
                     if auto_restart > 0
@@ -936,6 +948,28 @@ impl JupiterBinaryManager {
                 }
             } else {
                 tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
+
+    async fn log_captured_output(&self, handle: &ProcessHandle) {
+        if let Some(buffer) = &handle.captured_output {
+            let snapshot = buffer.snapshot().await;
+            if !snapshot.stderr.is_empty() {
+                warn!(
+                    target: "jupiter",
+                    "Jupiter stderr（最近 {} 行）:\n{}",
+                    snapshot.stderr.len(),
+                    snapshot.stderr.join("\n")
+                );
+            }
+            if !snapshot.stdout.is_empty() {
+                info!(
+                    target: "jupiter",
+                    "Jupiter stdout（最近 {} 行）:\n{}",
+                    snapshot.stdout.len(),
+                    snapshot.stdout.join("\n")
+                );
             }
         }
     }

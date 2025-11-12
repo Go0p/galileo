@@ -453,15 +453,17 @@ impl JitoLander {
                 local_ip,
             };
 
-            info!(
-                target: STRATEGY_METRIC_LABEL,
-                endpoint = %endpoint_url,
-                strategy = strategy.as_str(),
-                label = %label,
-                slot,
-                blockhash = %receipt.blockhash,
-                "bundle submission succeeded"
-            );
+            if !crate::monitoring::events::summary_only_enabled() {
+                info!(
+                    target: STRATEGY_METRIC_LABEL,
+                    endpoint = %endpoint_url,
+                    strategy = strategy.as_str(),
+                    label = %label,
+                    slot,
+                    blockhash = %receipt.blockhash,
+                    "bundle submission succeeded"
+                );
+            }
 
             return Ok(receipt);
         }

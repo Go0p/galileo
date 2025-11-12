@@ -7,7 +7,6 @@ use crate::api::jupiter::{
     SwapInstructionsResponse as JupiterSwapResponse,
 };
 use crate::config::{JupiterQuoteConfig, JupiterSwapConfig};
-use crate::engine::COMPUTE_BUDGET_PROGRAM_ID;
 use crate::engine::multi_leg::leg::LegProvider;
 use crate::engine::multi_leg::types::{
     AggregatorKind, LegBuildContext, LegDescriptor, LegPlan, LegQuote, LegSide, QuoteIntent,
@@ -98,10 +97,22 @@ impl JupiterLegProvider {
         multiplier: Option<f64>,
         context: &LegBuildContext,
     ) -> LegPlan {
-        let adjusted_limit = apply_cu_limit_multiplier(swap.compute_unit_limit, multiplier);
-        if adjusted_limit != swap.compute_unit_limit {
-            rewrite_limit_instructions(&mut swap.compute_budget_instructions, adjusted_limit);
-            swap.compute_unit_limit = adjusted_limit;
+        let effective_multiplier = multiplier
+            .and_then(sanitize_multiplier)
+            .or_else(|| sanitize_multiplier(self.swap_config.cu_limit_multiplier))
+            .unwrap_or(1.0);
+        if effective_multiplier != 1.0 {
+            let original_limit = swap.compute_unit_limit;
+            let adjusted_limit = swap.adjust_compute_unit_limit(effective_multiplier);
+            if adjusted_limit != original_limit {
+                debug!(
+                    target: "multi_leg::jupiter",
+                    original = original_limit,
+                    adjusted = adjusted_limit,
+                    multiplier = effective_multiplier,
+                    "Jupiter compute unit limit 已按配置系数调整"
+                );
+            }
         }
 
         let quote_meta = self.summarize_quote(quote);
@@ -245,39 +256,10 @@ fn classify_reqwest(err: &reqwest::Error) -> Option<IpLeaseOutcome> {
     None
 }
 
-fn apply_cu_limit_multiplier(base: u32, multiplier: Option<f64>) -> u32 {
-    let base_limit = base.max(1);
-    let sanitized = multiplier.and_then(sanitize_multiplier).unwrap_or(1.0);
-    let mut scaled = (base_limit as f64) * sanitized;
-    if !scaled.is_finite() {
-        return base_limit;
-    }
-    if scaled < 1.0 {
-        scaled = 1.0;
-    }
-    if scaled > u32::MAX as f64 {
-        scaled = u32::MAX as f64;
-    }
-    scaled.round() as u32
-}
-
 fn sanitize_multiplier(value: f64) -> Option<f64> {
     if value.is_finite() && value > 0.0 {
         Some(value)
     } else {
         None
-    }
-}
-
-fn rewrite_limit_instructions(
-    instructions: &mut [solana_sdk::instruction::Instruction],
-    limit: u32,
-) {
-    for ix in instructions {
-        if ix.program_id == COMPUTE_BUDGET_PROGRAM_ID && ix.data.first() == Some(&2) {
-            if ix.data.len() >= 5 {
-                ix.data[1..5].copy_from_slice(&limit.to_le_bytes());
-            }
-        }
     }
 }

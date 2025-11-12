@@ -232,6 +232,7 @@ impl Default for cfg::EngineConfig {
             backend: cfg::EngineBackend::default(),
             time_out: cfg::EngineTimeoutConfig::default(),
             enable_console_summary: false,
+            console_summary_only: false,
             jupiter_self_hosted: cfg::JupiterSelfHostedEngineConfig::default(),
             jupiter: cfg::JupiterEngineSet::default(),
             dflow: cfg::DflowEngineConfig::default(),

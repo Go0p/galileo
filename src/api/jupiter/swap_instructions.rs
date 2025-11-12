@@ -4,6 +4,7 @@ use std::str::FromStr;
 use serde::de::Error as SerdeDeError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_sdk::hash::Hash;
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::message::{AddressLookupTableAccount, VersionedMessage};
@@ -233,6 +234,47 @@ impl SwapInstructionsResponse {
         instructions.extend(self.cleanup_instructions.iter().cloned());
         instructions.extend(self.other_instructions.iter().cloned());
         instructions
+    }
+
+    pub fn adjust_compute_unit_limit(&mut self, multiplier: f64) -> u32 {
+        let sanitized = if multiplier.is_finite() && multiplier > 0.0 {
+            multiplier
+        } else {
+            1.0
+        };
+        let base_limit = self.compute_unit_limit.max(1);
+        let mut scaled = (base_limit as f64) * sanitized;
+        if !scaled.is_finite() {
+            scaled = base_limit as f64;
+        }
+        if scaled < 1.0 {
+            scaled = 1.0;
+        }
+        if scaled > u32::MAX as f64 {
+            scaled = u32::MAX as f64;
+        }
+        let scaled_limit = scaled.round() as u32;
+        if scaled_limit == self.compute_unit_limit {
+            return self.compute_unit_limit;
+        }
+        self.compute_unit_limit = scaled_limit.max(1);
+
+        let mut replaced = false;
+        for ix in self.compute_budget_instructions.iter_mut() {
+            if parse_compute_budget_limit(ix).is_some() {
+                *ix = ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit);
+                replaced = true;
+            }
+        }
+
+        if !replaced {
+            self.compute_budget_instructions.insert(
+                0,
+                ComputeBudgetInstruction::set_compute_unit_limit(self.compute_unit_limit),
+            );
+        }
+
+        self.compute_unit_limit
     }
 
     #[allow(dead_code)]

@@ -35,9 +35,9 @@ global:
 
 engine:
   # 可选值：jupiter_self_hosted / jupiter / dflow / ultra / multi-legs / kamino / none
-  backend: "multi-legs"
+  # backend: "multi-legs"
   # backend: "kamino"
-  # backend: "jupiter_self_hosted"
+  backend: "jupiter_self_hosted"
   # backend: "dflow"
   # backend: "multi-legs"
   # backend: "dflow"
@@ -56,7 +56,7 @@ engine:
         inter_batch_delay_ms: 2000
 
   jupiter_self_hosted:
-    enable: false
+    enable: true
     api_proxy: "http://192.168.124.4:9999"
     args_included_dexes:
       # TesseraV
@@ -68,6 +68,9 @@ engine:
       # Aquifer
       - "AQU1FRd7papthgdrwPTTq5JacJh8YtwEXaBfKU3bTz45"
     quote_config:
+      slippage_bps: 2
+      # 交易中支持的最大账户数,也就是一次 quote 中支持的最大账户数
+      max_accounts: 28
       # 设置为 true 时，机器人将仅寻找两跳（A -> B -> A）交易。设置为 true 将缩短跳转报价时间，加快落地速度。设置为 false 将获得更多机会，但需要更多报价时间。
       only_direct_routes: false
       # 仅当 use_direct_route_only 为 false 时，此设置才会生效。
@@ -93,6 +96,7 @@ engine:
       dynamic_compute_unit_limit: true
       wrap_and_unwrap_sol: false
       cu_limit_multiplier: 0.92
+      use_shared_accounts: false
   jupiter:
     jupiter_buy:
       enable: true

@@ -44,6 +44,7 @@ pub struct QuoteRequest {
     pub exclude_dexes: Option<String>,
     pub as_legacy_transaction: Option<bool>,
     pub platform_fee_bps: Option<u16>,
+    pub max_accounts: Option<u16>,
 }
 
 impl QuoteRequest {
@@ -60,6 +61,7 @@ impl QuoteRequest {
             exclude_dexes: None,
             as_legacy_transaction: None,
             platform_fee_bps: None,
+            max_accounts: None,
         }
     }
 
@@ -95,6 +97,9 @@ impl QuoteRequest {
         }
         if let Some(value) = self.platform_fee_bps {
             params.push(("platformFeeBps".to_string(), value.to_string()));
+        }
+        if let Some(value) = self.max_accounts {
+            params.push(("maxAccounts".to_string(), value.to_string()));
         }
         params
     }

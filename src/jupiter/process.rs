@@ -1,11 +1,13 @@
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Instant;
 
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing::{info, warn};
 
 use super::error::JupiterError;
-use super::types::{BinaryInstall, ProcessHandle};
+use super::types::{BinaryInstall, CapturedOutput, ProcessHandle};
 use crate::config::JupiterConfig;
 
 pub async fn spawn_process(
@@ -20,7 +22,7 @@ pub async fn spawn_process(
     if show_output {
         command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
     } else {
-        command.stdout(Stdio::null()).stderr(Stdio::null());
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
     }
 
     if !config.environment.contains_key("RUST_LOG") {
@@ -35,10 +37,35 @@ pub async fn spawn_process(
         command.env(key, value);
     }
 
-    let child = command.spawn()?;
+    let mut child = command.spawn()?;
+    let mut captured_output = None;
+    let mut stdout_task = None;
+    let mut stderr_task = None;
 
-    let stdout_task = None;
-    let stderr_task = None;
+    if !show_output {
+        if let Some(stdout) = child.stdout.take() {
+            let output = captured_output
+                .get_or_insert_with(|| Arc::new(CapturedOutput::default()))
+                .clone();
+            stdout_task = Some(tokio::spawn(async move {
+                let mut lines = BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    output.push_stdout(line).await;
+                }
+            }));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            let output = captured_output
+                .get_or_insert_with(|| Arc::new(CapturedOutput::default()))
+                .clone();
+            stderr_task = Some(tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    output.push_stderr(line).await;
+                }
+            }));
+        }
+    }
 
     Ok(ProcessHandle {
         child,
@@ -46,6 +73,7 @@ pub async fn spawn_process(
         version: Some(install.version.clone()),
         stdout_task,
         stderr_task,
+        captured_output,
     })
 }
 

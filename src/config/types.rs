@@ -307,6 +307,8 @@ pub struct EngineConfig {
     #[serde(default)]
     pub enable_console_summary: bool,
     #[serde(default)]
+    pub console_summary_only: bool,
+    #[serde(default)]
     pub jupiter_self_hosted: JupiterSelfHostedEngineConfig,
     #[serde(default)]
     pub jupiter: JupiterEngineSet,
@@ -393,18 +395,12 @@ pub struct JupiterCoreConfig {
     pub port: u16,
     #[serde(default = "crate::config::default_metrics_port")]
     pub metrics_port: u16,
-    #[serde(default)]
-    pub use_local_market_cache: bool,
-    #[serde(default = "crate::config::default_auto_download_market_cache")]
-    pub auto_download_market_cache: bool,
     #[serde(default = "crate::config::default_market_cache")]
     pub market_cache: String,
-    #[serde(default = "crate::config::default_market_cache_download_url")]
-    pub market_cache_download_url: String,
-    #[serde(default)]
-    pub exclude_other_dex_program_ids: bool,
     #[serde(default = "crate::config::default_market_mode")]
     pub market_mode: MarketMode,
+    #[serde(default)]
+    pub bot: JupiterCoreBotConfig,
 }
 
 impl Default for JupiterCoreConfig {
@@ -415,12 +411,32 @@ impl Default for JupiterCoreConfig {
             host: crate::config::default_host(),
             port: crate::config::default_port(),
             metrics_port: crate::config::default_metrics_port(),
+            market_cache: crate::config::default_market_cache(),
+            market_mode: crate::config::default_market_mode(),
+            bot: JupiterCoreBotConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JupiterCoreBotConfig {
+    #[serde(default)]
+    pub use_local_market_cache: bool,
+    #[serde(default = "crate::config::default_auto_download_market_cache")]
+    pub auto_download_market_cache: bool,
+    #[serde(default = "crate::config::default_market_cache_download_url")]
+    pub market_cache_download_url: String,
+    #[serde(default)]
+    pub exclude_other_dex_program_ids: bool,
+}
+
+impl Default for JupiterCoreBotConfig {
+    fn default() -> Self {
+        Self {
             use_local_market_cache: false,
             auto_download_market_cache: crate::config::default_auto_download_market_cache(),
-            market_cache: crate::config::default_market_cache(),
             market_cache_download_url: crate::config::default_market_cache_download_url(),
             exclude_other_dex_program_ids: false,
-            market_mode: crate::config::default_market_mode(),
         }
     }
 }
@@ -525,7 +541,13 @@ impl JupiterConfig {
         &self,
         overrides: &LaunchOverrides,
         market_cache_override: Option<&str>,
+        market_mode_override: Option<MarketMode>,
     ) -> Vec<String> {
+        fn is_remote_cache_source(path: &str) -> bool {
+            let trimmed = path.trim();
+            trimmed.starts_with("http://") || trimmed.starts_with("https://")
+        }
+
         let mut args = Vec::new();
         let core = &self.core;
 
@@ -547,23 +569,22 @@ impl JupiterConfig {
         args.push("--metrics-port".to_string());
         args.push(core.metrics_port.to_string());
 
-        if core.use_local_market_cache {
-            args.push("--use-local-market-cache".to_string());
+        let mut market_mode = market_mode_override.unwrap_or(core.market_mode);
+        if core.bot.use_local_market_cache {
+            market_mode = MarketMode::File;
         }
-        if !core.auto_download_market_cache {
-            args.push("--no-auto-download-market-cache".to_string());
-        }
-
-        if let Some(path) = market_cache_override {
-            args.push("--market-cache".to_string());
-            args.push(path.to_string());
-        } else if !core.market_cache.trim().is_empty() {
-            args.push("--market-cache".to_string());
-            args.push(core.market_cache.trim().to_string());
+        if matches!(market_mode, MarketMode::File) {
+            if let Some(path) = market_cache_override {
+                args.push("--market-cache".to_string());
+                args.push(path.to_string());
+            } else if !core.market_cache.trim().is_empty() {
+                args.push("--market-cache".to_string());
+                args.push(core.market_cache.trim().to_string());
+            }
         }
 
         args.push("--market-mode".to_string());
-        args.push(core.market_mode.as_str().to_string());
+        args.push(market_mode.as_str().to_string());
 
         if self.launch.allow_circular_arbitrage {
             args.push("--allow-circular-arbitrage".to_string());
@@ -581,12 +602,12 @@ impl JupiterConfig {
         if let Some(yellowstone) = &self.launch.yellowstone {
             let endpoint = yellowstone.endpoint.trim();
             if !endpoint.is_empty() {
-                args.push("--yellowstone-endpoint".to_string());
+                args.push("--yellowstone-grpc-endpoint".to_string());
                 args.push(endpoint.to_string());
             }
             if let Some(token) = &yellowstone.x_token {
                 if !token.trim().is_empty() {
-                    args.push("--yellowstone-x-token".to_string());
+                    args.push("--yellowstone-grpc-x-token".to_string());
                     args.push(token.trim().to_string());
                 }
             }
@@ -603,7 +624,7 @@ impl JupiterConfig {
         }
 
         if !overrides.include_dex_program_ids.is_empty() {
-            args.push("--include-dex-program-ids".to_string());
+            args.push("--dex-program-ids".to_string());
             args.push(overrides.include_dex_program_ids.join(","));
         }
 
@@ -613,19 +634,6 @@ impl JupiterConfig {
         args.push(self.performance.webserver_thread_count.to_string());
         args.push("--update-thread-count".to_string());
         args.push(self.performance.update_thread_count.to_string());
-
-        if self.process.auto_restart_minutes > 0 {
-            args.push("--auto-restart-minutes".to_string());
-            args.push(self.process.auto_restart_minutes.to_string());
-        }
-        if self.process.max_restart_attempts > 0 {
-            args.push("--max-restart-attempts".to_string());
-            args.push(self.process.max_restart_attempts.to_string());
-        }
-        if self.process.graceful_shutdown_timeout_ms > 0 {
-            args.push("--graceful-shutdown-timeout-ms".to_string());
-            args.push(self.process.graceful_shutdown_timeout_ms.to_string());
-        }
 
         args
     }
@@ -833,6 +841,8 @@ pub struct JupiterQuoteConfig {
     pub restrict_intermediate_tokens: bool,
     #[serde(default)]
     pub cadence: QuoteCadenceConfig,
+    #[serde(default)]
+    pub max_accounts: Option<u16>,
 }
 
 impl Default for JupiterQuoteConfig {
@@ -842,6 +852,7 @@ impl Default for JupiterQuoteConfig {
             only_direct_routes: false,
             restrict_intermediate_tokens: super::default_true(),
             cadence: QuoteCadenceConfig::default(),
+            max_accounts: None,
         }
     }
 }
@@ -940,6 +951,8 @@ pub struct JupiterSwapConfig {
     pub wrap_and_unwrap_sol: bool,
     #[serde(default)]
     pub use_shared_accounts: Option<bool>,
+    #[serde(default = "default_cu_limit_multiplier")]
+    pub cu_limit_multiplier: f64,
 }
 
 impl Default for JupiterSwapConfig {
@@ -949,6 +962,7 @@ impl Default for JupiterSwapConfig {
             dynamic_compute_unit_limit: super::default_true(),
             wrap_and_unwrap_sol: false,
             use_shared_accounts: None,
+            cu_limit_multiplier: default_cu_limit_multiplier(),
         }
     }
 }

@@ -153,11 +153,19 @@ impl QuoteExecutor {
             QuoteBackend::Jupiter { client, defaults } => {
                 let mut request =
                     JupiterQuoteRequest::new(pair.input_pubkey, pair.output_pubkey, amount);
-                request.slippage_bps = Some(config.slippage_bps);
+                let slippage_bps = if defaults.slippage_bps > 0 {
+                    defaults.slippage_bps
+                } else {
+                    config.slippage_bps
+                };
+                request.slippage_bps = Some(slippage_bps);
                 if config.only_direct_routes || defaults.only_direct_routes {
                     request.only_direct_routes = Some(true);
                 }
                 request.restrict_intermediate_tokens = Some(defaults.restrict_intermediate_tokens);
+                if let Some(max_accounts) = defaults.max_accounts {
+                    request.max_accounts = Some(max_accounts);
+                }
                 if !config.dex_whitelist.is_empty() {
                     request.dexes = Some(config.dex_whitelist.join(","));
                 }

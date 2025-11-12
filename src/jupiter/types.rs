@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,6 +39,7 @@ pub struct ProcessHandle {
     pub version: Option<String>,
     pub stdout_task: Option<JoinHandle<()>>,
     pub stderr_task: Option<JoinHandle<()>>,
+    pub captured_output: Option<Arc<CapturedOutput>>,
 }
 
 impl fmt::Debug for ProcessHandle {
@@ -78,6 +80,49 @@ impl Drop for ProcessHandle {
                 );
             }
         }
+    }
+}
+
+const CAPTURED_LINES: usize = 50;
+
+#[derive(Default)]
+pub struct CapturedOutput {
+    stdout: Mutex<VecDeque<String>>,
+    stderr: Mutex<VecDeque<String>>,
+}
+
+pub struct OutputSnapshot {
+    pub stdout: Vec<String>,
+    pub stderr: Vec<String>,
+}
+
+impl CapturedOutput {
+    pub async fn push_stdout(&self, line: String) {
+        let mut guard = self.stdout.lock().await;
+        if guard.len() >= CAPTURED_LINES {
+            guard.pop_front();
+        }
+        guard.push_back(line);
+    }
+
+    pub async fn push_stderr(&self, line: String) {
+        let mut guard = self.stderr.lock().await;
+        if guard.len() >= CAPTURED_LINES {
+            guard.pop_front();
+        }
+        guard.push_back(line);
+    }
+
+    pub async fn snapshot(&self) -> OutputSnapshot {
+        let stdout = {
+            let guard = self.stdout.lock().await;
+            guard.iter().cloned().collect()
+        };
+        let stderr = {
+            let guard = self.stderr.lock().await;
+            guard.iter().cloned().collect()
+        };
+        OutputSnapshot { stdout, stderr }
     }
 }
 
