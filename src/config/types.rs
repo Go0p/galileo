@@ -566,8 +566,10 @@ impl JupiterConfig {
         args.push("--port".to_string());
         args.push(core.port.to_string());
 
-        args.push("--metrics-port".to_string());
-        args.push(core.metrics_port.to_string());
+        if core.metrics_port > 0 {
+            args.push("--metrics-port".to_string());
+            args.push(core.metrics_port.to_string());
+        }
 
         let mut market_mode = market_mode_override.unwrap_or(core.market_mode);
         if core.bot.use_local_market_cache {

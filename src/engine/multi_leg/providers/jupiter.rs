@@ -52,6 +52,9 @@ impl JupiterLegProvider {
         if self.quote_config.restrict_intermediate_tokens {
             request.restrict_intermediate_tokens = Some(true);
         }
+        if let Some(max_accounts) = self.quote_config.max_accounts {
+            request.max_accounts = Some(max_accounts);
+        }
         if !intent.dex_whitelist.is_empty() {
             request.dexes = Some(intent.dex_whitelist.join(","));
         }

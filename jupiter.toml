@@ -26,8 +26,8 @@ secondary_rpc_urls = []
 host = "127.0.0.1"
 # HTTP 服务端口，默认与 Jupiter 官方脚本一致。
 port = 18080
-# Prometheus 指标端点端口，对应 `/metrics`。
-metrics_port = 18081
+# Prometheus 指标端点端口，对应 `/metrics`。0 代表不启用，也就是不传入 --metrics-port 参数
+metrics_port = 0
 # 市场快照地址，可使用官方缓存或自建文件（建议以 `./bin/` 为前缀指向下载结果）。
 market_cache = "./bin/markets.json"
 # 市场模式，可选值：`remote`（固定快照）、`file`（本地文件）、`europa`（实时推送）。

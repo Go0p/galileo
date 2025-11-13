@@ -59,7 +59,7 @@ engine:
 
   jupiter_self_hosted:
     enable: true
-    api_proxy: "http://192.168.3.3:9999"
+    api_proxy: "http://192.168.124.4:9999"
     args_included_dexes:
       # TesseraV
       - "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH"
@@ -108,6 +108,8 @@ engine:
       api_proxy: "http://192.168.3.3:9999"
       quote_config:
         slippage_bps: 0
+        # 交易中支持的最大账户数,也就是一次 quote 中支持的最大账户数
+        max_accounts: 28
         only_direct_routes: true
         restrict_intermediate_tokens: false
         # cadence 控制 trade size 的调度节奏：
@@ -124,6 +126,7 @@ engine:
         skip_user_accounts_rpc_calls: false
         dynamic_compute_unit_limit: true
         wrap_and_unwrap_sol: false
+        cu_limit_multiplier: 0.92
     jupiter_sell:
       enable: true
       leg: "sell"
@@ -132,6 +135,8 @@ engine:
       api_proxy: "http://192.168.3.3:9999"
       quote_config:
         slippage_bps: 0
+        # 交易中支持的最大账户数,也就是一次 quote 中支持的最大账户数
+        max_accounts: 28
         only_direct_routes: false
         restrict_intermediate_tokens: false
         cadence:
@@ -144,6 +149,7 @@ engine:
         skip_user_accounts_rpc_calls: false
         dynamic_compute_unit_limit: true
         wrap_and_unwrap_sol: false
+        cu_limit_multiplier: 0.92
   ultra:
     # 腿方向：可选 buy / sell，用于套利腿角色匹配
     leg: "sell"

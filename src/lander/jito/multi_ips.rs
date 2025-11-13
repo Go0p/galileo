@@ -171,7 +171,7 @@ fn adjust_tip(base_tip: u64, offset: i64) -> u64 {
     if adjusted <= 0 {
         MIN_JITO_TIP_LAMPORTS
     } else {
-        adjusted as u64
+        (adjusted as u64).max(MIN_JITO_TIP_LAMPORTS)
     }
 }
 
@@ -291,6 +291,11 @@ mod tests {
             adjust_tip(5000, -1),
             4999,
             "negative offset decreases value when above minimum"
+        );
+        assert_eq!(
+            adjust_tip(MIN_JITO_TIP_LAMPORTS, -1),
+            MIN_JITO_TIP_LAMPORTS,
+            "result below minimum clamps back to minimum"
         );
         assert_eq!(
             adjust_tip(MIN_JITO_TIP_LAMPORTS, -10_000),

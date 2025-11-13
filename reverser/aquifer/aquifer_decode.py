@@ -31,6 +31,7 @@ AQUIFER_PROGRAM_ID = "AQU1FRd7papthgdrwPTTq5JacJh8YtwEXaBfKU3bTz45"
 FAST_PROGRAM_ID = "fastC7gqs2WUXgcyNna2BZAe9mte4zcTGprv3mv18N3"
 SYSVAR_INSTRUCTIONS = "Sysvar1nstructions1111111111111111111111111"
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+WSOL_MINT = "So11111111111111111111111111111111111111112"
 
 PLACEHOLDERS = {
     "payer": "<user-signer>",
@@ -134,6 +135,12 @@ def list_program_accounts(
         ],
     )
     return typing.cast(typing.List[dict[str, typing.Any]], result)
+
+
+def derive_dex_from_instance(raw_instance: bytes) -> str:
+    if len(raw_instance) < 32:
+        raise RpcError("instance 账户长度不足 32 字节，无法推导 dex")
+    return b58encode(raw_instance[0:32])
 
 
 def chunk32(data: bytes, count: int) -> typing.List[str]:
@@ -272,21 +279,16 @@ def resolve_fast_states(
     return typing.cast(dict[str, dict[str, typing.Any]], targets)
 
 
-def resolve_vault_infos(
+def list_instance_vault_infos(
     rpc_url: str,
     instance: str,
-    base_mint: str,
-    quote_mint: str,
 ) -> dict[str, dict[str, typing.Any]]:
     accounts = list_program_accounts(
         rpc_url,
         AQUIFER_PROGRAM_ID,
         data_size=1056,
     )
-    targets: dict[str, typing.Optional[dict[str, typing.Any]]] = {
-        "base": None,
-        "quote": None,
-    }
+    vaults: dict[str, dict[str, typing.Any]] = {}
     for entry in accounts:
         data_b64 = entry.get("account", {}).get("data", [])
         if not data_b64:
@@ -295,22 +297,85 @@ def resolve_vault_infos(
         parsed = parse_vault_info(raw)
         if parsed["instance"] != instance:
             continue
-        if parsed["mint"] == base_mint and targets["base"] is None:
-            targets["base"] = {
-                **parsed,
-                "pubkey": entry["pubkey"],
-            }
-        elif parsed["mint"] == quote_mint and targets["quote"] is None:
-            targets["quote"] = {
-                **parsed,
-                "pubkey": entry["pubkey"],
-            }
-        if targets["base"] and targets["quote"]:
-            break
-    missing = [key for key, value in targets.items() if value is None]
-    if missing:
-        raise RpcError(f"未找到 vault info: {', '.join(missing)}")
-    return typing.cast(dict[str, dict[str, typing.Any]], targets)
+        vaults[parsed["mint"]] = {
+            **parsed,
+            "pubkey": entry["pubkey"],
+        }
+    if not vaults:
+        raise RpcError(f"实例 {instance} 未找到任何 vault info")
+    return vaults
+
+
+def select_mints_for_instance(
+    instance: str,
+    vaults: dict[str, dict[str, typing.Any]],
+    base_mint: str | None,
+    quote_mint: str | None,
+) -> tuple[str, str]:
+    available = set(vaults.keys())
+
+    def ensure_contains(label: str, mint: str) -> None:
+        if mint not in available:
+            raise RpcError(
+                f"实例 {instance} 未包含 mint={mint} 的 vault info ({label})"
+            )
+
+    if base_mint and quote_mint:
+        if base_mint == quote_mint:
+            raise RpcError("base/quote mint 不能相同")
+        ensure_contains("base", base_mint)
+        ensure_contains("quote", quote_mint)
+        return base_mint, quote_mint
+
+    if base_mint:
+        ensure_contains("base", base_mint)
+        remaining = [mint for mint in available if mint != base_mint]
+        if len(remaining) == 1 and not quote_mint:
+            return base_mint, remaining[0]
+        raise RpcError("仅指定 base mint 时无法确定 quote mint，请补充 --quote-mint")
+
+    if quote_mint:
+        ensure_contains("quote", quote_mint)
+        remaining = [mint for mint in available if mint != quote_mint]
+        if len(remaining) == 1:
+            return remaining[0], quote_mint
+        raise RpcError("仅指定 quote mint 时无法确定 base mint，请补充 --base-mint")
+
+    if len(available) == 2:
+        mint_list = list(available)
+        if WSOL_MINT in available:
+            base_selected = WSOL_MINT
+            quote_selected = mint_list[0] if mint_list[0] != WSOL_MINT else mint_list[1]
+            return base_selected, quote_selected
+        mint_list.sort()
+        return mint_list[0], mint_list[1]
+
+    raise RpcError(
+        "实例存在 >=3 个 vault，无法自动挑选 base/quote，请显式传入 --base-mint/--quote-mint"
+    )
+
+
+def validate_state_relationships(
+    *,
+    base_mint: str,
+    quote_mint: str,
+    fast_states: dict[str, dict[str, typing.Any]],
+    vault_infos: dict[str, dict[str, typing.Any]],
+) -> None:
+    issues: list[str] = []
+    for label, mint in (("base", base_mint), ("quote", quote_mint)):
+        fast = fast_states[label]
+        vault = vault_infos[label]
+        if fast["vault_info"] != vault["pubkey"]:
+            issues.append(
+                f"{label} mint={mint} fast_state.vault_info 与 vault pubkey 不匹配"
+            )
+        if vault["fast_pointer"] != fast["pubkey"]:
+            issues.append(
+                f"{label} mint={mint} vault.fast_pointer 与 fast state pubkey 不匹配"
+            )
+    if issues:
+        raise RpcError("; ".join(issues))
 
 
 def summarise_dex(data: bytes) -> dict[str, typing.Any]:
@@ -346,29 +411,57 @@ def summarise_user(data: bytes) -> dict[str, typing.Any]:
 
 def build_output(
     rpc_url: str,
-    dex: str,
     instance: str,
+    *,
+    dex: str | None,
     user: str | None,
     signer: str | None,
-    base_mint: str,
-    quote_mint: str,
+    base_mint: str | None,
+    quote_mint: str | None,
     user_wrap_sol: str | None,
     user_quote_token: str | None,
 ) -> dict[str, typing.Any]:
-    dex_bytes = fetch_account_bytes(rpc_url, dex)
     instance_bytes = fetch_account_bytes(rpc_url, instance)
+    derived_dex = derive_dex_from_instance(instance_bytes)
+    dex_pubkey = dex or derived_dex
+    if dex and dex != derived_dex:
+        raise RpcError(
+            "传入的 dex 与 instance 前 32 字节推导的不一致，请确认账户匹配"
+        )
+    dex_bytes = fetch_account_bytes(rpc_url, dex_pubkey)
     user_bytes = fetch_account_bytes(rpc_url, user) if user else None
-    fast_states = resolve_fast_states(rpc_url, dex, base_mint, quote_mint)
-    vault_infos = resolve_vault_infos(rpc_url, instance, base_mint, quote_mint)
+    vaults = list_instance_vault_infos(rpc_url, instance)
+    selected_base, selected_quote = select_mints_for_instance(
+        instance,
+        vaults,
+        base_mint,
+        quote_mint,
+    )
+    fast_states = resolve_fast_states(
+        rpc_url,
+        dex_pubkey,
+        selected_base,
+        selected_quote,
+    )
+    vault_infos = {
+        "base": vaults[selected_base],
+        "quote": vaults[selected_quote],
+    }
+    validate_state_relationships(
+        base_mint=selected_base,
+        quote_mint=selected_quote,
+        fast_states=fast_states,
+        vault_infos=vault_infos,
+    )
     base_vault_token, base_token_info = fetch_token_account(
         rpc_url,
         vault_infos["base"]["pubkey"],
-        base_mint,
+        selected_base,
     )
     quote_vault_token, quote_token_info = fetch_token_account(
         rpc_url,
         vault_infos["quote"]["pubkey"],
-        quote_mint,
+        selected_quote,
     )
     vault_infos["base"]["token_account"] = base_vault_token
     vault_infos["base"]["token_info"] = base_token_info
@@ -377,10 +470,10 @@ def build_output(
 
     core_accounts = [
         ("payer", signer or "<user-signer>"),
-        ("dex_global", dex),
+        ("dex_global", dex_pubkey),
         ("dex_instance", instance),
         ("user_state", user or "<user-account>"),
-        ("swap_mint", base_mint),
+        ("swap_mint", selected_base),
     ]
 
     summary = {
@@ -388,10 +481,12 @@ def build_output(
         "swap_accounts_order": core_accounts,
         "dex_summary": summarise_dex(dex_bytes),
         "instance_summary": summarise_instance(instance_bytes),
-        "base_mint": base_mint,
-        "quote_mint": quote_mint,
+        "dex_pubkey": dex_pubkey,
+        "base_mint": selected_base,
+        "quote_mint": selected_quote,
         "coin_states": fast_states,
         "vault_infos": vault_infos,
+        "available_vaults": vaults,
     }
     if user_bytes is not None:
         summary["user_summary"] = summarise_user(user_bytes)
@@ -401,11 +496,11 @@ def build_output(
         ("payer", signer or PLACEHOLDERS["payer"]),
         ("token_program_base", TOKEN_PROGRAM_ID),
         ("user_wrap_sol", user_wrap_sol or PLACEHOLDERS["user_wrap_sol"]),
-        ("base_mint", base_mint),
+        ("base_mint", selected_base),
         ("token_program_quote", TOKEN_PROGRAM_ID),
         ("user_quote_token", user_quote_token or PLACEHOLDERS["user_quote_token"]),
-        ("quote_mint", quote_mint),
-        ("dex_global", dex),
+        ("quote_mint", selected_quote),
+        ("dex_global", dex_pubkey),
         ("dex_instance", instance),
         ("coin_state_base", fast_states["base"]["pubkey"]),
         ("coin_state_quote", fast_states["quote"]["pubkey"]),
@@ -421,8 +516,21 @@ def build_output(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Aquifer swap 账户解析")
-    parser.add_argument("dex", help="Dex 全局状态账户地址")
-    parser.add_argument("instance", help="Dex 实例账户地址")
+    parser.add_argument(
+        "dex",
+        nargs="?",
+        help="Dex 全局状态账户地址（可选，默认由 instance 推导）",
+    )
+    parser.add_argument(
+        "instance",
+        nargs="?",
+        help="Dex 实例账户地址（池子），可被 --pool 覆盖",
+    )
+    parser.add_argument(
+        "--pool",
+        dest="pool",
+        help="池子(instance) 账户，优先级高于位置参数",
+    )
     parser.add_argument(
         "--user",
         help="用户状态账户地址（可选，如未提供则输出占位符）",
@@ -440,6 +548,11 @@ def main() -> None:
     parser.add_argument("--user-wrap-sol", help="用户 base token 账户（可选，占位）")
     parser.add_argument("--user-quote-token", help="用户 quote token 账户（可选，占位）")
     parser.add_argument(
+        "--dex-account",
+        dest="dex_override",
+        help="显式指定 dex 全局账户（覆盖位置参数/自动推导）",
+    )
+    parser.add_argument(
         "--rpc",
         default=RPC_DEFAULT,
         help=f"Solana RPC 地址（默认 {RPC_DEFAULT}）",
@@ -447,16 +560,21 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
+        positional_instance = args.instance
+        instance = args.pool or positional_instance
+        if instance is None:
+            raise RpcError("必须通过第二个位置参数或 --pool 指定池子 instance")
+        positional_dex = args.dex
+        dex = args.dex_override or positional_dex
+        if args.pool and positional_instance and args.pool != positional_instance:
+            raise RpcError("--pool 与位置参数 instance 不一致，请只保留一种")
+        if args.dex_override and positional_dex and args.dex_override != positional_dex:
+            raise RpcError("--dex-account 与位置参数 dex 不一致，请只保留一种")
         base_mint = args.base_mint or args.mint
-        if not base_mint:
-            raise RpcError("请通过 --base-mint 指定 base 侧 mint")
-        if not args.quote_mint:
-            raise RpcError("请通过 --quote-mint 指定 quote 侧 mint")
-
         result = build_output(
             rpc_url=args.rpc,
-            dex=args.dex,
-            instance=args.instance,
+            instance=instance,
+            dex=dex,
             user=args.user,
             signer=args.signer,
             base_mint=base_mint,
