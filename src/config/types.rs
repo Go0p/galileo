@@ -1236,7 +1236,7 @@ pub struct LoggingConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct IntermediumConfig {
     #[serde(default)]
-    pub load_mints_from_files: Vec<String>,
+    pub load_mints_from_files: Vec<MintFileSource>,
     #[serde(default)]
     pub load_mints_from_url: String,
     #[serde(default = "super::default_max_tokens_limit")]
@@ -1245,6 +1245,52 @@ pub struct IntermediumConfig {
     pub mints: Vec<String>,
     #[serde(default)]
     pub disable_mints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum MintFileSource {
+    /// 兼容旧格式：直接写一个文本文件路径
+    TextPath(String),
+    /// 结构化配置，支持 json/text 类型
+    Detailed(MintFileSourceKind),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MintFileSourceKind {
+    Text(TextMintSource),
+    Json(JsonMintSource),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TextMintSource {
+    pub path: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonMintSource {
+    pub path: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub selector: Option<JsonMintSelector>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonMintSelector {
+    #[serde(rename = "type")]
+    pub selector_type: JsonSelectorType,
+    pub expr: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JsonSelectorType {
+    JsonPath,
+    JsonPointer,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1290,6 +1336,8 @@ pub struct BotBinaryConfig {
     #[serde(default)]
     #[serde(alias = "disable_local_binary")]
     pub disable_local_binary: bool,
+    #[serde(default)]
+    pub enable_running: bool,
     #[serde(default = "crate::config::default_true")]
     #[serde(alias = "show_jupiter_logs")]
     pub show_logs: bool,
@@ -1299,6 +1347,7 @@ impl Default for BotBinaryConfig {
     fn default() -> Self {
         Self {
             disable_local_binary: false,
+            enable_running: false,
             show_logs: crate::config::default_true(),
         }
     }

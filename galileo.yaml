@@ -43,6 +43,8 @@ engine:
   # backend: "dflow"
   # 设置为 true 时启用控制台摘要面板，每轮 trade size 批次完成后打印关键统计。
   enable_console_summary: true
+  # 设置为 true 时，只打印控制台摘要面板，不打印其他日志
+  console_summary_only: true
   time_out:
     # 超时时间：报价 / 指令 / 落地（单位：毫秒）
     quote_ms: 5000
@@ -57,7 +59,7 @@ engine:
 
   jupiter_self_hosted:
     enable: true
-    api_proxy: "http://192.168.124.4:9999"
+    api_proxy: "http://192.168.3.3:9999"
     args_included_dexes:
       # TesseraV
       - "TessVdML9pBGgG9yGks7o4HewRaXVAMuoVj4x83GLQH"
@@ -357,7 +359,15 @@ engine:
 # 为了获得更多潜在机会，您可以将其设置为 false，这样可以返回类似 A -> B -> C -> A 形式的路线。
 # 将其设置为 false 的缺点是会减慢获取报价的时间，最终导致交易发送速度变慢。
 intermedium:
-  load_mints_from_files: []
+  load_mints_from_files:
+    # - kind: json
+    #   name: "solscan_top_tokens"
+    #   path: data/top_tokens.json
+    #   selector:
+    #     type: json_path
+    #     expr: "$.data.data[*].token_address"
+    # - kind: text
+    #   path: data/intermedium_mints.txt
   load_mints_from_url: ""
   max_tokens_limit: 20
   mints:
@@ -409,6 +419,8 @@ bot:
   binary:
     # disable_local_binary: true 可以强制仅使用远端 Jupiter API
     disable_local_binary: false
+    # enable_running: true 可在 multi-legs 等模式下，由 bot 负责托管自建 Jupiter
+    enable_running: false
     # 设置为 true 时保留 Jupiter 二进制的 stdout/stderr
     show_logs: false
   auto_refresh_wallet_minute: 30

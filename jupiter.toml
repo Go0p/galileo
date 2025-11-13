@@ -40,7 +40,7 @@ market_mode = "europa"
 # 当设置为 true 时，会优先从本地文件加载市场缓存；若文件不存在则按需下载。
 use_local_market_cache = true
 # 是否在启动时自动下载最新市场缓存；设置为 false 可复用已有文件。
-auto_download_market_cache = true
+auto_download_market_cache = false
 # 当启用本地缓存且允许自动下载时，每次启动都会从该 URL 重新下载最新缓存。
 market_cache_download_url = "https://cache.jup.ag/markets?v=4"
 # 仅在 `engine.jupiter_self_hosted.args_included_dexes` 指定 DEX 时生效，用于过滤下载的市场文件。

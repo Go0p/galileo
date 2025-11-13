@@ -885,17 +885,19 @@ pub fn lander_attempt(
 ) {
     let ip_repr = local_ip.map(|value| value.to_string());
     let ip_display = ip_repr.as_deref().unwrap_or("unknown");
-    debug!(
-        target: "monitoring::lander",
-        strategy,
-        dispatch,
-        lander = name,
-        variant,
-        attempt,
-        local_ip = ?ip_repr,
-        "lander_attempt node={}",
-        ip_display
-    );
+    if !summary_only_enabled() {
+        debug!(
+            target: "monitoring::lander",
+            strategy,
+            dispatch,
+            lander = name,
+            variant,
+            attempt,
+            local_ip = ?ip_repr,
+            "lander_attempt node={}",
+            ip_display
+        );
+    }
 
     if prometheus_enabled() {
         let ip_value = ip_label(local_ip);
@@ -915,21 +917,23 @@ pub fn lander_success(strategy: &str, dispatch: &str, attempt: usize, receipt: &
     let ip_repr = receipt.local_ip.map(|value| value.to_string());
     let ip_display = ip_repr.as_deref().unwrap_or("unknown");
     let signature = receipt.signature.as_deref().unwrap_or_default();
-    debug!(
-        target: "monitoring::lander",
-        strategy,
-        dispatch,
-        lander = receipt.lander,
-        variant = receipt.variant_id,
-        attempt,
-        endpoint = %receipt.endpoint,
-        slot = receipt.slot,
-        blockhash = %receipt.blockhash,
-        signature = signature,
-        local_ip = ?ip_repr,
-        "lander_success node={}",
-        ip_display
-    );
+    if !summary_only_enabled() {
+        debug!(
+            target: "monitoring::lander",
+            strategy,
+            dispatch,
+            lander = receipt.lander,
+            variant = receipt.variant_id,
+            attempt,
+            endpoint = %receipt.endpoint,
+            slot = receipt.slot,
+            blockhash = %receipt.blockhash,
+            signature = signature,
+            local_ip = ?ip_repr,
+            "lander_success node={}",
+            ip_display
+        );
+    }
 
     if prometheus_enabled() {
         let ip_value = ip_label(receipt.local_ip);
@@ -966,6 +970,9 @@ pub fn lander_failure(
     compute_unit_price: Option<(&str, u64)>,
     err: &LanderError,
 ) {
+    if summary_only_enabled() {
+        return;
+    }
     let ip_repr = local_ip.map(|value| value.to_string());
     let ip_display = ip_repr.as_deref().unwrap_or("unknown");
     match (tip, compute_unit_price) {

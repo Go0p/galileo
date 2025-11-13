@@ -1,3 +1,5 @@
+pub mod loader;
+
 use std::collections::HashSet;
 use std::str::FromStr;
 

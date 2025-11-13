@@ -387,53 +387,61 @@ impl JitoLander {
             let response = match response_result {
                 Ok(resp) => resp,
                 Err(err) => {
-                    warn!(
-                        target: STRATEGY_METRIC_LABEL,
-                        endpoint = %endpoint_url,
-                        strategy = strategy.as_str(),
-                        label = %label,
-                        error = %err,
-                        "bundle submission network error"
-                    );
+                    if !crate::monitoring::events::summary_only_enabled() {
+                        warn!(
+                            target: STRATEGY_METRIC_LABEL,
+                            endpoint = %endpoint_url,
+                            strategy = strategy.as_str(),
+                            label = %label,
+                            error = %err,
+                            "bundle submission network error"
+                        );
+                    }
                     continue;
                 }
             };
 
             if !response.status().is_success() {
-                warn!(
-                    target: STRATEGY_METRIC_LABEL,
-                    endpoint = %endpoint_url,
-                    strategy = strategy.as_str(),
-                    status = %response.status(),
-                    label = %label,
-                    "bundle submission returned non-success status"
-                );
+                if !crate::monitoring::events::summary_only_enabled() {
+                    warn!(
+                        target: STRATEGY_METRIC_LABEL,
+                        endpoint = %endpoint_url,
+                        strategy = strategy.as_str(),
+                        status = %response.status(),
+                        label = %label,
+                        "bundle submission returned non-success status"
+                    );
+                }
                 continue;
             }
 
             let value: Value = match response.json().await {
                 Ok(val) => val,
                 Err(err) => {
-                    warn!(
-                        target: STRATEGY_METRIC_LABEL,
-                        endpoint = %endpoint_url,
-                        strategy = strategy.as_str(),
-                        error = %err,
-                        label = %label,
-                        "bundle submission decode error"
-                    );
+                    if !crate::monitoring::events::summary_only_enabled() {
+                        warn!(
+                            target: STRATEGY_METRIC_LABEL,
+                            endpoint = %endpoint_url,
+                            strategy = strategy.as_str(),
+                            error = %err,
+                            label = %label,
+                            "bundle submission decode error"
+                        );
+                    }
                     continue;
                 }
             };
             if let Some(error) = value.get("error") {
-                warn!(
+                if !crate::monitoring::events::summary_only_enabled() {
+                    warn!(
                         target: STRATEGY_METRIC_LABEL,
                         endpoint = %endpoint_url,
-                strategy = strategy.as_str(),
+                        strategy = strategy.as_str(),
                         error = %error,
                         label = %label,
                         "bundle submission returned error"
                     );
+                }
                 continue;
             }
 

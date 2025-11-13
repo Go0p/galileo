@@ -8,6 +8,7 @@ use thiserror::Error;
 use super::strategy_loader::load_strategy_configs;
 use super::wallet::{parse_keypair_string, process_wallet_keys};
 use super::{AppConfig, GalileoConfig, JupiterConfig, LanderConfig};
+use crate::intermedium::loader::{MintSourceError, hydrate_mints_from_sources};
 use solana_sdk::signer::Signer;
 use tracing::info;
 
@@ -40,6 +41,17 @@ pub fn load_config(path: Option<PathBuf>) -> Result<AppConfig, ConfigError> {
 
     // 加载策略配置（从外部文件或使用主配置中的值）
     load_strategy_configs(&mut galileo, galileo_dir.as_deref())?;
+
+    if let Err(err) = hydrate_mints_from_sources(&mut galileo.intermedium, galileo_dir.as_deref()) {
+        return Err(match err {
+            MintSourceError::Io { path, source } => ConfigError::Io { path, source },
+            MintSourceError::Json { path, source } => ConfigError::Parse {
+                path,
+                message: source.to_string(),
+            },
+            MintSourceError::Invalid { path, message } => ConfigError::Parse { path, message },
+        });
+    }
 
     // 处理 wallet_keys：解密并填充 private_key
     let wallet_result = process_wallet_keys(&mut galileo, galileo_path.as_deref())?;

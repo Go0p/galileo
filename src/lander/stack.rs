@@ -278,98 +278,100 @@ impl LanderStack {
                             &err,
                         );
                         let sig_display = signature.as_deref().unwrap_or("<none>");
-                        match (telemetry.tip, telemetry.compute_unit_price) {
-                            (Some((tip_strategy, tips)), Some((price_strategy, cu_price))) => {
-                                warn!(
-                                    target: "lander::stack",
-                                    lander = lander_name,
-                                    tip_strategy,
-                                    tips,
-                                    compute_unit_price_strategy = price_strategy,
-                                    cu_price,
-                                    variant = variant_id,
-                                    attempt,
-                                    tx_signature = sig_display,
-                                    "{}",
-                                    format_args!(
-                                        "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={} tip_strategy={} tips={} compute_unit_price_strategy={} cu_price={}",
-                                        strategy_name,
-                                        dispatch_label,
-                                        lander_name,
-                                        variant_id,
-                                        attempt,
-                                        sig_display,
+                        if !events::summary_only_enabled() {
+                            match (telemetry.tip, telemetry.compute_unit_price) {
+                                (Some((tip_strategy, tips)), Some((price_strategy, cu_price))) => {
+                                    warn!(
+                                        target: "lander::stack",
+                                        lander = lander_name,
                                         tip_strategy,
                                         tips,
-                                        price_strategy,
-                                        cu_price
-                                    )
-                                );
-                            }
-                            (Some((tip_strategy, tips)), None) => {
-                                warn!(
-                                    target: "lander::stack",
-                                    lander = lander_name,
-                                    tip_strategy,
-                                    tips,
-                                    variant = variant_id,
-                                    attempt,
-                                    tx_signature = sig_display,
-                                    "{}",
-                                    format_args!(
-                                        "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={} tip_strategy={} tips={}",
-                                        strategy_name,
-                                        dispatch_label,
-                                        lander_name,
-                                        variant_id,
+                                        compute_unit_price_strategy = price_strategy,
+                                        cu_price,
+                                        variant = variant_id,
                                         attempt,
-                                        sig_display,
+                                        tx_signature = sig_display,
+                                        "{}",
+                                        format_args!(
+                                            "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={} tip_strategy={} tips={} compute_unit_price_strategy={} cu_price={}",
+                                            strategy_name,
+                                            dispatch_label,
+                                            lander_name,
+                                            variant_id,
+                                            attempt,
+                                            sig_display,
+                                            tip_strategy,
+                                            tips,
+                                            price_strategy,
+                                            cu_price
+                                        )
+                                    );
+                                }
+                                (Some((tip_strategy, tips)), None) => {
+                                    warn!(
+                                        target: "lander::stack",
+                                        lander = lander_name,
                                         tip_strategy,
-                                        tips
-                                    )
-                                );
-                            }
-                            (None, Some((price_strategy, cu_price))) => {
-                                warn!(
-                                    target: "lander::stack",
-                                    lander = lander_name,
-                                    compute_unit_price_strategy = price_strategy,
-                                    cu_price,
-                                    variant = variant_id,
-                                    attempt,
-                                    tx_signature = sig_display,
-                                    "{}",
-                                    format_args!(
-                                        "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={} compute_unit_price_strategy={} cu_price={}",
-                                        strategy_name,
-                                        dispatch_label,
-                                        lander_name,
-                                        variant_id,
+                                        tips,
+                                        variant = variant_id,
                                         attempt,
-                                        sig_display,
-                                        price_strategy,
-                                        cu_price
-                                    )
-                                );
-                            }
-                            (None, None) => {
-                                warn!(
-                                    target: "lander::stack",
-                                    lander = lander_name,
-                                    variant = variant_id,
-                                    attempt,
-                                    tx_signature = sig_display,
-                                    "{}",
-                                    format_args!(
-                                        "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={}",
-                                        strategy_name,
-                                        dispatch_label,
-                                        lander_name,
-                                        variant_id,
+                                        tx_signature = sig_display,
+                                        "{}",
+                                        format_args!(
+                                            "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={} tip_strategy={} tips={}",
+                                            strategy_name,
+                                            dispatch_label,
+                                            lander_name,
+                                            variant_id,
+                                            attempt,
+                                            sig_display,
+                                            tip_strategy,
+                                            tips
+                                        )
+                                    );
+                                }
+                                (None, Some((price_strategy, cu_price))) => {
+                                    warn!(
+                                        target: "lander::stack",
+                                        lander = lander_name,
+                                        compute_unit_price_strategy = price_strategy,
+                                        cu_price,
+                                        variant = variant_id,
                                         attempt,
-                                        sig_display
-                                    )
-                                );
+                                        tx_signature = sig_display,
+                                        "{}",
+                                        format_args!(
+                                            "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={} compute_unit_price_strategy={} cu_price={}",
+                                            strategy_name,
+                                            dispatch_label,
+                                            lander_name,
+                                            variant_id,
+                                            attempt,
+                                            sig_display,
+                                            price_strategy,
+                                            cu_price
+                                        )
+                                    );
+                                }
+                                (None, None) => {
+                                    warn!(
+                                        target: "lander::stack",
+                                        lander = lander_name,
+                                        variant = variant_id,
+                                        attempt,
+                                        tx_signature = sig_display,
+                                        "{}",
+                                        format_args!(
+                                            "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={}",
+                                            strategy_name,
+                                            dispatch_label,
+                                            lander_name,
+                                            variant_id,
+                                            attempt,
+                                            sig_display
+                                        )
+                                    );
+                                }
                             }
                         }
                         last_err = Some(err);
@@ -498,9 +500,108 @@ impl LanderStack {
                             telemetry.compute_unit_price,
                             &err,
                         );
-                        match endpoint {
-                            Some(endpoint_name) => {
-                                match (telemetry.tip, telemetry.compute_unit_price) {
+                        if !events::summary_only_enabled() {
+                            match endpoint {
+                                Some(endpoint_name) => {
+                                    match (telemetry.tip, telemetry.compute_unit_price) {
+                                        (
+                                            Some((tip_strategy, tips)),
+                                            Some((price_strategy, cu_price)),
+                                        ) => {
+                                            warn!(
+                                                target: "lander::stack",
+                                                lander = lander_name,
+                                                endpoint = endpoint_name,
+                                                tip_strategy,
+                                                tips,
+                                                compute_unit_price_strategy = price_strategy,
+                                                cu_price,
+                                                tx_signature = signature.as_deref().unwrap_or(""),
+                                                "{}",
+                                                format_args!(
+                                                    "落地器失败: 策略={} 调度={} 落地器={} Endpoint={} 变体={} 尝试={} 签名={} tip_strategy={} tips={} compute_unit_price_strategy={} cu_price={}",
+                                                    strategy_name,
+                                                    dispatch_label,
+                                                    lander_name,
+                                                    endpoint_name,
+                                                    variant_id,
+                                                    attempt,
+                                                    signature.as_deref().unwrap_or("<none>"),
+                                                    tip_strategy,
+                                                    tips,
+                                                    price_strategy,
+                                                    cu_price
+                                                )
+                                            );
+                                        }
+                                        (Some((tip_strategy, tips)), None) => {
+                                            warn!(
+                                                target: "lander::stack",
+                                                lander = lander_name,
+                                                endpoint = endpoint_name,
+                                                tip_strategy,
+                                                tips,
+                                                tx_signature = signature.as_deref().unwrap_or(""),
+                                                "{}",
+                                                format_args!(
+                                                    "落地器失败: 策略={} 调度={} 落地器={} Endpoint={} 变体={} 尝试={} 签名={} tip_strategy={} tips={}",
+                                                    strategy_name,
+                                                    dispatch_label,
+                                                    lander_name,
+                                                    endpoint_name,
+                                                    variant_id,
+                                                    attempt,
+                                                    signature.as_deref().unwrap_or("<none>"),
+                                                    tip_strategy,
+                                                    tips
+                                                )
+                                            );
+                                        }
+                                        (None, Some((price_strategy, cu_price))) => {
+                                            warn!(
+                                                target: "lander::stack",
+                                                lander = lander_name,
+                                                endpoint = endpoint_name,
+                                                compute_unit_price_strategy = price_strategy,
+                                                cu_price,
+                                                tx_signature = signature.as_deref().unwrap_or(""),
+                                                "{}",
+                                                format_args!(
+                                                    "落地器失败: 策略={} 调度={} 落地器={} Endpoint={} 变体={} 尝试={} 签名={} compute_unit_price_strategy={} cu_price={}",
+                                                    strategy_name,
+                                                    dispatch_label,
+                                                    lander_name,
+                                                    endpoint_name,
+                                                    variant_id,
+                                                    attempt,
+                                                    signature.as_deref().unwrap_or("<none>"),
+                                                    price_strategy,
+                                                    cu_price
+                                                )
+                                            );
+                                        }
+                                        (None, None) => {
+                                            warn!(
+                                                target: "lander::stack",
+                                                lander = lander_name,
+                                                endpoint = endpoint_name,
+                                                tx_signature = signature.as_deref().unwrap_or(""),
+                                                "{}",
+                                                format_args!(
+                                                    "落地器失败: 策略={} 调度={} 落地器={} Endpoint={} 变体={} 尝试={} 签名={}",
+                                                    strategy_name,
+                                                    dispatch_label,
+                                                    lander_name,
+                                                    endpoint_name,
+                                                    variant_id,
+                                                    attempt,
+                                                    signature.as_deref().unwrap_or("<none>")
+                                                )
+                                            );
+                                        }
+                                    }
+                                }
+                                None => match (telemetry.tip, telemetry.compute_unit_price) {
                                     (
                                         Some((tip_strategy, tips)),
                                         Some((price_strategy, cu_price)),
@@ -508,7 +609,6 @@ impl LanderStack {
                                         warn!(
                                             target: "lander::stack",
                                             lander = lander_name,
-                                            endpoint = endpoint_name,
                                             tip_strategy,
                                             tips,
                                             compute_unit_price_strategy = price_strategy,
@@ -516,11 +616,10 @@ impl LanderStack {
                                             tx_signature = signature.as_deref().unwrap_or(""),
                                             "{}",
                                             format_args!(
-                                                "落地器失败: 策略={} 调度={} 落地器={} Endpoint={} 变体={} 尝试={} 签名={} tip_strategy={} tips={} compute_unit_price_strategy={} cu_price={}",
+                                                "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={} tip_strategy={} tips={} compute_unit_price_strategy={} cu_price={}",
                                                 strategy_name,
                                                 dispatch_label,
                                                 lander_name,
-                                                endpoint_name,
                                                 variant_id,
                                                 attempt,
                                                 signature.as_deref().unwrap_or("<none>"),
@@ -535,17 +634,15 @@ impl LanderStack {
                                         warn!(
                                             target: "lander::stack",
                                             lander = lander_name,
-                                            endpoint = endpoint_name,
                                             tip_strategy,
                                             tips,
                                             tx_signature = signature.as_deref().unwrap_or(""),
                                             "{}",
                                             format_args!(
-                                                "落地器失败: 策略={} 调度={} 落地器={} Endpoint={} 变体={} 尝试={} 签名={} tip_strategy={} tips={}",
+                                                "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={} tip_strategy={} tips={}",
                                                 strategy_name,
                                                 dispatch_label,
                                                 lander_name,
-                                                endpoint_name,
                                                 variant_id,
                                                 attempt,
                                                 signature.as_deref().unwrap_or("<none>"),
@@ -558,17 +655,15 @@ impl LanderStack {
                                         warn!(
                                             target: "lander::stack",
                                             lander = lander_name,
-                                            endpoint = endpoint_name,
                                             compute_unit_price_strategy = price_strategy,
                                             cu_price,
                                             tx_signature = signature.as_deref().unwrap_or(""),
                                             "{}",
                                             format_args!(
-                                                "落地器失败: 策略={} 调度={} 落地器={} Endpoint={} 变体={} 尝试={} 签名={} compute_unit_price_strategy={} cu_price={}",
+                                                "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={} compute_unit_price_strategy={} cu_price={}",
                                                 strategy_name,
                                                 dispatch_label,
                                                 lander_name,
-                                                endpoint_name,
                                                 variant_id,
                                                 attempt,
                                                 signature.as_deref().unwrap_or("<none>"),
@@ -581,109 +676,21 @@ impl LanderStack {
                                         warn!(
                                             target: "lander::stack",
                                             lander = lander_name,
-                                            endpoint = endpoint_name,
                                             tx_signature = signature.as_deref().unwrap_or(""),
                                             "{}",
                                             format_args!(
-                                                "落地器失败: 策略={} 调度={} 落地器={} Endpoint={} 变体={} 尝试={} 签名={}",
+                                                "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={}",
                                                 strategy_name,
                                                 dispatch_label,
                                                 lander_name,
-                                                endpoint_name,
                                                 variant_id,
                                                 attempt,
                                                 signature.as_deref().unwrap_or("<none>")
                                             )
                                         );
                                     }
-                                }
+                                },
                             }
-                            None => match (telemetry.tip, telemetry.compute_unit_price) {
-                                (Some((tip_strategy, tips)), Some((price_strategy, cu_price))) => {
-                                    warn!(
-                                        target: "lander::stack",
-                                        lander = lander_name,
-                                        tip_strategy,
-                                        tips,
-                                        compute_unit_price_strategy = price_strategy,
-                                        cu_price,
-                                        tx_signature = signature.as_deref().unwrap_or(""),
-                                        "{}",
-                                        format_args!(
-                                            "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={} tip_strategy={} tips={} compute_unit_price_strategy={} cu_price={}",
-                                            strategy_name,
-                                            dispatch_label,
-                                            lander_name,
-                                            variant_id,
-                                            attempt,
-                                            signature.as_deref().unwrap_or("<none>"),
-                                            tip_strategy,
-                                            tips,
-                                            price_strategy,
-                                            cu_price
-                                        )
-                                    );
-                                }
-                                (Some((tip_strategy, tips)), None) => {
-                                    warn!(
-                                        target: "lander::stack",
-                                        lander = lander_name,
-                                        tip_strategy,
-                                        tips,
-                                        tx_signature = signature.as_deref().unwrap_or(""),
-                                        "{}",
-                                        format_args!(
-                                            "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={} tip_strategy={} tips={}",
-                                            strategy_name,
-                                            dispatch_label,
-                                            lander_name,
-                                            variant_id,
-                                            attempt,
-                                            signature.as_deref().unwrap_or("<none>"),
-                                            tip_strategy,
-                                            tips
-                                        )
-                                    );
-                                }
-                                (None, Some((price_strategy, cu_price))) => {
-                                    warn!(
-                                        target: "lander::stack",
-                                        lander = lander_name,
-                                        compute_unit_price_strategy = price_strategy,
-                                        cu_price,
-                                        tx_signature = signature.as_deref().unwrap_or(""),
-                                        "{}",
-                                        format_args!(
-                                            "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={} compute_unit_price_strategy={} cu_price={}",
-                                            strategy_name,
-                                            dispatch_label,
-                                            lander_name,
-                                            variant_id,
-                                            attempt,
-                                            signature.as_deref().unwrap_or("<none>"),
-                                            price_strategy,
-                                            cu_price
-                                        )
-                                    );
-                                }
-                                (None, None) => {
-                                    warn!(
-                                        target: "lander::stack",
-                                        lander = lander_name,
-                                        tx_signature = signature.as_deref().unwrap_or(""),
-                                        "{}",
-                                        format_args!(
-                                            "落地器失败: 策略={} 调度={} 落地器={} 变体={} 尝试={} 签名={}",
-                                            strategy_name,
-                                            dispatch_label,
-                                            lander_name,
-                                            variant_id,
-                                            attempt,
-                                            signature.as_deref().unwrap_or("<none>")
-                                        )
-                                    );
-                                }
-                            },
                         }
                         last_err = Some(err);
                     }

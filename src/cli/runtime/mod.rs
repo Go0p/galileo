@@ -20,6 +20,7 @@ use crate::cli::strategy::{StrategyMode, run_strategy};
 use crate::config::launch::resources::{build_http_client_pool, build_http_client_with_options};
 use crate::config::{AppConfig, StrategyToggle};
 use crate::jupiter::JupiterBinaryManager;
+use crate::jupiter::error::JupiterError;
 
 enum AggregatorContext {
     Jupiter {
@@ -78,6 +79,8 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         .galileo
         .bot
         .strategy_enabled(StrategyToggle::CopyStrategy);
+
+    let mut managed_self_hosted = maybe_start_managed_self_hosted(&cli.command, &config).await?;
 
     let aggregator = match config.galileo.engine.backend {
         crate::config::EngineBackend::Jupiter => {
@@ -443,7 +446,13 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
         }
     };
 
-    dispatch(cli.command, config, aggregator).await
+    let result = dispatch(cli.command, config, aggregator).await;
+
+    if let Some(guard) = managed_self_hosted.take() {
+        guard.shutdown().await;
+    }
+
+    result
 }
 
 async fn dispatch(
@@ -574,5 +583,107 @@ fn command_needs_jupiter(command: &Command, config: &AppConfig) -> bool {
             .strategy_enabled(StrategyToggle::BlindStrategy),
         Command::Jupiter(_) => true,
         _ => false,
+    }
+}
+
+async fn maybe_start_managed_self_hosted(
+    command: &Command,
+    config: &AppConfig,
+) -> Result<Option<ManagedSelfHostedGuard>> {
+    let binary_cfg = &config.galileo.bot.binary;
+    if !binary_cfg.enable_running {
+        return Ok(None);
+    }
+    if !matches!(command, Command::Run | Command::StrategyDryRun) {
+        return Ok(None);
+    }
+    if matches!(
+        config.galileo.engine.backend,
+        crate::config::EngineBackend::JupiterSelfHosted
+    ) {
+        return Ok(None);
+    }
+    if !config.galileo.engine.jupiter_self_hosted.enable {
+        warn!(
+            target: "jupiter",
+            "bot.binary.enable_running = true 但 engine.jupiter_self_hosted.enable = false，跳过托管"
+        );
+        return Ok(None);
+    }
+    if !config
+        .galileo
+        .bot
+        .strategy_enabled(StrategyToggle::BlindStrategy)
+    {
+        return Ok(None);
+    }
+
+    let jupiter_cfg = resolve_jupiter_defaults(config.jupiter.clone(), &config.galileo.global)?;
+    let launch_overrides = build_launch_overrides(
+        &config.galileo.intermedium,
+        &config.galileo.engine.jupiter_self_hosted,
+    );
+    let manager = JupiterBinaryManager::new(
+        jupiter_cfg,
+        launch_overrides,
+        binary_cfg.disable_local_binary,
+        binary_cfg.show_logs,
+        true,
+    )?;
+
+    let started_new = match manager.start(false).await {
+        Ok(()) => {
+            if manager.disable_local_binary {
+                info!(
+                    target: "jupiter",
+                    "bot.binary.disable_local_binary = true，跳过本地 Jupiter 启动"
+                );
+                false
+            } else {
+                info!(
+                    target: "jupiter",
+                    "bot.binary.enable_running 已启动本地 Jupiter 二进制"
+                );
+                true
+            }
+        }
+        Err(JupiterError::AlreadyRunning) => {
+            info!(
+                target: "jupiter",
+                "检测到本地 Jupiter 已运行，复用现有进程"
+            );
+            false
+        }
+        Err(err) => return Err(anyhow!(err)),
+    };
+
+    Ok(Some(ManagedSelfHostedGuard {
+        manager,
+        started_new,
+    }))
+}
+
+struct ManagedSelfHostedGuard {
+    manager: JupiterBinaryManager,
+    started_new: bool,
+}
+
+impl ManagedSelfHostedGuard {
+    async fn shutdown(self) {
+        if !self.started_new {
+            return;
+        }
+        if let Err(err) = self.manager.stop().await {
+            warn!(
+                target: "jupiter",
+                error = %err,
+                "bot.binary.enable_running 无法停止本地 Jupiter 二进制"
+            );
+        } else {
+            info!(
+                target: "jupiter",
+                "bot.binary.enable_running 已停止本地 Jupiter 二进制"
+            );
+        }
     }
 }
