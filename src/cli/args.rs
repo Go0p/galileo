@@ -22,9 +22,9 @@ pub enum Command {
     /// Jupiter 二进制管理命令
     #[command(subcommand)]
     Jupiter(JupiterCmd),
-    /// Lander 工具
+    /// 钱包 / 工具类命令
     #[command(subcommand)]
-    Lander(LanderCmd),
+    Tools(ToolsCmd),
     /// 运行已配置的套利策略循环
     #[command(name = "run", alias = "strategy")]
     Run,
@@ -47,13 +47,6 @@ pub struct InitCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum LanderCmd {
-    /// 使用指定落地器直接发送交易
-    #[command(name = "send")]
-    Send(LanderSendArgs),
-}
-
-#[derive(Subcommand, Debug)]
 pub enum WalletCmd {
     /// 交互式添加钱包私钥
     #[command(name = "add")]
@@ -62,6 +55,13 @@ pub enum WalletCmd {
 
 #[derive(Args, Debug, Default)]
 pub struct WalletAddArgs {}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ToolsCmd {
+    /// 打开交互式工具面板
+    #[command(name = "interactive", alias = "tui")]
+    Interactive,
+}
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum JupiterCmd {
@@ -91,28 +91,4 @@ pub enum JupiterCmd {
         #[arg(long, default_value_t = 5, help = "展示最近的版本数量")]
         limit: usize,
     },
-}
-
-#[derive(Args, Debug)]
-pub struct LanderSendArgs {
-    #[arg(
-        long,
-        value_name = "FILE",
-        help = "包含 SwapInstructionsResponse 的 JSON 文件"
-    )]
-    pub instructions: PathBuf,
-    #[arg(
-        long,
-        value_delimiter = ',',
-        help = "优先测试的落地器列表，逗号分隔；默认为配置文件中的 enable_landers"
-    )]
-    pub landers: Vec<String>,
-    #[arg(
-        long,
-        default_value_t = 5_000u64,
-        help = "提交截止时间（毫秒），默认 5000"
-    )]
-    pub deadline_ms: u64,
-    #[arg(long, default_value_t = 0u64, help = "为交易附加的小费（lamports）")]
-    pub tip_lamports: u64,
 }

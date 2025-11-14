@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 spl-token = { version = "9.0.0", features = ["no-entrypoint"] }
-spl-token-2022 = { version = "9.0.0", features = ["no-entrypoint"] }
+spl-token-2022 = { version = "10.0.0", features = ["no-entrypoint"] }
 spl-associated-token-account = { version = "8.0.0", features = ["no-entrypoint"] }
 solana-client = "3.0.7"
 solana-rpc-client = "3.0.7"
@@ -58,6 +58,7 @@ url = "2.5.7"
 aes-gcm = { version = "0.10.3", features = ["aes"] }
 argon2 = "0.5.3"
 crossterm = "0.29.0"
+ratatui = { version = "0.29.0", default-features = false, features = ["crossterm"] }
 sha2 = "0.10.9"
 core_affinity = "0.8.3"
 bytemuck = { version = "1.15.0", features = ["derive"] }

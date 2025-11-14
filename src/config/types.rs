@@ -217,6 +217,8 @@ pub struct GlobalConfig {
     pub instruction: InstructionConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub tools: ToolsConfig,
 }
 
 impl GlobalConfig {
@@ -226,6 +228,23 @@ impl GlobalConfig {
 
     pub fn primary_rpc_url(&self) -> Option<&str> {
         self.rpc_urls.first().map(|s| s.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolsConfig {
+    #[serde(default, deserialize_with = "super::deserialize_rpc_urls")]
+    pub staked_urls: Vec<String>,
+    #[serde(default)]
+    pub compute_unit_lamports: u64,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self {
+            staked_urls: Vec::new(),
+            compute_unit_lamports: 0,
+        }
     }
 }
 

@@ -459,6 +459,7 @@ api_proxy: "  http://127.0.0.1:8888  "
 pub fn resolve_rpc_client(
     global: &GlobalConfig,
     override_endpoint: Option<&str>,
+    preferred_endpoints: Option<&[String]>,
 ) -> Result<ResolvedRpcClient> {
     let endpoints = if let Some(url) = override_endpoint {
         let trimmed = url.trim();
@@ -466,6 +467,8 @@ pub fn resolve_rpc_client(
             return Err(anyhow!("dry-run rpc_url 不能为空"));
         }
         vec![trimmed.to_string()]
+    } else if let Some(list) = preferred_endpoints {
+        list.to_vec()
     } else if !global.rpc_urls().is_empty() {
         global.rpc_urls().to_vec()
     } else {
@@ -474,7 +477,7 @@ pub fn resolve_rpc_client(
     let rotator = Arc::new(RpcEndpointRotator::new(endpoints)?);
     let primary_url = rotator.primary_url().to_string();
 
-    let proxy = if override_endpoint.is_some() {
+    let proxy = if override_endpoint.is_some() || preferred_endpoints.is_some() {
         None
     } else {
         resolve_global_http_proxy(global)
@@ -522,6 +525,12 @@ pub fn resolve_rpc_client(
             target = "rpc::client",
             url = %primary_url,
             "dry-run 模式：所有 RPC 请求将指向此端点"
+        );
+    } else if let Some(list) = preferred_endpoints {
+        info!(
+            target = "rpc::client",
+            urls = ?list,
+            "tools 模块已覆盖默认 RPC 端点"
         );
     } else if rotator.endpoints().len() > 1 {
         info!(

@@ -9,7 +9,11 @@ global:
   # pump
   #   - "https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
   #   - "https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b"
-
+  tools:
+    staked_urls:
+      - "https://staked.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
+      - "https://acc.solayer.org"
+    compute_unit_lamports: 0
   rpc_urls:
     - "https://mainnet.helius-rpc.com/?api-key=767f42d9-06c2-46f8-8031-9869035d6ce4"
     - "https://pump-fe.helius-rpc.com/?api-key=1b8db865-a5a1-4535-9aec-01061440523b"

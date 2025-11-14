@@ -222,6 +222,7 @@ impl Default for cfg::GlobalConfig {
             yellowstone_grpc_token: None,
             instruction: cfg::InstructionConfig::default(),
             logging: cfg::LoggingConfig::default(),
+            tools: cfg::ToolsConfig::default(),
         }
     }
 }

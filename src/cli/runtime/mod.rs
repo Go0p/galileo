@@ -7,18 +7,17 @@ use crate::api::dflow::DflowApiClient;
 use crate::api::jupiter::JupiterApiClient;
 use crate::api::kamino::KaminoApiClient;
 use crate::api::ultra::UltraApiClient;
-use crate::cli::args::{Cli, Command};
+use crate::cli::args::{Cli, Command, ToolsCmd};
 use crate::cli::context::{
     build_launch_overrides, init_configs, override_proxy_selection, resolve_global_http_proxy,
-    resolve_instruction_memo, resolve_jupiter_base_url, resolve_jupiter_defaults,
-    resolve_proxy_profile, resolve_rpc_client, resolve_self_hosted_jupiter_api_proxy,
-    should_bypass_proxy,
+    resolve_jupiter_base_url, resolve_jupiter_defaults, resolve_proxy_profile, resolve_rpc_client,
+    resolve_self_hosted_jupiter_api_proxy, should_bypass_proxy,
 };
 use crate::cli::jupiter::handle_jupiter_cmd;
-use crate::cli::lander::handle_lander_cmd;
 use crate::cli::strategy::{StrategyMode, run_strategy};
 use crate::config::launch::resources::{build_http_client_pool, build_http_client_with_options};
 use crate::config::{AppConfig, StrategyToggle};
+use crate::engine::EngineIdentity;
 use crate::jupiter::JupiterBinaryManager;
 use crate::jupiter::error::JupiterError;
 
@@ -64,6 +63,11 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             true,
         )?;
         handle_jupiter_cmd(cmd.clone(), &manager).await?;
+        return Ok(());
+    }
+
+    if let Command::Tools(cmd) = &cli.command {
+        run_tools_command(cmd, &config).await?;
         return Ok(());
     }
 
@@ -363,7 +367,7 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
                 &config.galileo.global.logging,
                 Some(api_client_pool),
             );
-            let resolved_rpc = resolve_rpc_client(&config.galileo.global, None)?;
+            let resolved_rpc = resolve_rpc_client(&config.galileo.global, None, None)?;
             let rpc_client = resolved_rpc.client.clone();
             AggregatorContext::Kamino {
                 api_client,
@@ -381,7 +385,7 @@ pub async fn run(cli: Cli, config: AppConfig) -> Result<()> {
             if api_base.is_empty() {
                 return Err(anyhow!("ultra.api_quote_base 不能为空"));
             }
-            let resolved_rpc = resolve_rpc_client(&config.galileo.global, None)?;
+            let resolved_rpc = resolve_rpc_client(&config.galileo.global, None, None)?;
             let rpc_client = resolved_rpc.client.clone();
             let ultra_proxy = ultra_cfg
                 .api_proxy
@@ -462,15 +466,6 @@ async fn dispatch(
 ) -> Result<()> {
     // 统一的命令分发入口，便于后续按子命令拆分到专门模块。
     match command {
-        Command::Lander(cmd) => {
-            handle_lander_cmd(
-                cmd,
-                &config,
-                &config.lander.lander,
-                resolve_instruction_memo(&config.galileo.global.instruction),
-            )
-            .await?;
-        }
         Command::Run => match &aggregator {
             AggregatorContext::Jupiter { api_client } => {
                 let backend = crate::cli::strategy::StrategyBackend::Jupiter {
@@ -570,9 +565,65 @@ async fn dispatch(
         }
         Command::Wallet(_) => {}
         Command::Jupiter(_) => unreachable!("Jupiter 命令已在入口提前处理"),
+        Command::Tools(_) => unreachable!("Tools 命令已在入口提前处理"),
     }
 
     Ok(())
+}
+
+async fn run_tools_command(_command: &ToolsCmd, config: &AppConfig) -> Result<()> {
+    let tools_cfg = &config.galileo.global.tools;
+    let dry_run_override = if config.galileo.bot.dry_run.enable {
+        Some(
+            config
+                .galileo
+                .bot
+                .dry_run
+                .rpc_url
+                .as_deref()
+                .ok_or_else(|| anyhow!("dry-run 模式需配置 bot.dry_run.rpc_url"))?,
+        )
+    } else {
+        None
+    };
+    let preferred = if dry_run_override.is_some() || tools_cfg.staked_urls.is_empty() {
+        None
+    } else {
+        Some(tools_cfg.staked_urls.as_slice())
+    };
+    let resolved_rpc = resolve_rpc_client(&config.galileo.global, dry_run_override, preferred)?;
+    let rpc_client = resolved_rpc.client.clone();
+    let identity = EngineIdentity::from_private_key(&config.galileo.private_key)
+        .map_err(|err| anyhow!(err))?;
+    let compute_unit_lamports = tools_cfg.compute_unit_lamports;
+
+    let mut wallets = Vec::with_capacity(config.galileo.wallet_keys.len().saturating_add(1));
+    wallets.push(crate::tools::tui::WalletSummary::primary(
+        "主钱包".to_string(),
+        Some(identity.pubkey.to_string()),
+    ));
+    for entry in &config.galileo.wallet_keys {
+        let title = if entry.remark.trim().is_empty() {
+            "(未命名)".to_string()
+        } else {
+            entry.remark.trim().to_string()
+        };
+        wallets.push(crate::tools::tui::WalletSummary::secondary(
+            title,
+            Some("已加密条目，可通过 Wallet CLI 解锁".to_string()),
+        ));
+    }
+    let ctx = crate::tools::tui::InteractiveContext {
+        rpc_endpoint: resolved_rpc.endpoints.primary_url().to_string(),
+        dry_run: config.galileo.bot.dry_run.enable,
+        wallets,
+    };
+    let exec = crate::tools::tui::ExecutionResources {
+        rpc: rpc_client.clone(),
+        identity: identity.clone(),
+        compute_unit_lamports,
+    };
+    crate::tools::tui::run_interactive_tui(ctx, exec).await
 }
 
 fn command_needs_jupiter(command: &Command, config: &AppConfig) -> bool {

@@ -42,12 +42,13 @@ https://github.com/ValidatorsDAO/solana-stream/blob/main/crate/solana-stream-sdk
 - 更详细的字段说明与第三方脚本映射见 `docs/galileo_config_reference.md`。
 - 运行时 RPC 与聚合器 API 端点集中在 `[bot]` 及 `engine.*` 节点，签名账户、共享账户等身份信息位于 `[bot.identity]`。
 - 启用 `[strategy]` 段并填写钱包、公链参数后，可执行 `galileo strategy` 启动套利循环（CTRL+C 可安全退出）。
+- `global.tools` 可以为 `galileo tools` 命令指定独立的 `staked_urls`（优先使用的 RPC 端点）以及 `compute_unit_lamports`（可选优先费单价，0 表示禁用）。
 
 执行 `galileo init` 可在目标目录生成默认的 `galileo.yaml` 与 `lander.yaml` 模板；如需覆盖已有文件，附加 `--force`。
 
 常用 CLI 入口：
 - `galileo strategy`：根据配置运行套利循环。
-- `galileo tools dflow-probe --template copy_tx/template_tx.json`：离线比对 DFlow 动态路由指令的编码输出。
+- `galileo tools interactive`：打开交互式 TUI 面板，集中管理转账 / wrap / partial unwrap 等钱包操作。
 
 
 ## 缓存系统设计

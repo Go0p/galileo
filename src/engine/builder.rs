@@ -160,18 +160,6 @@ impl TransactionBuilder {
         }
     }
 
-    #[cfg_attr(feature = "hotpath", hotpath::measure)]
-    pub async fn build(
-        &self,
-        identity: &EngineIdentity,
-        instructions: &SwapInstructionsVariant,
-        tip_lamports: u64,
-        jito_tip_plan: Option<JitoTipPlan>,
-    ) -> EngineResult<PreparedTransaction> {
-        self.build_with_options(identity, instructions, None, tip_lamports, jito_tip_plan)
-            .await
-    }
-
     pub async fn build_with_sequence(
         &self,
         identity: &EngineIdentity,

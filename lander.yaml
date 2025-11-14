@@ -57,6 +57,7 @@ lander:
         - https://slc.mainnet.block-engine.jito.wtf/api/v1/bundles
         - https://dublin.mainnet.block-engine.jito.wtf/api/v1/bundles
         - https://singapore.mainnet.block-engine.jito.wtf/api/v1/bundles
+        - https://mainnet.block-engine.jito.wtf/api/v1/bundles
     multi_ips_setting:
       tips_wallet:
         # 初始化生成时自动生成的钱包，我们拥有这些钱包的私钥
@@ -77,6 +78,7 @@ lander:
         - https://slc.mainnet.block-engine.jito.wtf/api/v1/bundles
         - https://dublin.mainnet.block-engine.jito.wtf/api/v1/bundles
         - https://singapore.mainnet.block-engine.jito.wtf/api/v1/bundles
+        - https://mainnet.block-engine.jito.wtf/api/v1/bundles
     forward_setting:
       endpoints:
         - https://jito-worker.meteora.ag/bundles

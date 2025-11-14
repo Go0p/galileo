@@ -21,6 +21,7 @@ mod monitoring;
 mod network;
 mod rpc;
 mod strategy;
+mod tools;
 mod wallet;
 
 use crate::cli::args::{Cli, Command};

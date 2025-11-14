@@ -185,7 +185,7 @@ async fn run_blind_engine(
 
     let compute_unit_price_mode = derive_compute_unit_price_mode(&config.lander.lander);
 
-    let resolved_rpc = resolve_rpc_client(&config.galileo.global, dry_run.rpc_override())?;
+    let resolved_rpc = resolve_rpc_client(&config.galileo.global, dry_run.rpc_override(), None)?;
     let rpc_client = resolved_rpc.client.clone();
     let rpc_endpoints = resolved_rpc.endpoints.clone();
     let mut identity = EngineIdentity::from_private_key(&config.galileo.private_key)
@@ -1294,7 +1294,7 @@ async fn run_pure_blind_engine(
     let dry_run_enabled = dry_run.is_enabled();
     let compute_unit_price_mode = derive_compute_unit_price_mode(&config.lander.lander);
 
-    let resolved_rpc = resolve_rpc_client(&config.galileo.global, dry_run.rpc_override())?;
+    let resolved_rpc = resolve_rpc_client(&config.galileo.global, dry_run.rpc_override(), None)?;
     let rpc_client = resolved_rpc.client.clone();
     let rpc_endpoints = resolved_rpc.endpoints.clone();
     let mut identity = EngineIdentity::from_private_key(&config.galileo.private_key)

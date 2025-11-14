@@ -50,12 +50,6 @@ tasks:
       - task: galileo:run
         vars:
           CMD: 'quote {{.CLI_ARGS | default "--help"}}'
-  galileo:lander:
-    desc: "运行上链器"
-    cmds:
-      - task: galileo:run
-        vars:
-          CMD: 'lander {{.CLI_ARGS | default ""}}'
 
   galileo:strategy:
     desc: "运行套利策略循环"
