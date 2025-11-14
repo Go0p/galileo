@@ -8,41 +8,99 @@ use super::app::{FocusArea, ToolsApp};
 
 pub fn render(frame: &mut Frame, app: &mut ToolsApp) {
     let size = frame.area();
-    let vertical = Layout::default()
+    let root = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(10), Constraint::Length(7)])
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(size);
 
-    let header_chunks = Layout::default()
+    draw_header(frame, root[0], app);
+
+    let body = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(30),
-            Constraint::Percentage(30),
-            Constraint::Percentage(40),
-        ])
-        .split(vertical[0]);
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(root[1]);
 
-    let wallets_area = header_chunks[0];
-    app.layout.update_wallet_area(wallets_area);
-    draw_wallets(frame, wallets_area, app);
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(body[0]);
 
-    let actions_area = header_chunks[1];
-    app.layout.update_action_area(actions_area);
-    draw_actions(frame, actions_area, app);
+    app.layout.update_wallet_area(left[0]);
+    draw_wallets(frame, left[0], app);
+    app.layout.update_action_area(left[1]);
+    draw_actions(frame, left[1], app);
 
-    draw_detail(frame, header_chunks[2], app);
-    draw_footer(frame, vertical[1], app);
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(body[1]);
+
+    draw_detail(frame, right[0], app);
+    draw_activity(frame, right[1], app);
+}
+
+fn draw_header(frame: &mut Frame, area: Rect, app: &ToolsApp) {
+    let mut spans = Vec::new();
+    spans.push(Span::styled(
+        " Galileo Tools ",
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightBlue)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(
+        app.focus_label(),
+        Style::default().fg(Color::White),
+    ));
+    spans.push(Span::raw("  ·  "));
+    spans.push(Span::styled(
+        format!(
+            "Mode: {}",
+            if app.context.dry_run {
+                "dry-run"
+            } else {
+                "mainnet"
+            }
+        ),
+        if app.context.dry_run {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Green)
+        },
+    ));
+    spans.push(Span::raw("  ·  "));
+    spans.push(Span::styled(
+        format!("RPC: {}", app.context.rpc_endpoint),
+        Style::default().fg(Color::Gray),
+    ));
+
+    let hints = Line::from("Enter 执行 · Tab 切换 · Esc 返回 · Ctrl+C 退出");
+    let text = vec![Line::from(spans), hints];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(Paragraph::new(text).block(block), area);
 }
 
 fn draw_wallets(frame: &mut Frame, area: Rect, app: &ToolsApp) {
     let focus = matches!(app.focus, FocusArea::Wallets);
     let border_style = if focus {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(Color::LightCyan)
     } else {
-        Style::default()
+        Style::default().fg(Color::DarkGray)
     };
+    let title = Line::from(vec![
+        Span::styled("Wallets", Style::default().fg(Color::White)),
+        Span::raw("  ·  "),
+        Span::styled(
+            format!("{} accounts", app.wallets.len()),
+            Style::default().fg(Color::Gray),
+        ),
+    ]);
     let block = Block::default()
-        .title("Wallets")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(border_style);
 
@@ -104,11 +162,11 @@ fn draw_actions(frame: &mut Frame, area: Rect, app: &ToolsApp) {
         .map(|action| {
             let title = action.title();
             let desc = action.description();
-            ListItem::new(vec![
-                Line::styled(title, Style::default().fg(Color::LightGreen)),
-                Line::styled(desc, Style::default().fg(Color::Gray)),
-                Line::default(),
-            ])
+            ListItem::new(Line::from(vec![
+                Span::styled(title, Style::default().fg(Color::LightGreen)),
+                Span::raw("  "),
+                Span::styled(desc, Style::default().fg(Color::Gray)),
+            ]))
         })
         .collect();
 
@@ -139,47 +197,21 @@ fn draw_detail(frame: &mut Frame, area: Rect, app: &ToolsApp) {
     frame.render_widget(paragraph, area);
 }
 
-fn draw_footer(frame: &mut Frame, area: Rect, app: &ToolsApp) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(40), Constraint::Min(10)])
-        .split(area);
-
-    let status = format!(
-        "RPC: {} | Mode: {} | Focus: {}",
-        app.context.rpc_endpoint,
-        if app.context.dry_run {
-            "dry-run"
-        } else {
-            "mainnet"
-        },
-        app.focus_label()
-    );
-    let status_block = Block::default()
-        .title("Status")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Gray));
-    frame.render_widget(
-        Paragraph::new(status)
-            .block(status_block)
-            .wrap(Wrap { trim: true }),
-        chunks[0],
-    );
-
-    let logs_block = Block::default()
+fn draw_activity(frame: &mut Frame, area: Rect, app: &ToolsApp) {
+    let block = Block::default()
         .title("Activity")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Gray));
+        .border_style(Style::default().fg(Color::DarkGray));
 
-    let available_height = chunks[1].height.saturating_sub(2).max(1) as usize;
+    let available_height = area.height.saturating_sub(2).max(1) as usize;
     let log_lines: Vec<Line> = app
         .visible_logs(available_height)
         .into_iter()
-        .map(|line| Line::from(Span::raw(line)))
+        .map(|line| Line::from(Span::styled(line, Style::default().fg(Color::Gray))))
         .collect();
 
     let logs_widget = Paragraph::new(log_lines)
-        .block(logs_block)
+        .block(block)
         .wrap(Wrap { trim: false });
-    frame.render_widget(logs_widget, chunks[1]);
+    frame.render_widget(logs_widget, area);
 }

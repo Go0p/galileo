@@ -5,8 +5,8 @@ use std::time::Duration;
 use anyhow::{Error, Result, anyhow};
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseButton,
-        MouseEvent, MouseEventKind,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+        MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -262,6 +262,10 @@ impl ToolsApp {
     }
 
     fn on_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.should_quit = true;
+            return;
+        }
         match self.view {
             ViewMode::Dashboard => self.handle_dashboard_key(key),
             ViewMode::Form => self.handle_form_key(key),
